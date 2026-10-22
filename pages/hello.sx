@@ -1,0 +1,14 @@
+; A page is a program. Its last value is the document.
+
+(define who "world")
+
+(define (greeting name)
+  (str "Hello, " name "!"))
+
+(page :title "Hello, world"
+  (h1 :color "#b8336a" (greeting who))
+  (p "This page is written in a Lisp. The same language describes "
+     "the structure, the style, and the behavior of the page.")
+  (div :background "#f3eef7" :padding 16
+    (p :margin 0
+       "Styles are attributes, and logic is just code: 6 × 7 = " (* 6 7))))
