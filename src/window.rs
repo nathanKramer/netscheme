@@ -12,10 +12,17 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key as WinitKey, ModifiersState, NamedKey},
-    window::{CursorIcon, Theme, Window, WindowId},
+    window::{CursorIcon, Icon, Theme, Window, WindowAttributes, WindowId},
 };
 
-use crate::browser::{Browser, Hover, Key, LINE_HEIGHT};
+use crate::{
+    browser::{Browser, Hover, Key, LINE_HEIGHT},
+    image::Image,
+};
+
+/// What desktops know the browser as. On Linux, taskbars and launchers find
+/// a window's icon through the desktop entry with this name.
+const APP_ID: &str = "netscheme";
 
 /// Presses closer together than this, in time and space, count as a double
 /// or triple click.
@@ -130,12 +137,48 @@ impl App {
     }
 }
 
+/// Names the window, and gives it the logo as its icon where the platform
+/// takes one from the window: Windows and X11, but not Wayland or macOS.
+fn with_identity(attrs: WindowAttributes, event_loop: &ActiveEventLoop) -> WindowAttributes {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let attrs = {
+        use winit::platform::wayland::{ActiveEventLoopExtWayland, WindowAttributesExtWayland};
+        // This sets the app ID on Wayland, and the window's class on X11.
+        let attrs = attrs.with_name(APP_ID, APP_ID);
+        if event_loop.is_wayland() {
+            return attrs;
+        }
+        attrs
+    };
+    let _ = event_loop;
+    attrs.with_window_icon(logo_icon())
+}
+
+/// The logo at 256 × 256, the largest size window icons are usually shown at.
+fn logo_icon() -> Option<Icon> {
+    const SIZE: u32 = 256;
+    let logo = Image::decode_png(include_bytes!("../assets/images/logo.png")).ok()?;
+    // Icons take straight RGBA, not premultiplied.
+    let scaled = logo.scaled(SIZE, SIZE);
+    let rgba = scaled
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            let unmultiply = |c: u8| if a == 0 { 0 } else { (c as u32 * 255 / a as u32).min(255) as u8 };
+            [unmultiply(r), unmultiply(g), unmultiply(b), a]
+        })
+        .collect();
+    Icon::from_rgba(rgba, SIZE, SIZE).ok()
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
         }
         let attrs = Window::default_attributes().with_title(self.browser.title()).with_inner_size(LogicalSize::new(900.0, 700.0));
+        let attrs = with_identity(attrs, event_loop);
         let window = Rc::new(event_loop.create_window(attrs).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");

@@ -213,6 +213,12 @@ it or blending them to enlarge it, and keeps the scaled copies too. Files can
 be up to 16 MB, and 4096 × 4096 pixels once decoded. Web pages can only load
 images from the web. The site's pages show `assets/images/logo.png`.
 
+The window identifies itself as `netscheme`: that's its app ID on Wayland and
+its class on X11, so window manager rules (Hyprland's `class:netscheme`) and
+desktop entries can match it. On X11 and Windows the window also carries the
+logo as its icon. Wayland compositors take icons from a desktop entry instead,
+which this project doesn't install yet.
+
 ### Finding text
 
 Ctrl+F opens a find bar under the toolbar. Matches in the site are
