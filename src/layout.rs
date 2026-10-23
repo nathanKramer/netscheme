@@ -54,6 +54,8 @@ pub struct Focus {
     pub id: usize,
     /// In characters from the start of the value.
     pub cursor: usize,
+    /// The other end of the selection, which is empty when this is `cursor`.
+    pub anchor: usize,
 }
 
 /// A text input, as laid out.
@@ -65,6 +67,14 @@ pub struct InputBox {
     pub value: String,
     /// Window x of each caret position: before each character, and after the last.
     pub caret_xs: Vec<f32>,
+}
+
+impl InputBox {
+    /// The caret position closest to window x.
+    pub fn caret_at(&self, x: f32) -> usize {
+        let distance = |i: usize| (self.caret_xs[i] - x).abs();
+        (0..self.caret_xs.len()).min_by(|&a, &b| distance(a).total_cmp(&distance(b))).unwrap_or(0)
+    }
 }
 
 /// A frame with a fixed height, which scrolls its page independently.
@@ -557,20 +567,29 @@ impl<'a> Layout<'a> {
         for c in value.chars() {
             offsets.push(offsets[offsets.len() - 1] + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, bold));
         }
-        let cursor = focus.map(|focus| focus.cursor.min(value.chars().count()));
+        let len = value.chars().count();
+        let cursor = focus.map(|focus| focus.cursor.min(len));
+        let selection = focus.map(|focus| (focus.anchor.min(len), focus.cursor.min(len))).filter(|(a, c)| a != c);
         let scroll_x = cursor.map_or(0.0, |c| (offsets[c] - (inner_w - thin)).max(0.0));
         let text_x = inner_x - scroll_x;
 
         let outer = self.clip;
         let visible = area.intersect(outer);
         self.items.push(DisplayItem::Clip(Clip { x0: inner_x, x1: inner_x + inner_w, ..visible }));
+        if let Some((a, c)) = selection {
+            let (start, end) = (offsets[a.min(c)], offsets[a.max(c)]);
+            let highlight = Color(0xd8, 0xcc, 0xf2);
+            self.items.push(DisplayItem::Rect { x: text_x + start, y: y + inset, w: end - start, h: line_height, color: highlight });
+        }
         let (text, color) = match el.attr("placeholder") {
             Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), Color(0x9a, 0x94, 0xa3)),
             _ => (value.clone(), style.color),
         };
         self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, bold, color });
+        // Like most text fields, no caret while there's a selection.
         if let Some(c) = cursor
             && self.caret_visible
+            && selection.is_none()
         {
             let caret = DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color };
             self.items.push(caret);

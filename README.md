@@ -106,7 +106,7 @@ page with fresh state; going back restores the old page's state.
 ```lisp
 (define-state name "")
 
-(input :value name :placeholder "Your name" :width 240
+(input :value name :placeholder "Your name" :width 240 :select-on-focus false
        :on-input (fn (text) (set! name text))
        :on-submit (fn (text) ...))
 ```
@@ -119,6 +119,12 @@ where the caret is.
 
 Click an input to focus it. Arrow keys, Home/End, Backspace and Delete edit;
 Tab moves to the next input; Escape, or clicking elsewhere, leaves it.
+
+Selecting text: drag across it, double-click a word, triple-click for all of
+it, hold Shift with the arrow keys or Home/End, or press Ctrl+A. Typing,
+Backspace and Delete replace the selection. With `:select-on-focus true`,
+a click that focuses the input selects all of its text, as the address bar
+does; Tab and Ctrl+L select everything in the input they move to.
 
 ### Screenshots of interactions
 
@@ -164,8 +170,8 @@ Locations starting with `browser:` are the browser's own pages, kept in `ui/`:
 - `browser:back` isn't a page: following a link to it goes back.
 
 Links on browser pages are relative to the working directory, and any link,
-whether in the toolbar or the site, navigates the site. Ctrl+L puts the caret
-in the address bar. Going back restores the site's state, but not the
+whether in the toolbar or the site, navigates the site. Clicking the address
+bar, or pressing Ctrl+L, selects the address, so typing replaces it. Going back restores the site's state, but not the
 toolbar's, so the address bar shows where you are. Values inside a query,
 like the site's own location, are percent-encoded.
 
@@ -175,6 +181,6 @@ The chrome can frame itself, too:
 ## Roadmap
 
 1. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
-2. **Text selection and the clipboard**, including in inputs.
+2. **The clipboard**, and selecting text on pages, not just in inputs.
 3. **Networking**: load `http://` pages, and add forward history.
 4. More of the language: macros, tail calls.

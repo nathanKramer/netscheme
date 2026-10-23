@@ -25,7 +25,7 @@
           (toolbar-link "browser:back" "← Back")
           (span :color "#a9a3b2" (b "← Back")))
       " "
-      (input :value typed :width 420
+      (input :value typed :width 420 :select-on-focus true
              :on-input (fn (text) (set! typed text))
              :on-submit (fn (text) (go text)))
       " "

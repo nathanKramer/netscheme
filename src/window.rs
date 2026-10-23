@@ -1,6 +1,10 @@
 //! The browser window: turns window events into calls on a `Browser`.
 
-use std::{num::NonZeroU32, rc::Rc};
+use std::{
+    num::NonZeroU32,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use winit::{
     application::ApplicationHandler,
@@ -13,9 +17,20 @@ use winit::{
 
 use crate::browser::{Browser, Hover, Key, LINE_HEIGHT};
 
+/// Presses closer together than this, in time and space, count as a double
+/// or triple click.
+const MULTI_CLICK_TIME: Duration = Duration::from_millis(400);
+const MULTI_CLICK_DISTANCE: f32 = 4.0;
+
 pub fn run(browser: Browser) {
     let event_loop = EventLoop::new().expect("create event loop");
-    let mut app = App { browser, pointer: (0.0, 0.0), modifiers: ModifiersState::empty(), state: None };
+    let mut app = App {
+        browser,
+        pointer: (0.0, 0.0),
+        modifiers: ModifiersState::empty(),
+        last_press: None,
+        state: None,
+    };
     event_loop.run_app(&mut app).expect("run event loop");
 }
 
@@ -23,6 +38,8 @@ struct App {
     browser: Browser,
     pointer: (f32, f32),
     modifiers: ModifiersState,
+    /// When and where the left button last went down, and how many quick presses that made.
+    last_press: Option<(Instant, (f32, f32), u32)>,
     state: Option<WindowState>,
 }
 
@@ -50,6 +67,25 @@ impl App {
         }
     }
 
+    /// Counts this press of the left button: 1, or more for a quick
+    /// succession in the same place.
+    fn count_press(&mut self) -> u32 {
+        let now = Instant::now();
+        let (x, y) = self.pointer;
+        let clicks = match self.last_press {
+            Some((time, (px, py), clicks))
+                if now - time < MULTI_CLICK_TIME
+                    && (x - px).abs() <= MULTI_CLICK_DISTANCE
+                    && (y - py).abs() <= MULTI_CLICK_DISTANCE =>
+            {
+                clicks + 1
+            }
+            _ => 1,
+        };
+        self.last_press = Some((now, self.pointer, clicks));
+        clicks
+    }
+
     fn key(&self, event: &KeyEvent) -> Option<Key> {
         let m = self.modifiers;
         if m.alt_key() && event.logical_key == WinitKey::Named(NamedKey::ArrowLeft) {
@@ -70,6 +106,7 @@ impl App {
             WinitKey::Named(NamedKey::Escape) => Key::Escape,
             WinitKey::Named(NamedKey::Tab) => Key::Tab,
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("l") => Key::FocusAddressBar,
+            WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("a") => Key::SelectAll,
             // Other shortcuts aren't typing.
             _ if m.control_key() || m.alt_key() || m.super_key() => return None,
             _ => {
@@ -130,6 +167,9 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x as f32, position.y as f32);
                 self.update_cursor();
+                if self.browser.drag_to(self.pointer.0) {
+                    self.redraw();
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -141,12 +181,17 @@ impl ApplicationHandler for App {
                 self.browser.scroll_by(self.pointer, dy);
                 self.redraw();
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button, .. } => {
-                match button {
-                    MouseButton::Left => {
-                        self.browser.click(self.pointer.0, self.pointer.1);
+            WindowEvent::MouseInput { state: button_state, button, .. } => {
+                let (x, y) = self.pointer;
+                match (button, button_state) {
+                    (MouseButton::Left, ElementState::Pressed) => {
+                        let clicks = self.count_press();
+                        self.browser.press(x, y, clicks);
                     }
-                    MouseButton::Back => self.browser.back(),
+                    (MouseButton::Left, ElementState::Released) => {
+                        self.browser.release(x, y);
+                    }
+                    (MouseButton::Back, ElementState::Released) => self.browser.back(),
                     _ => return,
                 }
                 self.redraw();
