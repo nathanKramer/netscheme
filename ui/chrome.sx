@@ -6,6 +6,11 @@
 (define can-go-back (param "back"))
 ; Set when one of the site's event handlers failed.
 (define error (param "error"))
+; Set while the find bar is open: what to find, how many matches there are,
+; and which is current. The browser finds them, and tells this page.
+(define finding (param "find"))
+(define found (parse-number (or (param "found") "0")))
+(define at (parse-number (or (param "at") "0")))
 
 ; What's in the address bar. Going somewhere starts this page with fresh
 ; state, so it resets to the new location.
@@ -25,6 +30,26 @@
 (define (toolbar-link href label)
   (a :href href toolbar-text label))
 
+(define (find-bar)
+  (div toolbar
+    (p :margin 0
+      (input :value finding :width 260 :placeholder "Find in page" :autofocus true :select-on-focus true
+             :on-input (fn (text) (set-find text))
+             :on-submit (fn (text) (find-next))
+             :on-shift-submit (fn (text) (find-previous))
+             :on-escape (fn () (close-find)))
+      "  "
+      (span :color (if (and (not (empty? finding)) (= found 0)) (light-dark "#a3281c" "#ff9d92") (light-dark "#6f6979" "#a19bab"))
+            (cond ((empty? finding) "")
+                  ((= found 0) "No matches")
+                  (else (str at " of " found))))
+      "  "
+      (button toolbar-text :on-click (fn () (find-previous)) "↑")
+      " "
+      (button toolbar-text :on-click (fn () (find-next)) "↓")
+      " "
+      (button toolbar-text :on-click (fn () (close-find)) "×"))))
+
 (page :title (or site-title location) :padding 0
   (div toolbar
     (p :margin 0
@@ -41,6 +66,7 @@
       (button toolbar-text :on-click (fn () (set-dark-mode (not (dark-mode))))
               (if (dark-mode) "Light mode" "Dark mode"))))
   (div rule)
+  (if finding (list (find-bar) (div rule)))
   (if error
       (div :background (light-dark "#fde8e8" "#3d1f22") :padding 10 :margin 0
         (p :margin 0 :color (light-dark "#8a1c1c" "#ffb4b4") (b "Error ") error)))

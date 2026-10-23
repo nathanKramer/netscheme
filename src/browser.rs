@@ -9,9 +9,9 @@ use std::{
 
 use crate::{
     dom::Element,
-    layout::{Action, Focus, InputBox, Link, Scrollbar, Scroller},
+    layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search},
     lisp::{self, Value},
-    loader::{self, Host, StateStore},
+    loader::{self, FindRequest, Host, StateStore},
     paint::{Renderer, Scroll, View},
 };
 
@@ -48,6 +48,20 @@ pub enum Key {
     FocusAddressBar,
     /// Load the page afresh: download it again, and start its state over.
     Reload,
+    /// Open the find bar, or select what's in it if it's open.
+    Find,
+    /// Go to the next match, or with shift the previous one.
+    FindNext,
+}
+
+/// The search in the find bar.
+#[derive(Debug, Default)]
+struct Find {
+    query: String,
+    /// Which match is current, counting from 0 in layout order.
+    current: usize,
+    /// How many matches the chrome was last told about.
+    count: usize,
 }
 
 /// What's under the pointer, for choosing its shape.
@@ -87,6 +101,14 @@ pub struct Browser {
     dragging: bool,
     /// A scrollbar being dragged, and how far below the top of its thumb it was grabbed.
     scroll_drag: Option<(Scrolling, f32)>,
+    /// The search, while the find bar is open.
+    find: Option<Find>,
+    /// Whether to scroll the current match into view after the next render.
+    reveal: bool,
+    /// Inputs with `:autofocus` in the last render, which are only focused
+    /// when they first appear; and whether to focus one anyway.
+    autofocused: Vec<usize>,
+    refocus: bool,
     /// When the caret last moved; it blinks starting from then.
     caret_moved: Instant,
     renderer: Renderer,
@@ -95,6 +117,7 @@ pub struct Browser {
     scrollers: Vec<Scroller>,
     inputs: Vec<InputBox>,
     bar: Option<Scrollbar>,
+    matches: Vec<Match>,
     /// Height and scale of the window.
     viewport: (f32, f32),
 }
@@ -113,12 +136,17 @@ impl Browser {
             error: None,
             dragging: false,
             scroll_drag: None,
+            find: None,
+            reveal: false,
+            autofocused: Vec::new(),
+            refocus: false,
             caret_moved: Instant::now(),
             renderer: Renderer::new(),
             links: Vec::new(),
             scrollers: Vec::new(),
             inputs: Vec::new(),
             bar: None,
+            matches: Vec::new(),
             viewport: (0.0, 1.0),
         };
         browser.reload();
@@ -149,11 +177,22 @@ impl Browser {
 
     /// Draws the page into `buf`, which is `w` × `h` physical pixels.
     pub fn render(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
+        self.render_once(buf, w, h, scale);
+        // Finding text can mean drawing again: once the chrome has been told
+        // how many matches there are, or to scroll the current one into view.
+        if self.after_search() {
+            self.render_once(buf, w, h, scale);
+        }
+        self.autofocus();
+    }
+
+    fn render_once(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
         let caret_visible = (self.caret_moved.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark: self.host.dark_mode.get() };
+        let search = self.find.as_ref().map(|find| Search { query: &find.query, current: find.current, frames_only: self.chrome });
+        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark: self.host.dark_mode.get(), search };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
-        self.bar = rendered.bar;
+        (self.bar, self.matches) = (rendered.bar, rendered.matches);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -161,6 +200,55 @@ impl Browser {
             let len = input.caret_xs.len() - 1;
             Some(Focus { cursor: focus.cursor.min(len), anchor: focus.anchor.min(len), ..focus })
         });
+    }
+
+    /// Catches up with what the last render found. Returns whether to draw again.
+    fn after_search(&mut self) -> bool {
+        let Some(find) = &mut self.find else { return false };
+        let count = self.matches.len();
+        if find.current >= count {
+            find.current = 0;
+        }
+        let told = std::mem::replace(&mut find.count, count) == count;
+        let current = find.current;
+        if !told {
+            self.reload();
+        }
+        let revealed = std::mem::take(&mut self.reveal) && self.reveal_match(current);
+        !told || revealed
+    }
+
+    /// Scrolls whatever the match is in so that it's in view. Returns whether that scrolled.
+    fn reveal_match(&mut self, i: usize) -> bool {
+        let Some(m) = self.matches.get(i).copied() else { return false };
+        let (top, bottom, scroll) = match m.frame.and_then(|id| self.scrollers.iter().find(|s| s.id == id)) {
+            Some(s) => (s.area.y0, s.area.y1, s.scroll),
+            None => (0.0, self.viewport.0, self.scroll.page),
+        };
+        if m.area.y0 >= top && m.area.y1 <= bottom {
+            return false;
+        }
+        // A third of the way down, so there's some context above it.
+        let target = scroll + m.area.y0 - top - (bottom - top) / 3.0;
+        match m.frame {
+            Some(id) => _ = self.scroll.frames.insert(id, target),
+            None => self.scroll.page = target,
+        }
+        true
+    }
+
+    /// Focuses an input with `:autofocus` when it first appears, or when asked to.
+    fn autofocus(&mut self) {
+        let autofocus = |input: &&InputBox| input.element.attr("autofocus").is_some_and(Value::truthy);
+        let ids: Vec<usize> = self.inputs.iter().filter(autofocus).map(|input| input.id).collect();
+        let new = ids.iter().find(|id| !self.autofocused.contains(id)).copied();
+        let target = new.or(ids.first().copied().filter(|_| self.refocus));
+        if let Some(input) = target.and_then(|id| self.inputs.iter().find(|input| input.id == id)) {
+            let len = input.caret_xs.len() - 1;
+            self.set_focus(Focus { id: input.id, cursor: len, anchor: 0 });
+        }
+        self.refocus = false;
+        self.autofocused = ids;
     }
 
     /// When the caret next blinks, if one is showing.
@@ -315,6 +403,20 @@ impl Browser {
                 (self.focus, self.error) = (None, None);
                 return self.reload();
             }
+            // The find bar is part of the chrome, so there's none without it.
+            Key::Find if self.chrome => {
+                self.find.get_or_insert_default();
+                self.refocus = true;
+                return self.reload();
+            }
+            Key::FindNext if self.find.is_some() => {
+                self.find_request(if shift { FindRequest::Previous } else { FindRequest::Next });
+                return self.reload();
+            }
+            Key::Escape if self.focus.is_none() && self.find.is_some() => {
+                self.find_request(FindRequest::Close);
+                return self.reload();
+            }
             _ => {}
         }
         if let Some(focus) = self.focus
@@ -359,11 +461,18 @@ impl Browser {
                 }
             }
             Some(Edit::Submit) => {
-                if let Some(handler) = element.attr("on-submit").cloned() {
+                // Shift+Enter has a handler of its own, if the input wants one.
+                let shifted = element.attr("on-shift-submit").filter(|_| shift);
+                if let Some(handler) = shifted.or(element.attr("on-submit")).cloned() {
                     self.run(&handler, &[Value::Str(value.into())]);
                 }
             }
-            Some(Edit::Blur) => self.focus = None,
+            Some(Edit::Blur) => {
+                self.focus = None;
+                if let Some(handler) = element.attr("on-escape").cloned() {
+                    self.run(&handler, &[]);
+                }
+            }
             Some(Edit::Next) => {
                 let ids = || self.inputs.iter().map(|input| input.id);
                 let next = ids().filter(|&id| id > focus.id).min().or_else(|| ids().min());
@@ -393,7 +502,10 @@ impl Browser {
         }
         let back = if self.history.is_empty() { "" } else { "&back=1" };
         let error = self.error.as_ref().map_or(String::new(), |e| format!("&error={}", loader::encode(e)));
-        format!("browser:chrome?location={}{back}{error}", loader::encode(&self.site))
+        let find = self.find.as_ref().map_or(String::new(), |find| {
+            format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1)
+        });
+        format!("browser:chrome?location={}{back}{error}{find}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -437,7 +549,11 @@ impl Browser {
     /// Calls a handler, then goes where it asked to with `go`, or else runs
     /// the page again so it shows any state the handler changed.
     fn run(&mut self, handler: &Value, args: &[Value]) {
-        match lisp::apply(handler, args) {
+        let result = lisp::apply(handler, args);
+        if let Some(request) = self.host.take_find().filter(|_| result.is_ok()) {
+            self.find_request(request);
+        }
+        match result {
             Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
                 None => {
@@ -450,6 +566,18 @@ impl Browser {
                 self.fail(format!("in an event handler: {e}"));
             }
         }
+    }
+
+    fn find_request(&mut self, request: FindRequest) {
+        let Some(find) = &mut self.find else { return };
+        let count = find.count.max(1);
+        match request {
+            FindRequest::Query(query) => *find = Find { query, current: 0, count: find.count },
+            FindRequest::Next => find.current = (find.current + 1) % count,
+            FindRequest::Previous => find.current = (find.current + count - 1) % count,
+            FindRequest::Close => self.find = None,
+        }
+        self.reveal = self.find.is_some();
     }
 
     /// Reports an error from something the user did. The chrome shows it
@@ -770,6 +898,47 @@ mod tests {
         assert_eq!(browser.scroll.page, 0.0);
         assert_eq!(browser.scroll.frames[&id], bar.scroll_for(bar.thumb.y0 + 100.0).round());
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finding_text_in_the_page() {
+        // The chrome frames the site by a relative location, so the page goes in `target`.
+        let dir = format!("target/test-pages/find-{}", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = format!("{dir}/page.sx");
+        let line = |i: usize| if [5, 150, 190].contains(&i) { format!("a Needle at {i}") } else { format!("line {i}") };
+        let lines: Vec<String> = (0..200).map(|i| format!("(p {:?})", line(i))).collect();
+        std::fs::write(&file, format!("(page {})", lines.join(" "))).unwrap();
+
+        let mut browser = Browser::new(file, true);
+        press(&mut browser, [Key::Find]);
+        assert_eq!(browser.inputs.len(), 2, "the find bar opened");
+        assert_eq!(browser.focus.map(|f| f.id), Some(browser.inputs[1].id), "with its input focused");
+
+        press(&mut browser, [Key::Text("needle".into())]);
+        assert_eq!(browser.matches.len(), 3, "ignoring case");
+        assert!(browser.page.to_string().contains("1 of 3"), "the find bar says so");
+        assert_eq!(browser.scroll.frames.get(&0).copied().unwrap_or(0.0), 0.0, "the first is already in view");
+
+        press(&mut browser, [Key::Enter]);
+        assert!(browser.page.to_string().contains("2 of 3"));
+        let (site, current) = (&browser.scrollers[0], browser.matches[1].area);
+        assert!(site.scroll > 0.0, "scrolled to the second");
+        assert!(current.y0 >= site.area.y0 && current.y1 <= site.area.y1, "which is in view: {current:?} in {:?}", site.area);
+
+        browser.key(Key::Enter, true, (0.0, 0.0));
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("1 of 3"), "Shift+Enter goes back");
+        press(&mut browser, [Key::FindNext, Key::FindNext, Key::FindNext]);
+        assert!(browser.page.to_string().contains("1 of 3"), "and the matches wrap around");
+
+        press(&mut browser, [Key::SelectAll, Key::Text("haystack".into())]);
+        assert!(browser.page.to_string().contains("No matches"));
+
+        press(&mut browser, [Key::Escape]);
+        assert_eq!(browser.inputs.len(), 1, "Escape closes it");
+        assert!(browser.matches.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

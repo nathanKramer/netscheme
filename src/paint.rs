@@ -6,7 +6,7 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
-    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scrollbar, Scroller},
+    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Match, Scrollbar, Scroller, Search},
     style::{Color, Face, Palette, Style},
 };
 
@@ -60,6 +60,7 @@ pub struct View<'a> {
     pub caret_visible: bool,
     /// Whether to use the browser's dark colours.
     pub dark: bool,
+    pub search: Option<Search<'a>>,
 }
 
 pub struct Rendered {
@@ -73,6 +74,8 @@ pub struct Rendered {
     pub scroll: Scroll,
     /// The page's own scrollbar, if it's taller than the window.
     pub bar: Option<Scrollbar>,
+    /// Where the search matched, in window coordinates.
+    pub matches: Vec<Match>,
 }
 
 pub struct Renderer {
@@ -93,9 +96,12 @@ impl Renderer {
         let root = Style::root(palette);
         let page_background = Style::compute(page, &root).background.unwrap_or(palette.page);
         let mut layout = Layout::new(&self.fonts, palette, view.scale, h as f32, &view.scroll.frames, view.focus, view.caret_visible);
+        if let Some(search) = view.search {
+            layout.search(search);
+        }
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
-        let (items, mut links, mut scrollers, mut inputs) = (layout.items, layout.links, layout.scrollers, layout.inputs);
+        let (items, mut links, mut scrollers, mut inputs, mut matches) = (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
 
         buf.fill(page_background.to_u32());
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
@@ -121,7 +127,8 @@ impl Renderer {
         for link in &mut links {
             link.y -= dy;
         }
-        for area in scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area)) {
+        let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
+        for area in areas.chain(matches.iter_mut().map(|m| &mut m.area)) {
             area.y0 -= dy;
             area.y1 -= dy;
         }
@@ -129,7 +136,7 @@ impl Renderer {
             scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames }, bar }
+        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames }, bar, matches }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -184,7 +191,7 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false })
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None })
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
@@ -224,7 +231,7 @@ mod tests {
         let mut buf = vec![0; 200 * 300];
         let mut render = |frames: HashMap<usize, f32>| {
             let scroll = Scroll { page: 0.0, frames };
-            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false })
+            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None })
         };
 
         let top = render(HashMap::new());

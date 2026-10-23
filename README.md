@@ -192,6 +192,25 @@ Backspace and Delete replace the selection. With `:select-on-focus true`,
 a click that focuses the input selects all of its text, as the address bar
 does; Tab and Ctrl+L select everything in the input they move to.
 
+Three more attributes are for inputs that act like controls, as the find
+bar's does: `:autofocus true` focuses the input when it first appears,
+`:on-escape` is called with no arguments when Escape leaves it, and
+`:on-shift-submit` is called instead of `:on-submit` for Shift+Enter.
+
+### Finding text
+
+Ctrl+F opens a find bar under the toolbar. Matches in the site are
+highlighted as you type, ignoring case, with the current one in orange and
+scrolled into view. Enter or F3 or Ctrl+G goes to the next, and with Shift
+the previous; Escape closes the bar. Matches are found line by line, so a
+phrase that wraps onto the next line isn't found, and text in inputs isn't searched.
+
+The find bar is part of `ui/chrome.sx`. It asks the browser to search with
+`set-find`, `find-next`, `find-previous` and `close-find`, which only
+`browser:` pages may call. The browser finds the matches as it lays the page
+out, and passes the query, the number of matches and the current one back to
+the chrome as `find`, `found` and `at` in its location.
+
 ### Screenshots of interactions
 
 `--click X,Y` and `--type TEXT` act on the page before the screenshot, in
@@ -201,6 +220,7 @@ order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 ```sh
 cargo run -- pages/inputs.sx --screenshot out.png --click 250,332 --type $'Ada\tWrite docs\n'
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
+cargo run -- pages/library.sx --chrome --screenshot out.png --find $'dict\n\n'   # Ctrl+F, type, Enter twice
 ```
 
 ## Runaway code

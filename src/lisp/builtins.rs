@@ -180,6 +180,29 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         c.host.dark_mode.set(on.truthy());
         Ok(Value::Nil)
     });
+    // The find bar's requests. Only browser pages may search.
+    let browser_only = |c: &Rc<PageContext>, name: &str| {
+        if c.location.starts_with("browser:") { Ok(()) } else { Err(format!("{name}: only browser: pages can search the page")) }
+    };
+    let c = ctx.clone();
+    def(&env, "set-find", move |args| {
+        browser_only(&c, "set-find")?;
+        let [Value::Str(query)] = args else { return Err("set-find: expected the text to find".into()) };
+        c.host.request_find(loader::FindRequest::Query(query.to_string()));
+        Ok(Value::Nil)
+    });
+    for (name, request) in [
+        ("find-next", loader::FindRequest::Next),
+        ("find-previous", loader::FindRequest::Previous),
+        ("close-find", loader::FindRequest::Close),
+    ] {
+        let c = ctx.clone();
+        def(&env, name, move |_| {
+            browser_only(&c, name)?;
+            c.host.request_find(request.clone());
+            Ok(Value::Nil)
+        });
+    }
     // A query parameter from the page's location: `page.sx?name=value`.
     let c = ctx.clone();
     def(&env, "param", move |args| {

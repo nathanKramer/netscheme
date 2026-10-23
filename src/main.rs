@@ -13,7 +13,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --type TEXT]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --type TEXT | --find TEXT]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -38,6 +38,7 @@ fn main() -> ExitCode {
                 Ok(())
             }),
             "--type" => value().map(|v| steps.push(Step::Type(v))),
+            "--find" => value().map(|v| steps.push(Step::Find(v))),
             "--chrome" => {
                 chrome = true;
                 Ok(())
@@ -85,6 +86,8 @@ enum Step {
     /// Each character is a key press; `\n` is Enter, `\t` is Tab and `\x08`
     /// (`\b` in a shell's `$'...'`) is Backspace.
     Type(String),
+    /// Ctrl+F, then typing, as `Type` does.
+    Find(String),
 }
 
 /// Renders the browser's page to a PNG, after carrying out `steps` as the
@@ -109,7 +112,11 @@ fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps
                     return Err(format!("nothing to click at {x},{y}").into());
                 }
             }
-            Step::Type(text) => {
+            Step::Type(text) | Step::Find(text) => {
+                if let Step::Find(_) = step {
+                    browser.render(&mut buf, w, h, 1.0);
+                    browser.key(Key::Find, false, (0.0, 0.0));
+                }
                 for key in keys(text) {
                     browser.render(&mut buf, w, h, 1.0);
                     browser.key(key, false, (0.0, 0.0));

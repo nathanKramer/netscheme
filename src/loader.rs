@@ -76,6 +76,17 @@ pub struct Host {
     /// again on every click and keystroke, and shouldn't download itself
     /// again each time.
     downloads: RefCell<HashMap<String, Result<Source, String>>>,
+    /// A change to the search asked for by the chrome's find bar.
+    find: RefCell<Option<FindRequest>>,
+}
+
+/// What the find bar can ask of the browser.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FindRequest {
+    Query(String),
+    Next,
+    Previous,
+    Close,
 }
 
 impl Host {
@@ -100,6 +111,14 @@ impl Host {
 
     pub fn take_navigation(&self) -> Option<(String, String)> {
         self.navigation.borrow_mut().take()
+    }
+
+    pub fn request_find(&self, request: FindRequest) {
+        *self.find.borrow_mut() = Some(request);
+    }
+
+    pub fn take_find(&self) -> Option<FindRequest> {
+        self.find.borrow_mut().take()
     }
 }
 

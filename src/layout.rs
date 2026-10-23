@@ -121,6 +121,26 @@ impl Scrollbar {
     }
 }
 
+/// Text to find in the page, and highlight.
+#[derive(Clone, Copy)]
+pub struct Search<'a> {
+    pub query: &'a str,
+    /// Which match is the current one, counting in layout order.
+    pub current: usize,
+    /// Only look inside frames, so that searching from the chrome finds text
+    /// in the site rather than in the toolbar.
+    pub frames_only: bool,
+}
+
+/// Where some text matched a `Search`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Match {
+    pub area: Clip,
+    /// The innermost fixed-height frame the match is in, by `Scroller::id`,
+    /// or `None` if it's on the page itself.
+    pub frame: Option<usize>,
+}
+
 /// A frame with a fixed height, which scrolls its page independently.
 pub struct Scroller {
     /// Identifies the frame across renders of the same page: frames with a
@@ -216,6 +236,12 @@ pub struct Layout<'a> {
     pub links: Vec<Link>,
     pub scrollers: Vec<Scroller>,
     pub inputs: Vec<InputBox>,
+    /// What to find, and where it was found.
+    search: Option<(Search<'a>, Vec<char>)>,
+    pub matches: Vec<Match>,
+    /// How many frames deep layout is, and the fixed-height frame it's in.
+    frame_depth: usize,
+    scroller: Option<usize>,
 }
 
 impl<'a> Layout<'a> {
@@ -244,7 +270,17 @@ impl<'a> Layout<'a> {
             links: Vec::new(),
             scrollers: Vec::new(),
             inputs: Vec::new(),
+            search: None,
+            matches: Vec::new(),
+            frame_depth: 0,
+            scroller: None,
         }
+    }
+
+    /// Finds and highlights `search` as the page is laid out.
+    pub fn search(&mut self, search: Search<'a>) {
+        let query = search.query.chars().flat_map(char::to_lowercase).collect::<Vec<_>>();
+        self.search = (!query.is_empty()).then_some((search, query));
     }
 
     /// Lays out `el` in a box of width `w` at (`x`, `y`); returns the y
@@ -382,6 +418,7 @@ impl<'a> Layout<'a> {
 
         let saved = (self.scale, std::mem::replace(&mut self.base, base));
         self.scale *= zoom;
+        self.frame_depth += 1;
         let (inner_x, inner_y, inner_w) = (x + border, y + border, w - 2.0 * border);
         let bottom = match height {
             None => self.block(page, &Style::root(self.palette), inner_x, inner_y, inner_w) + border,
@@ -392,6 +429,7 @@ impl<'a> Layout<'a> {
             }
         };
         (self.scale, self.base) = saved;
+        self.frame_depth -= 1;
 
         if border > 0.0 {
             let color = self.palette.border;
@@ -413,13 +451,14 @@ impl<'a> Layout<'a> {
         self.next_frame_id += 1;
 
         // Measure the page first, to know how far it can scroll.
-        let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id);
+        let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id, self.matches.len());
         let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
         self.items.truncate(marks.0);
         self.links.truncate(marks.1);
         self.scrollers.truncate(marks.2);
         self.inputs.truncate(marks.3);
         self.next_input_id = marks.4;
+        self.matches.truncate(marks.5);
         self.next_frame_id = id + 1;
 
         let max_scroll = (content_bottom - area.y1).max(0.0);
@@ -432,7 +471,9 @@ impl<'a> Layout<'a> {
         let background = Style::compute(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
         let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
         self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background });
+        let outer_scroller = self.scroller.replace(id);
         self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
+        self.scroller = outer_scroller;
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
         if let Some(bar) = bar {
             self.items.push(DisplayItem::Rect { x: bar.thumb.x0, y: bar.thumb.y0, w: bar.thumb.x1 - bar.thumb.x0, h: bar.thumb.y1 - bar.thumb.y0, color: self.palette.scrollbar });
@@ -565,6 +606,8 @@ impl<'a> Layout<'a> {
                 self.push_link(Clip::rect(px, py, piece.w, height), action.clone());
             }
         }
+        // Highlights go over backgrounds but under the text.
+        self.find_in_line(line, run, x, y, above + below);
         for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
             let style = &run[piece.segment].style;
             let size = style.font_size * self.scale;
@@ -580,6 +623,42 @@ impl<'a> Layout<'a> {
             }
         }
         y + above + below
+    }
+
+    /// Highlights matches of the search in a line `h` high at (`x`, `y`),
+    /// and records where they are. A match can span pieces of the line, but
+    /// not continue onto the next.
+    fn find_in_line(&mut self, line: &[Piece], run: &[Segment], x: f32, y: f32, h: f32) {
+        let Some((search, query)) = &self.search else { return };
+        if search.frames_only && self.frame_depth == 0 {
+            return;
+        }
+        // Each character of the line, lowercased, with its left and right edges.
+        let mut chars = Vec::new();
+        for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
+            let style = &run[piece.segment].style;
+            let left = x + piece.x + piece.padding;
+            let mut prefix = String::new();
+            for c in piece.text.chars() {
+                let start = self.measure(&prefix, style);
+                prefix.push(c);
+                let lower = c.to_lowercase().next().unwrap_or(c);
+                chars.push((lower, left + start, left + self.measure(&prefix, style)));
+            }
+        }
+        let n = query.len();
+        let mut i = 0;
+        while n > 0 && i + n <= chars.len() {
+            if chars[i..i + n].iter().zip(query).all(|((c, ..), q)| c == q) {
+                let (x0, x1) = (chars[i].1, chars[i + n - 1].2);
+                let color = if self.matches.len() == search.current { self.palette.current_match } else { self.palette.found };
+                self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color });
+                self.matches.push(Match { area: Clip::rect(x0, y, x1 - x0, h), frame: self.scroller });
+                i += n;
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Records a clickable area, trimmed to what's visible.
@@ -787,6 +866,29 @@ mod tests {
     fn inline_code_stays_on_one_line() {
         let (items, _) = layout(r#"(page :padding 0 (p "aaa " (code "b c d")))"#, 60.0);
         assert!(texts(&items).iter().any(|(text, ..)| *text == "b c d"), "{:?}", texts(&items));
+    }
+
+    fn search(src: &str, query: &str, frames_only: bool) -> Vec<Match> {
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let fonts = Fonts::load();
+        let scrolls = HashMap::new();
+        let mut layout = Layout::new(&fonts, &Palette::LIGHT, 1.0, 600.0, &scrolls, None, true);
+        layout.search(Search { query, current: 0, frames_only });
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 800.0);
+        layout.matches
+    }
+
+    #[test]
+    fn searching_finds_text_across_pieces_of_a_line() {
+        let src = r#"(page :padding 0 (p "Hello, " (b "wor") "ld. Hello!") (p "hello"))"#;
+        assert_eq!(search(src, "hello", false).len(), 3, "ignoring case");
+        let across = search(src, "o, WORLD", false);
+        assert_eq!(across.len(), 1, "spanning a space and a bold piece");
+        let fonts = Fonts::load();
+        let start = fonts.measure("Hell", 16.0, Face::default());
+        assert!((across[0].area.x0 - start).abs() < 0.01, "{:?} starts after \"Hell\"", across[0].area);
+        assert_eq!(search(src, "hello", true).len(), 0, "outside frames, when only searching inside them");
+        assert_eq!(search(src, "", false).len(), 0);
     }
 
     #[test]

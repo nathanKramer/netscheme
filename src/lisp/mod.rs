@@ -127,6 +127,12 @@ mod tests {
     }
 
     #[test]
+    fn only_browser_pages_search() {
+        assert!(eval(r#"(set-find "x")"#).contains("only browser: pages"));
+        assert!(eval("(find-next)").contains("only browser: pages"));
+    }
+
+    #[test]
     fn native_functions_cost_one_step() {
         // Sorting this many items in the page language would take far more
         // than a page's budget.

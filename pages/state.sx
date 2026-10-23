@@ -75,6 +75,11 @@
   (live greeting-code (greeter))
   (p "Inputs have " (code ":placeholder") " text for when they're empty, and a"
      " " (code ":width") " in pixels. Tab moves to the next input, and Escape leaves it.")
+  (p "A few more attributes make an input behave like a control. "
+     (code ":autofocus true") " focuses it when it first appears. "
+     (code ":on-escape") " runs when Escape leaves it, and " (code ":on-shift-submit")
+     " runs instead of " (code ":on-submit") " for Shift+Enter. The toolbar's find"
+     " bar, which Ctrl+F opens, uses all three.")
   (subsection "A to-do list")
   (p "Put state, inputs and lists together and you have an app:")
   (live list-code (todo))
