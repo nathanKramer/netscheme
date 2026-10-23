@@ -47,6 +47,26 @@ impl Clip {
     }
 }
 
+/// Which text input has keyboard focus, and where its caret is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Focus {
+    /// Inputs are numbered in layout order.
+    pub id: usize,
+    /// In characters from the start of the value.
+    pub cursor: usize,
+}
+
+/// A text input, as laid out.
+pub struct InputBox {
+    pub id: usize,
+    /// The visible part of the box.
+    pub area: Clip,
+    pub element: Rc<Element>,
+    pub value: String,
+    /// Window x of each caret position: before each character, and after the last.
+    pub caret_xs: Vec<f32>,
+}
+
 /// A frame with a fixed height, which scrolls its page independently.
 pub struct Scroller {
     /// Identifies the frame across renders of the same page: frames with a
@@ -93,11 +113,13 @@ struct Segment {
     padding: f32,
     /// Whether the text stays on one line, as in a button.
     nowrap: bool,
+    /// Set if this segment is a text input rather than text.
+    input: Option<Rc<Element>>,
 }
 
 impl Segment {
     fn text(text: &Rc<str>, style: &Rc<Style>) -> Segment {
-        Segment { text: text.clone(), style: style.clone(), action: None, padding: 0.0, nowrap: false }
+        Segment { text: text.clone(), style: style.clone(), action: None, padding: 0.0, nowrap: false, input: None }
     }
 }
 
@@ -128,27 +150,42 @@ pub struct Layout<'a> {
     /// Requested scroll offsets of fixed-height frames, by `Scroller::id`.
     frame_scrolls: &'a HashMap<usize, f32>,
     next_frame_id: usize,
+    focus: Option<Focus>,
+    caret_visible: bool,
+    next_input_id: usize,
     clip: Clip,
     /// Location of the framed page being laid out, if any; see `Link::base`.
     base: Option<Rc<str>>,
     pub items: Vec<DisplayItem>,
     pub links: Vec<Link>,
     pub scrollers: Vec<Scroller>,
+    pub inputs: Vec<InputBox>,
 }
 
 impl<'a> Layout<'a> {
-    pub fn new(fonts: &'a Fonts, scale: f32, viewport_height: f32, frame_scrolls: &'a HashMap<usize, f32>) -> Self {
+    pub fn new(
+        fonts: &'a Fonts,
+        scale: f32,
+        viewport_height: f32,
+        frame_scrolls: &'a HashMap<usize, f32>,
+        focus: Option<Focus>,
+        caret_visible: bool,
+    ) -> Self {
         Layout {
             fonts,
             scale,
             viewport_height,
             frame_scrolls,
             next_frame_id: 0,
+            focus,
+            caret_visible,
+            next_input_id: 0,
             clip: Clip::NONE,
             base: None,
             items: Vec::new(),
             links: Vec::new(),
             scrollers: Vec::new(),
+            inputs: Vec::new(),
         }
     }
 
@@ -266,11 +303,13 @@ impl<'a> Layout<'a> {
         self.next_frame_id += 1;
 
         // Measure the page first, to know how far it can scroll.
-        let marks = (self.items.len(), self.links.len(), self.scrollers.len());
+        let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id);
         let content_bottom = self.block(page, &Style::root(), area.x0, area.y0, area.x1 - area.x0);
         self.items.truncate(marks.0);
         self.links.truncate(marks.1);
         self.scrollers.truncate(marks.2);
+        self.inputs.truncate(marks.3);
+        self.next_input_id = marks.4;
         self.next_frame_id = id + 1;
 
         let max_scroll = (content_bottom - area.y1).max(0.0);
@@ -323,6 +362,13 @@ impl<'a> Layout<'a> {
         let mut word = Word::default();
         let mut space_segment = None;
         for (i, segment) in run.iter().enumerate() {
+            if segment.input.is_some() {
+                if word.pieces.is_empty() {
+                    word.space_segment = space_segment.take();
+                }
+                word.pieces.push(Piece { x: 0.0, w: 0.0, text: String::new(), segment: i, padding: 0.0 });
+                continue;
+            }
             let mut inner_space = false;
             for c in segment.text.chars() {
                 if c.is_whitespace() {
@@ -365,7 +411,10 @@ impl<'a> Layout<'a> {
                 let segment = &run[piece.segment];
                 piece.padding = segment.padding * self.scale;
                 piece.x = word.width;
-                piece.w = self.measure(&piece.text, &segment.style) + 2.0 * piece.padding;
+                piece.w = match &segment.input {
+                    Some(input) => self.input_width(input),
+                    None => self.measure(&piece.text, &segment.style) + 2.0 * piece.padding,
+                };
                 word.width += piece.w;
             }
         }
@@ -376,7 +425,7 @@ impl<'a> Layout<'a> {
     fn line(&mut self, line: &[Piece], run: &[Segment], x: f32, y: f32) -> f32 {
         let (mut above, mut below) = (0.0f32, 0.0f32);
         for piece in line {
-            let (height, baseline) = self.line_box(&run[piece.segment].style);
+            let (height, baseline) = self.piece_box(&run[piece.segment]);
             above = above.max(baseline);
             below = below.max(height - baseline);
         }
@@ -385,8 +434,12 @@ impl<'a> Layout<'a> {
         // Backgrounds first so neighbouring text is never painted over.
         for piece in line {
             let segment = &run[piece.segment];
-            let (height, baseline) = self.line_box(&segment.style);
+            let (height, baseline) = self.piece_box(segment);
             let (px, py) = (x + piece.x, baseline_y - baseline);
+            if let Some(input) = &segment.input {
+                self.input(input, &segment.style, Clip::rect(px, py, piece.w, height));
+                continue;
+            }
             if let Some(color) = segment.style.background {
                 self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
             }
@@ -394,7 +447,7 @@ impl<'a> Layout<'a> {
                 self.push_link(Clip::rect(px, py, piece.w, height), action.clone());
             }
         }
-        for piece in line {
+        for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
             let style = &run[piece.segment].style;
             let size = style.font_size * self.scale;
             if piece.text != " " {
@@ -423,8 +476,13 @@ impl<'a> Layout<'a> {
     /// Flattens an inline element into styled segments. Inline backgrounds
     /// and actions apply to everything inside them; block elements nested in
     /// inline ones are flattened too, as this engine has no anonymous block boxes.
-    fn collect_inline(&self, el: &Element, parent: &Style, background: Option<Color>, action: Option<Action>, out: &mut Vec<Segment>) {
+    fn collect_inline(&self, el: &Rc<Element>, parent: &Style, background: Option<Color>, action: Option<Action>, out: &mut Vec<Segment>) {
         let mut style = Style::compute(el, parent);
+        if &*el.tag == "input" {
+            let style = Rc::new(style);
+            out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, input: Some(el.clone()) });
+            return;
+        }
         style.background = style.background.or(background);
         let action = match (el.attr("on-click"), el.attr("href")) {
             (Some(handler), _) => Some(Action::Run(handler.clone())),
@@ -436,10 +494,92 @@ impl<'a> Layout<'a> {
         for child in &el.children {
             match child {
                 Node::Text(text) => {
-                    out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap })
+                    out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap, input: None })
                 }
                 Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), out),
             }
+        }
+    }
+
+    /// Like `line_box`, but for any piece of a line.
+    fn piece_box(&self, segment: &Segment) -> (f32, f32) {
+        let (height, baseline) = self.line_box(&segment.style);
+        match segment.input {
+            Some(_) => {
+                let inset = self.input_inset(&segment.style);
+                (height + 2.0 * inset, baseline + inset)
+            }
+            None => (height, baseline),
+        }
+    }
+
+    /// Space between an input's edge and its text: padding plus a 1px border.
+    fn input_inset(&self, style: &Style) -> f32 {
+        (style.padding + 1.0) * self.scale
+    }
+
+    fn input_width(&self, input: &Element) -> f32 {
+        let width = match input.attr("width") {
+            Some(Value::Num(n)) => *n as f32,
+            _ => 240.0,
+        };
+        width * self.scale
+    }
+
+    /// Draws a text input filling `area`: its value (or placeholder) clipped
+    /// to the box and scrolled to keep the caret in view, plus the caret if
+    /// the input has focus.
+    fn input(&mut self, el: &Rc<Element>, style: &Style, area: Clip) {
+        let id = self.next_input_id;
+        self.next_input_id += 1;
+        let focus = self.focus.filter(|focus| focus.id == id);
+
+        let (x, y, w, h) = (area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
+        let thin = self.scale.round().max(1.0);
+        let (border, border_color) = match focus {
+            Some(_) => (2.0 * thin, Color(0x5b, 0x3a, 0xb8)),
+            None => (thin, Color(0xb9, 0xb2, 0xc3)),
+        };
+        let background = style.background.unwrap_or(Color::WHITE);
+        self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color });
+        self.items.push(DisplayItem::Rect { x: x + border, y: y + border, w: w - 2.0 * border, h: h - 2.0 * border, color: background });
+
+        let value = match el.attr("value") {
+            None | Some(Value::Nil) => String::new(),
+            Some(value) => value.to_string(),
+        };
+        let (size, bold) = (style.font_size * self.scale, style.bold);
+        let inset = self.input_inset(style);
+        let (inner_x, inner_w) = (x + inset, (w - 2.0 * inset).max(0.0));
+        let (line_height, baseline) = self.line_box(style);
+
+        let mut offsets = vec![0.0];
+        for c in value.chars() {
+            offsets.push(offsets[offsets.len() - 1] + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, bold));
+        }
+        let cursor = focus.map(|focus| focus.cursor.min(value.chars().count()));
+        let scroll_x = cursor.map_or(0.0, |c| (offsets[c] - (inner_w - thin)).max(0.0));
+        let text_x = inner_x - scroll_x;
+
+        let outer = self.clip;
+        let visible = area.intersect(outer);
+        self.items.push(DisplayItem::Clip(Clip { x0: inner_x, x1: inner_x + inner_w, ..visible }));
+        let (text, color) = match el.attr("placeholder") {
+            Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), Color(0x9a, 0x94, 0xa3)),
+            _ => (value.clone(), style.color),
+        };
+        self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, bold, color });
+        if let Some(c) = cursor
+            && self.caret_visible
+        {
+            let caret = DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color };
+            self.items.push(caret);
+        }
+        self.items.push(DisplayItem::Clip(outer));
+
+        if !visible.is_empty() {
+            let caret_xs = offsets.iter().map(|offset| text_x + offset).collect();
+            self.inputs.push(InputBox { id, area: visible, element: el.clone(), value, caret_xs });
         }
     }
 
@@ -464,7 +604,7 @@ mod tests {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
         let scrolls = HashMap::new();
-        let mut layout = Layout::new(&fonts, 1.0, 600.0, &scrolls);
+        let mut layout = Layout::new(&fonts, 1.0, 600.0, &scrolls, None, true);
         layout.block(&page, &Style::root(), 0.0, 0.0, width);
         (layout.items, layout.links)
     }

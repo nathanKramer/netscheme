@@ -15,7 +15,8 @@
      (span :size 22 "bigger") ", and "
      (a :href "about.sx" (b "a link") " to another page")
      ". Press Alt+← to come back.")
-  (p "Pages can respond to clicks: try " (a :href "counter.sx" "the counter") ".")
+  (p "Pages can respond to clicks and typing: try " (a :href "counter.sx" "the counter")
+     " and " (a :href "inputs.sx" "some text inputs") ".")
   (p "Pages can embed pages, even themselves: see " (a :href "fractal.sx" "the fractal")
      ". The toolbar above, and the View source page it links to, are pages"
      " too, written in the same language."))

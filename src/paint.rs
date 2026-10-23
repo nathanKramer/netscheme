@@ -6,7 +6,7 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
-    layout::{Clip, DisplayItem, Layout, Link, Scroller},
+    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scroller},
     style::{Color, Style},
 };
 
@@ -42,11 +42,22 @@ pub struct Scroll {
     pub frames: HashMap<usize, f32>,
 }
 
+/// What the user is doing, as far as drawing the page is concerned.
+pub struct View<'a> {
+    pub scale: f32,
+    pub scroll: &'a Scroll,
+    pub focus: Option<Focus>,
+    /// Whether a blinking caret is in its visible phase.
+    pub caret_visible: bool,
+}
+
 pub struct Rendered {
     /// Link hit boxes, in window coordinates.
     pub links: Vec<Link>,
     /// Scrollable frames, in window coordinates.
     pub scrollers: Vec<Scroller>,
+    /// Text inputs, in window coordinates.
+    pub inputs: Vec<InputBox>,
     /// The offsets actually used, after clamping.
     pub scroll: Scroll,
 }
@@ -62,15 +73,15 @@ impl Renderer {
     }
 
     /// Lays out `page` and paints it into `buf` (`w` × `h` physical pixels),
-    /// scrolled by `scroll`. Offsets are first clamped so nothing scrolls
-    /// past its end.
-    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32, scroll: &Scroll) -> Rendered {
+    /// scrolled by `view.scroll`. Offsets are first clamped so nothing
+    /// scrolls past its end.
+    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, view: &View) -> Rendered {
         let root = Style::root();
         let page_background = Style::compute(page, &root).background.unwrap_or(Color::WHITE);
-        let mut layout = Layout::new(&self.fonts, scale, h as f32, &scroll.frames);
+        let mut layout = Layout::new(&self.fonts, view.scale, h as f32, &view.scroll.frames, view.focus, view.caret_visible);
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
-        let dy = scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
-        let (items, mut links, mut scrollers) = (layout.items, layout.links, layout.scrollers);
+        let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
+        let (items, mut links, mut scrollers, mut inputs) = (layout.items, layout.links, layout.scrollers, layout.inputs);
 
         buf.fill(page_background.to_u32());
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
@@ -92,12 +103,12 @@ impl Renderer {
         for link in &mut links {
             link.y -= dy;
         }
-        for scroller in &mut scrollers {
-            scroller.area.y0 -= dy;
-            scroller.area.y1 -= dy;
+        for area in scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area)) {
+            area.y0 -= dy;
+            area.y1 -= dy;
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, scroll: Scroll { page: dy, frames } }
+        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames } }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -151,7 +162,8 @@ mod tests {
     fn render(src: &str, h: usize, scroll: f32) -> Rendered {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
-        Renderer::new().render(&page, &mut buf, 200, h, 1.0, &Scroll { page: scroll, frames: HashMap::new() })
+        let scroll = Scroll { page: scroll, frames: HashMap::new() };
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true })
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
@@ -188,7 +200,10 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &ctx) else { panic!("not a page") };
         let mut renderer = Renderer::new();
         let mut buf = vec![0; 200 * 300];
-        let mut render = |frames: HashMap<usize, f32>| renderer.render(&page, &mut buf, 200, 300, 1.0, &Scroll { page: 0.0, frames });
+        let mut render = |frames: HashMap<usize, f32>| {
+            let scroll = Scroll { page: 0.0, frames };
+            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true })
+        };
 
         let top = render(HashMap::new());
         assert_eq!(top.scrollers.len(), 1);

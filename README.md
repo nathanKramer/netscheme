@@ -19,8 +19,8 @@ cargo run                                   # opens pages/hello.sx
 cargo run -- path/to/page.sx
 cargo run -- page.sx --screenshot out.png --width 800 --height 600 --scroll 200
 
-# Screenshots show the bare page. To include the toolbar, screenshot the chrome:
-cargo run -- 'browser:chrome?location=pages/hello.sx' --screenshot out.png
+# Screenshots show the bare page; add --chrome to include the toolbar:
+cargo run -- pages/hello.sx --chrome --screenshot out.png
 ```
 
 ## Technology
@@ -52,7 +52,8 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
 | `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
 | `paint.rs` | Rectangles and glyphs into a pixel buffer | Painting and compositing |
-| `window.rs` | Event loop, scrolling, and navigation; shows `browser:chrome` | The browser process |
+| `browser.rs` | A browsing session: navigation, history, state, scrolling, focus, editing | The browser process |
+| `window.rs` | Turns window events into calls on a `Browser` | The browser's window |
 
 ## The language today
 
@@ -60,10 +61,10 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - Special forms: `define`, `define-state`, `set!`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
 - Builtins: `+ - * / mod = < > not str repr url-encode`, the list functions
-  `list first rest nth cons length empty? map filter`, the predicates
+  `list first rest nth cons append length empty? map filter`, the predicates
   `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
   `children` for looking inside elements
-- Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a button`.
+- Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a button input`.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists of children are spliced in,
   and `nil` is skipped, so `if` and functions that return lists compose naturally.
@@ -100,8 +101,35 @@ Each frame keeps its own state, keyed by its position among the frames, so two
 frames of the same page count separately. Following a link starts the new
 page with fresh state; going back restores the old page's state.
 
-`--click X,Y` (repeatable) clicks before taking a screenshot:
-`cargo run -- pages/counter.sx --screenshot out.png --click 60,92`.
+### Text input
+
+```lisp
+(define-state name "")
+
+(input :value name :placeholder "Your name" :width 240
+       :on-input (fn (text) (set! name text))
+       :on-submit (fn (text) ...))
+```
+
+An input shows the `:value` the page gives it. Typing works out the new text
+and calls `:on-input` with it; Enter calls `:on-submit` with the current text.
+Without an `:on-input` handler, typing changes nothing, as in React's
+controlled inputs. The browser itself only tracks which input has focus and
+where the caret is.
+
+Click an input to focus it. Arrow keys, Home/End, Backspace and Delete edit;
+Tab moves to the next input; Escape, or clicking elsewhere, leaves it.
+
+### Screenshots of interactions
+
+`--click X,Y` and `--type TEXT` act on the page before the screenshot, in
+order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
+`--chrome` includes the toolbar, as the window shows it:
+
+```sh
+cargo run -- pages/inputs.sx --screenshot out.png --click 200,98 --type $'Ada\tWrite docs\n'
+cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
+```
 
 ## Code as data
 
@@ -110,6 +138,8 @@ gives `"(p :color \"red\" \"hi\")"`, and reading that back builds the same eleme
 
 - `(source "page.sx")` returns another page's code as a list of forms without
   running it. Comments aren't kept.
+- `(go "page.sx")`, called from an event handler, navigates as if a link to that
+  location were clicked, once the handler returns.
 - `(param "name")` reads a query parameter from the page's location, as in
   `view-source.sx?page=hello.sx`.
 - `(frame :src "page.sx" :scale 0.5)` embeds another page, which runs in its own
@@ -128,12 +158,15 @@ Locations starting with `browser:` are the browser's own pages, kept in `ui/`:
 - `browser:chrome?location=<site>` is the toolbar. The window always shows this
   page, which puts the site in a `(frame :height "fill")` below the toolbar. It
   reads the site's title out of the frame's document tree, and that becomes the
-  window title. Edit `ui/chrome.sx` to change the browser's interface.
+  window title. Its address bar is an `input` whose `:on-submit` calls `go`.
+  Edit `ui/chrome.sx` to change the browser's interface.
 - `browser:view-source?page=<site>` shows a page's source, and can show its own.
 - `browser:back` isn't a page: following a link to it goes back.
 
 Links on browser pages are relative to the working directory, and any link,
-whether in the toolbar or the site, navigates the site. Values inside a query,
+whether in the toolbar or the site, navigates the site. Ctrl+L puts the caret
+in the address bar. Going back restores the site's state, but not the
+toolbar's, so the address bar shows where you are. Values inside a query,
 like the site's own location, are percent-encoded.
 
 The chrome can frame itself, too:
@@ -142,7 +175,6 @@ The chrome can frame itself, too:
 ## Roadmap
 
 1. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
-2. **Text input**: an `input` element with keyboard focus and editing.
+2. **Text selection and the clipboard**, including in inputs.
 3. **Networking**: load `http://` pages, and add forward history.
-4. **An editable address bar** in `chrome.sx`, built from `input` and `define-state`.
-5. More of the language: macros, tail calls.
+4. More of the language: macros, tail calls.

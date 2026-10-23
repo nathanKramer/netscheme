@@ -42,11 +42,27 @@ pub struct PageContext {
 #[derive(Default)]
 pub struct StateStore {
     pages: RefCell<HashMap<String, Rc<PageState>>>,
+    /// A navigation requested with `go`, as an href and the location of the
+    /// page that asked, for the browser to carry out.
+    navigation: RefCell<Option<(String, String)>>,
 }
 
 impl StateStore {
     pub fn page(&self, key: &str) -> Rc<PageState> {
         self.pages.borrow_mut().entry(key.into()).or_default().clone()
+    }
+
+    /// Drops the state of the page at `key`, so it starts afresh next time.
+    pub fn forget(&self, key: &str) {
+        self.pages.borrow_mut().remove(key);
+    }
+
+    pub fn request_navigation(&self, href: &str, from: &str) {
+        *self.navigation.borrow_mut() = Some((href.into(), from.into()));
+    }
+
+    pub fn take_navigation(&self) -> Option<(String, String)> {
+        self.navigation.borrow_mut().take()
     }
 }
 
@@ -101,6 +117,9 @@ pub fn read_source(location: &str) -> Result<String, String> {
         Some(name) => Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(format!("{name}.sx")),
         None => file.into(),
     };
+    if file.contains("://") {
+        return Err(format!("only local pages work so far, so this browser can't open {file}"));
+    }
     fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))
 }
 
@@ -109,21 +128,18 @@ const BROWSER: &str = "browser:";
 /// Resolves `href` against the location of the page it appears on. Links
 /// starting with `/`, and every link on a browser page, are relative to the
 /// working directory instead.
-pub fn resolve(current: &str, href: &str) -> Result<String, String> {
-    if href.contains("://") {
-        return Err(format!("only local links work so far: {href}"));
-    }
-    if href.starts_with(BROWSER) {
-        return Ok(href.into());
+pub fn resolve(current: &str, href: &str) -> String {
+    if href.starts_with(BROWSER) || href.contains("://") {
+        return href.into();
     }
     if let Some(rooted) = href.strip_prefix('/') {
-        return Ok(rooted.into());
+        return rooted.into();
     }
     if current.starts_with(BROWSER) {
-        return Ok(href.into());
+        return href.into();
     }
     let file = current.split_once('?').map_or(current, |(file, _)| file);
-    Ok(Path::new(file).parent().unwrap_or(Path::new("")).join(href).to_string_lossy().into_owned())
+    Path::new(file).parent().unwrap_or(Path::new("")).join(href).to_string_lossy().into_owned()
 }
 
 /// Percent-encodes `s` so it can be a query parameter's value.
@@ -177,14 +193,9 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     }
     let index = parent.frames_created.replace(parent.frames_created.get() + 1);
     let state_key = format!("{}/{index}", parent.state_key);
-    let page = match resolve(&parent.location, &src) {
-        Ok(location) => {
-            let page = open_nested(&location, parent.depth + 1, scale, state_key, &parent.store);
-            frame.attrs.push(("location".into(), Value::Str(location.into())));
-            page
-        }
-        Err(e) => error_page(&e),
-    };
+    let location = resolve(&parent.location, &src);
+    let page = open_nested(&location, parent.depth + 1, scale, state_key, &parent.store);
+    frame.attrs.push(("location".into(), Value::Str(location.into())));
     frame.children = vec![Node::Element(page)];
 }
 
@@ -210,13 +221,14 @@ mod tests {
 
     #[test]
     fn links_resolve_relative_to_the_current_page() {
-        assert_eq!(resolve("pages/hello.sx", "about.sx"), Ok("pages/about.sx".into()));
-        assert_eq!(resolve("hello.sx", "sub/a.sx"), Ok("sub/a.sx".into()));
-        assert_eq!(resolve("pages/v.sx?page=sub/x.sx", "a.sx"), Ok("pages/a.sx".into()));
-        assert!(resolve("pages/hello.sx", "https://example.com").is_err());
-        assert_eq!(resolve("pages/hello.sx", "/x.sx"), Ok("x.sx".into()));
-        assert_eq!(resolve("pages/hello.sx", "browser:chrome"), Ok("browser:chrome".into()));
-        assert_eq!(resolve("browser:view-source?page=a", "pages/hello.sx"), Ok("pages/hello.sx".into()));
+        assert_eq!(resolve("pages/hello.sx", "about.sx"), "pages/about.sx");
+        assert_eq!(resolve("hello.sx", "sub/a.sx"), "sub/a.sx");
+        assert_eq!(resolve("pages/v.sx?page=sub/x.sx", "a.sx"), "pages/a.sx");
+        assert_eq!(resolve("pages/hello.sx", "https://example.com"), "https://example.com");
+        assert!(read_source("https://example.com").unwrap_err().contains("only local pages"));
+        assert_eq!(resolve("pages/hello.sx", "/x.sx"), "x.sx");
+        assert_eq!(resolve("pages/hello.sx", "browser:chrome"), "browser:chrome");
+        assert_eq!(resolve("browser:view-source?page=a", "pages/hello.sx"), "pages/hello.sx");
     }
 
     #[test]

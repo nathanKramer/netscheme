@@ -60,6 +60,8 @@ mod tests {
         assert_eq!(eval("(map (fn (x) (* x x)) (filter (fn (x) (> x 1)) '(1 2 3)))"), "(4 9)");
         assert_eq!(eval("(list (first '(1 2)) (rest '(1 2)) (cons 0 '(1)) (nth '(a b) 1) (empty? '()))"), "(1 (2) (0 1) b true)");
         assert_eq!(eval(r#"(repr '(a "b" :c 1))"#), r#""(a \"b\" :c 1)""#);
+        assert_eq!(eval("(append '(1) '() nil '(2 3))"), "(1 2 3)");
+        assert_eq!(eval(r#"(list (empty? "") (empty? "a"))"#), "(true false)");
     }
 
     #[test]

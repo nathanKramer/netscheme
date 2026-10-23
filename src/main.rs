@@ -1,3 +1,4 @@
+mod browser;
 mod dom;
 mod layout;
 mod loader;
@@ -8,17 +9,17 @@ mod window;
 
 use std::{fs, process::ExitCode};
 
-use layout::Action;
-use paint::Renderer;
+use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--click X,Y]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--click X,Y | --type TEXT]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
     let mut screenshot = None;
     let (mut width, mut height) = (900, 700);
     let mut scroll = 0.0;
-    let mut clicks = Vec::new();
+    let mut steps = Vec::new();
+    let mut chrome = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -30,9 +31,14 @@ fn main() -> ExitCode {
             "--scroll" => value().and_then(|v| v.parse().map(|n| scroll = n).map_err(|_| USAGE)),
             "--click" => value().and_then(|v| {
                 let (x, y) = v.split_once(',').ok_or(USAGE)?;
-                clicks.push((x.parse::<f32>().map_err(|_| USAGE)?, y.parse::<f32>().map_err(|_| USAGE)?));
+                steps.push(Step::Click(x.parse().map_err(|_| USAGE)?, y.parse().map_err(|_| USAGE)?));
                 Ok(())
             }),
+            "--type" => value().map(|v| steps.push(Step::Type(v))),
+            "--chrome" => {
+                chrome = true;
+                Ok(())
+            }
             _ if !arg.starts_with('-') => {
                 location = arg;
                 Ok(())
@@ -45,12 +51,10 @@ fn main() -> ExitCode {
         }
     }
 
-    let mut renderer = Renderer::new();
-
-    // Screenshots show just the page at `location`; the window wraps it in
-    // the browser chrome.
+    // Screenshots show just the page at `location` unless asked for the
+    // chrome; the window always shows it.
     match screenshot {
-        Some(out) => match write_screenshot(&mut renderer, &location, width, height, scroll, &clicks, &out) {
+        Some(out) => match write_screenshot(Browser::new(location, chrome), width, height, scroll, &steps, &out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("screenshot failed: {e}");
@@ -58,37 +62,51 @@ fn main() -> ExitCode {
             }
         },
         None => {
-            window::run(location, renderer);
+            window::run(Browser::new(location, true));
             ExitCode::SUCCESS
         }
     }
 }
 
-/// Renders `location` to a PNG. Each click runs the handler at that point,
-/// as clicking in the window would, before the final render.
-#[allow(clippy::too_many_arguments)]
-fn write_screenshot(
-    renderer: &mut Renderer,
-    location: &str,
-    w: usize,
-    h: usize,
-    scroll: f32,
-    clicks: &[(f32, f32)],
-    out: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Default::default();
-    let scroll = paint::Scroll { page: scroll, ..Default::default() };
+/// Something to do to the page before taking a screenshot.
+enum Step {
+    Click(f32, f32),
+    /// Each character is a key press; `\n` is Enter, `\t` is Tab and `\x08`
+    /// (`\b` in a shell's `$'...'`) is Backspace.
+    Type(String),
+}
+
+/// Renders the browser's page to a PNG, after carrying out `steps` as the
+/// window would.
+fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps: &[Step], out: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u32; w * h];
-    let mut page = loader::open(location, &state);
-    for &(x, y) in clicks {
-        let links = renderer.render(&page, &mut buf, w, h, 1.0, &scroll).links;
-        match links.iter().find(|link| link.contains(x, y)).map(|link| &link.action) {
-            Some(Action::Run(handler)) => lisp::apply(handler, &[])?,
-            _ => return Err(format!("nothing to click at {x},{y}").into()),
+    browser.set_scroll(scroll);
+    let keys = |text: &str| -> Vec<Key> {
+        let key = |c| match c {
+            '\n' => Key::Enter,
+            '\t' => Key::Tab,
+            '\x08' => Key::Backspace,
+            c => Key::Text(String::from(c)),
         };
-        page = loader::open(location, &state);
+        text.chars().map(key).collect()
+    };
+    for step in steps {
+        match step {
+            Step::Click(x, y) => {
+                browser.render(&mut buf, w, h, 1.0);
+                if !browser.click(*x, *y) {
+                    return Err(format!("nothing to click at {x},{y}").into());
+                }
+            }
+            Step::Type(text) => {
+                for key in keys(text) {
+                    browser.render(&mut buf, w, h, 1.0);
+                    browser.key(key, false, (0.0, 0.0));
+                }
+            }
+        }
     }
-    renderer.render(&page, &mut buf, w, h, 1.0, &scroll);
+    browser.render(&mut buf, w, h, 1.0);
     let rgb: Vec<u8> = buf.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(fs::File::create(out)?), w as u32, h as u32);
     encoder.set_color(png::ColorType::Rgb);

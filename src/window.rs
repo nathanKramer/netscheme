@@ -1,71 +1,27 @@
-//! The browser window. What it shows is always the page
-//! `browser:chrome?location=<site>`: the toolbar is a page too, and it puts
-//! the site in a frame.
+//! The browser window: turns window events into calls on a `Browser`.
 
 use std::{num::NonZeroU32, rc::Rc};
 
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, ModifiersState, NamedKey},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{Key as WinitKey, ModifiersState, NamedKey},
     window::{CursorIcon, Window, WindowId},
 };
 
-use crate::{
-    dom::Element,
-    layout::{Action, Link, Scroller},
-    lisp::{self, Value},
-    loader::{self, StateStore},
-    paint::{Renderer, Scroll},
-};
+use crate::browser::{Browser, Hover, Key, LINE_HEIGHT};
 
-/// Logical pixels scrolled per arrow key press or mouse wheel line.
-const LINE_HEIGHT: f32 = 40.0;
-/// Following a link to this location goes back instead.
-const BACK: &str = "browser:back";
-
-pub fn run(site: String, renderer: Renderer) {
+pub fn run(browser: Browser) {
     let event_loop = EventLoop::new().expect("create event loop");
-    let page_state = Rc::new(StateStore::default());
-    let mut app = App {
-        page: loader::open(&chrome_location(&site, false), &page_state),
-        site,
-        page_state,
-        history: Vec::new(),
-        scroll: Scroll::default(),
-        renderer,
-        links: Vec::new(),
-        scrollers: Vec::new(),
-        cursor: (0.0, 0.0),
-        modifiers: ModifiersState::empty(),
-        state: None,
-    };
+    let mut app = App { browser, pointer: (0.0, 0.0), modifiers: ModifiersState::empty(), state: None };
     event_loop.run_app(&mut app).expect("run event loop");
 }
 
-fn chrome_location(site: &str, can_go_back: bool) -> String {
-    let back = if can_go_back { "&back=1" } else { "" };
-    format!("browser:chrome?location={}{back}", loader::encode(site))
-}
-
 struct App {
-    /// Location of the site being browsed.
-    site: String,
-    /// The chrome page, with the site framed inside it.
-    page: Rc<Element>,
-    /// `define-state` variables of the chrome and the site.
-    page_state: Rc<StateStore>,
-    /// Sites to return to with "back", with their scroll offsets and state, most recent last.
-    history: Vec<(String, Scroll, Rc<StateStore>)>,
-    scroll: Scroll,
-    renderer: Renderer,
-    /// Link hit boxes from the last render.
-    links: Vec<Link>,
-    /// Scrollable frames from the last render.
-    scrollers: Vec<Scroller>,
-    cursor: (f32, f32),
+    browser: Browser,
+    pointer: (f32, f32),
     modifiers: ModifiersState,
     state: Option<WindowState>,
 }
@@ -77,120 +33,52 @@ struct WindowState {
 }
 
 impl App {
-    fn title(&self) -> String {
-        match self.page.attr("title") {
-            Some(Value::Str(t)) => format!("{t} — Toy Browser"),
-            _ => "Toy Browser".into(),
-        }
-    }
-
-    fn link_under_cursor(&self) -> Option<&Link> {
-        self.links.iter().find(|link| link.contains(self.cursor.0, self.cursor.1))
-    }
-
-    /// The innermost scrollable frame under the cursor.
-    fn scroller_under_cursor(&self) -> Option<&Scroller> {
-        let area = |s: &&Scroller| (s.area.x1 - s.area.x0) * (s.area.y1 - s.area.y0);
-        self.scrollers
-            .iter()
-            .filter(|s| s.area.contains(self.cursor.0, self.cursor.1))
-            .min_by(|a, b| area(a).total_cmp(&area(b)))
-    }
-
-    /// Links on the chrome, and in the site framed inside it, all navigate the site.
-    fn follow(&mut self, href: &str, base: Option<&str>) {
-        if href == BACK {
-            return self.back();
-        }
-        let current = chrome_location(&self.site, !self.history.is_empty());
-        match loader::resolve(base.unwrap_or(&current), href) {
-            Ok(site) => {
-                let previous = (
-                    std::mem::replace(&mut self.site, site),
-                    std::mem::take(&mut self.scroll),
-                    std::mem::take(&mut self.page_state),
-                );
-                self.history.push(previous);
-                self.reload();
-            }
-            Err(e) => {
-                self.page = loader::error_page(&e);
-                self.redraw();
-            }
-        }
-    }
-
-    fn back(&mut self) {
-        if let Some((site, scroll, page_state)) = self.history.pop() {
-            (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
-            self.reload();
-        }
-    }
-
-    /// Runs a click handler, then runs the page again so it shows any state
-    /// the handler changed.
-    fn run(&mut self, handler: &Value) {
-        match lisp::apply(handler, &[]) {
-            Ok(_) => self.reload(),
-            Err(e) => {
-                self.page = loader::error_page(&format!("in a click handler: {e}"));
-                self.redraw();
-            }
-        }
-    }
-
-    /// Runs the page, keeping its state and scroll offsets.
-    fn reload(&mut self) {
-        self.page = loader::open(&chrome_location(&self.site, !self.history.is_empty()), &self.page_state);
-        self.links.clear();
-        self.scrollers.clear();
-        self.redraw();
-    }
-
     fn redraw(&self) {
         if let Some(state) = &self.state {
-            state.window.set_title(&self.title());
+            state.window.set_title(&self.browser.title());
             state.window.request_redraw();
         }
     }
 
-    /// Scrolls the frame under the cursor, or the page if there's none, by
-    /// `dy` physical pixels; positive is down. The renderer clamps it.
-    fn scroll_by(&mut self, dy: f32) {
-        match self.scroller_under_cursor().map(|s| s.id) {
-            Some(id) => *self.scroll.frames.entry(id).or_default() += dy,
-            None => self.scroll.page += dy,
-        }
-        self.redraw();
-    }
-
     fn update_cursor(&self) {
         if let Some(state) = &self.state {
-            let icon = if self.link_under_cursor().is_some() { CursorIcon::Pointer } else { CursorIcon::Default };
-            state.window.set_cursor(icon);
+            state.window.set_cursor(match self.browser.hover(self.pointer.0, self.pointer.1) {
+                Hover::Nothing => CursorIcon::Default,
+                Hover::Link => CursorIcon::Pointer,
+                Hover::Text => CursorIcon::Text,
+            });
         }
     }
 
-    /// Scrolling for arrow keys, Page Up/Down, Space, and Home/End, sized to
-    /// the frame under the cursor.
-    fn key_scroll(&self, key: &Key) -> Option<f32> {
-        let window = &self.state.as_ref()?.window;
-        let scale = window.scale_factor() as f32;
-        let height = match self.scroller_under_cursor() {
-            Some(s) => s.area.y1 - s.area.y0,
-            None => window.inner_size().height as f32,
-        };
-        let page = (height - 40.0 * scale).max(height / 2.0);
-        Some(match key {
-            Key::Named(NamedKey::ArrowDown) => LINE_HEIGHT * scale,
-            Key::Named(NamedKey::ArrowUp) => -LINE_HEIGHT * scale,
-            Key::Named(NamedKey::PageDown | NamedKey::Space) if self.modifiers.shift_key() => -page,
-            Key::Named(NamedKey::PageDown | NamedKey::Space) => page,
-            Key::Named(NamedKey::PageUp) => -page,
-            // Far enough to reach either end; the renderer clamps it.
-            Key::Named(NamedKey::Home) => -1e9,
-            Key::Named(NamedKey::End) => 1e9,
-            _ => return None,
+    fn key(&self, event: &KeyEvent) -> Option<Key> {
+        let m = self.modifiers;
+        if m.alt_key() && event.logical_key == WinitKey::Named(NamedKey::ArrowLeft) {
+            return Some(Key::Back);
+        }
+        Some(match &event.logical_key {
+            WinitKey::Named(NamedKey::ArrowLeft) => Key::Left,
+            WinitKey::Named(NamedKey::ArrowRight) => Key::Right,
+            WinitKey::Named(NamedKey::ArrowUp) => Key::Up,
+            WinitKey::Named(NamedKey::ArrowDown) => Key::Down,
+            WinitKey::Named(NamedKey::Home) => Key::Home,
+            WinitKey::Named(NamedKey::End) => Key::End,
+            WinitKey::Named(NamedKey::PageUp) => Key::PageUp,
+            WinitKey::Named(NamedKey::PageDown) => Key::PageDown,
+            WinitKey::Named(NamedKey::Backspace) => Key::Backspace,
+            WinitKey::Named(NamedKey::Delete) => Key::Delete,
+            WinitKey::Named(NamedKey::Enter) => Key::Enter,
+            WinitKey::Named(NamedKey::Escape) => Key::Escape,
+            WinitKey::Named(NamedKey::Tab) => Key::Tab,
+            WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("l") => Key::FocusAddressBar,
+            // Other shortcuts aren't typing.
+            _ if m.control_key() || m.alt_key() || m.super_key() => return None,
+            _ => {
+                let text = event.text.as_ref()?;
+                if text.is_empty() || text.chars().any(char::is_control) {
+                    return None;
+                }
+                Key::Text(text.to_string())
+            }
         })
     }
 }
@@ -200,11 +88,25 @@ impl ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(self.title()).with_inner_size(LogicalSize::new(900.0, 700.0));
+        let attrs = Window::default_attributes().with_title(self.browser.title()).with_inner_size(LogicalSize::new(900.0, 700.0));
         let window = Rc::new(event_loop.create_window(attrs).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
         self.state = Some(WindowState { window, _context: context, surface });
+    }
+
+    /// Wakes up when the caret should blink.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if let StartCause::ResumeTimeReached { .. } = cause {
+            self.redraw();
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(match self.browser.next_blink() {
+            Some(time) => ControlFlow::WaitUntil(time),
+            None => ControlFlow::Wait,
+        });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -220,15 +122,13 @@ impl ApplicationHandler for App {
                 state.surface.resize(w, h).expect("resize surface");
                 let mut buffer = state.surface.buffer_mut().expect("surface buffer");
                 let scale = state.window.scale_factor() as f32;
-                let (w, h) = (size.width as usize, size.height as usize);
-                let rendered = self.renderer.render(&self.page, &mut buffer, w, h, scale, &self.scroll);
+                self.browser.render(&mut buffer, size.width as usize, size.height as usize, scale);
                 buffer.present().expect("present buffer");
-                (self.links, self.scrollers, self.scroll) = (rendered.links, rendered.scrollers, rendered.scroll);
-                // Scrolling moves links under a still cursor.
+                // Scrolling and re-running the page move things under a still pointer.
                 self.update_cursor();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32, position.y as f32);
+                self.pointer = (position.x as f32, position.y as f32);
                 self.update_cursor();
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -238,23 +138,24 @@ impl ApplicationHandler for App {
                     // Trackpads report exact physical pixels.
                     MouseScrollDelta::PixelDelta(position) => -position.y as f32,
                 };
-                self.scroll_by(dy);
+                self.browser.scroll_by(self.pointer, dy);
+                self.redraw();
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button, .. } => match button {
-                MouseButton::Left => match self.link_under_cursor().map(|link| link.action.clone()) {
-                    Some(Action::Go { href, base }) => self.follow(&href, base.as_deref()),
-                    Some(Action::Run(handler)) => self.run(&handler),
-                    None => {}
-                },
-                MouseButton::Back => self.back(),
-                _ => {}
-            },
+            WindowEvent::MouseInput { state: ElementState::Released, button, .. } => {
+                match button {
+                    MouseButton::Left => {
+                        self.browser.click(self.pointer.0, self.pointer.1);
+                    }
+                    MouseButton::Back => self.browser.back(),
+                    _ => return,
+                }
+                self.redraw();
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.modifiers.alt_key() && event.logical_key == Key::Named(NamedKey::ArrowLeft) {
-                    self.back();
-                } else if let Some(dy) = self.key_scroll(&event.logical_key) {
-                    self.scroll_by(dy);
+                if let Some(key) = self.key(&event) {
+                    self.browser.key(key, self.modifiers.shift_key(), self.pointer);
+                    self.redraw();
                 }
             }
             _ => {}

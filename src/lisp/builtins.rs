@@ -52,7 +52,17 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         [Value::Str(s)] => Ok(Value::Num(s.chars().count() as f64)),
         _ => Ok(Value::Num(list_arg("length", args)?.len() as f64)),
     });
-    def(&env, "empty?", |args| Ok(Value::Bool(list_arg("empty?", args)?.is_empty())));
+    def(&env, "empty?", |args| match args {
+        [Value::Str(s)] => Ok(Value::Bool(s.is_empty())),
+        _ => Ok(Value::Bool(list_arg("empty?", args)?.is_empty())),
+    });
+    def(&env, "append", |args| {
+        let mut out = Vec::new();
+        for arg in args {
+            out.extend(list_arg("append", std::slice::from_ref(arg))?.iter().cloned());
+        }
+        Ok(Value::list(out))
+    });
     def(&env, "map", |args| match args {
         [f, Value::List(xs)] => Ok(Value::list(xs.iter().map(|x| apply(f, std::slice::from_ref(x))).collect::<Result<_, _>>()?)),
         [_, Value::Nil] => Ok(Value::list(vec![])),
@@ -121,8 +131,16 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     let c = ctx.clone();
     def(&env, "source", move |args| {
         let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
-        let text = loader::read_source(&loader::resolve(&c.location, href)?).map_err(|e| format!("source: {e}"))?;
+        let text = loader::read_source(&loader::resolve(&c.location, href)).map_err(|e| format!("source: {e}"))?;
         Ok(Value::list(reader::read_all(&text)?))
+    });
+    // Asks the browser to go to a location, as if a link to it were clicked,
+    // once the current event handler finishes.
+    let c = ctx.clone();
+    def(&env, "go", move |args| {
+        let [Value::Str(href)] = args else { return Err("go: expected a location".into()) };
+        c.store.request_navigation(href, &c.location);
+        Ok(Value::Nil)
     });
     // A query parameter from the page's location: `page.sx?name=value`.
     let c = ctx.clone();
