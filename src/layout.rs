@@ -77,6 +77,50 @@ impl InputBox {
     }
 }
 
+/// A scrollbar, for the page or a frame whose content is taller than the
+/// area it's shown in. It's drawn over the right edge of that area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scrollbar {
+    /// Where the thumb can move: pressing here scrolls.
+    pub track: Clip,
+    pub thumb: Clip,
+    pub max_scroll: f32,
+}
+
+impl Scrollbar {
+    /// The scrollbar for content `content_height` tall shown in `area` and
+    /// scrolled by `scroll`, or `None` if it all fits.
+    pub fn new(area: Clip, content_height: f32, scroll: f32, scale: f32) -> Option<Scrollbar> {
+        let view = area.y1 - area.y0;
+        let max_scroll = content_height - view;
+        if max_scroll < 1.0 || view <= 0.0 {
+            return None;
+        }
+        let (width, inset) = (8.0 * scale, 2.0 * scale);
+        let track = Clip { x0: area.x1 - inset - width, y0: area.y0 + inset, x1: area.x1 - inset, y1: area.y1 - inset };
+        let track_h = track.y1 - track.y0;
+        // In proportion to how much of the content shows, but never too small to grab.
+        let thumb_h = (track_h * view / content_height).max(24.0 * scale).min(track_h);
+        let top = track.y0 + (track_h - thumb_h) * (scroll / max_scroll).clamp(0.0, 1.0);
+        Some(Scrollbar { track, thumb: Clip { y0: top, y1: top + thumb_h, ..track }, max_scroll })
+    }
+
+    /// The scroll offset that puts the top of the thumb at `top`.
+    pub fn scroll_for(&self, top: f32) -> f32 {
+        let range = (self.track.y1 - self.track.y0) - (self.thumb.y1 - self.thumb.y0);
+        if range <= 0.0 {
+            return 0.0;
+        }
+        ((top - self.track.y0) / range * self.max_scroll).clamp(0.0, self.max_scroll)
+    }
+
+    /// Moved down by `dy`, as when the page around it scrolls.
+    pub fn shifted(self, dy: f32) -> Scrollbar {
+        let shift = |c: Clip| Clip { y0: c.y0 + dy, y1: c.y1 + dy, ..c };
+        Scrollbar { track: shift(self.track), thumb: shift(self.thumb), ..self }
+    }
+}
+
 /// A frame with a fixed height, which scrolls its page independently.
 pub struct Scroller {
     /// Identifies the frame across renders of the same page: frames with a
@@ -86,6 +130,7 @@ pub struct Scroller {
     pub area: Clip,
     /// The scroll offset used, after clamping.
     pub scroll: f32,
+    pub bar: Option<Scrollbar>,
 }
 
 /// A clickable region: an `(a :href ...)`, or any element with `:on-click`.
@@ -388,8 +433,12 @@ impl<'a> Layout<'a> {
         let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
         self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background });
         self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
+        let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
+        if let Some(bar) = bar {
+            self.items.push(DisplayItem::Rect { x: bar.thumb.x0, y: bar.thumb.y0, w: bar.thumb.x1 - bar.thumb.x0, h: bar.thumb.y1 - bar.thumb.y0, color: self.palette.scrollbar });
+        }
         self.items.push(DisplayItem::Clip(outer));
-        self.scrollers.push(Scroller { id, area: self.clip, scroll });
+        self.scrollers.push(Scroller { id, area: self.clip, scroll, bar });
         self.clip = outer;
     }
 

@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     dom::Element,
-    layout::{Action, Focus, InputBox, Link, Scroller},
+    layout::{Action, Focus, InputBox, Link, Scrollbar, Scroller},
     lisp::{self, Value},
     loader::{self, Host, StateStore},
     paint::{Renderer, Scroll, View},
@@ -57,6 +57,13 @@ pub enum Hover {
     Text,
 }
 
+/// Something that scrolls: the page, or a frame, by its `Scroller::id`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Scrolling {
+    Page,
+    Frame(usize),
+}
+
 pub struct Browser {
     /// Location of the site being browsed.
     site: String,
@@ -78,6 +85,8 @@ pub struct Browser {
     /// Whether the mouse button went down in the focused input and is still
     /// down, so moving the mouse selects text.
     dragging: bool,
+    /// A scrollbar being dragged, and how far below the top of its thumb it was grabbed.
+    scroll_drag: Option<(Scrolling, f32)>,
     /// When the caret last moved; it blinks starting from then.
     caret_moved: Instant,
     renderer: Renderer,
@@ -85,6 +94,7 @@ pub struct Browser {
     links: Vec<Link>,
     scrollers: Vec<Scroller>,
     inputs: Vec<InputBox>,
+    bar: Option<Scrollbar>,
     /// Height and scale of the window.
     viewport: (f32, f32),
 }
@@ -102,11 +112,13 @@ impl Browser {
             focus: None,
             error: None,
             dragging: false,
+            scroll_drag: None,
             caret_moved: Instant::now(),
             renderer: Renderer::new(),
             links: Vec::new(),
             scrollers: Vec::new(),
             inputs: Vec::new(),
+            bar: None,
             viewport: (0.0, 1.0),
         };
         browser.reload();
@@ -141,6 +153,7 @@ impl Browser {
         let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark: self.host.dark_mode.get() };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
+        self.bar = rendered.bar;
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -181,6 +194,34 @@ impl Browser {
         self.scrollers.iter().filter(|s| s.area.contains(x, y)).min_by(|a, b| area(a).total_cmp(&area(b)))
     }
 
+    /// The scrollbar at a point: the innermost frame's, or else the page's.
+    fn scrollbar_at(&self, x: f32, y: f32) -> Option<(Scrolling, Scrollbar)> {
+        let area = |s: &&Scroller| (s.area.x1 - s.area.x0) * (s.area.y1 - s.area.y0);
+        let frame = self
+            .scrollers
+            .iter()
+            .filter(|s| s.area.contains(x, y) && s.bar.is_some_and(|bar| bar.track.contains(x, y)))
+            .min_by(|a, b| area(a).total_cmp(&area(b)));
+        match frame {
+            Some(s) => Some((Scrolling::Frame(s.id), s.bar?)),
+            None => self.bar.filter(|bar| bar.track.contains(x, y)).map(|bar| (Scrolling::Page, bar)),
+        }
+    }
+
+    /// Moves a dragged scrollbar's thumb so that the point it was grabbed at is at `y`.
+    fn drag_scrollbar(&mut self, (target, grab): (Scrolling, f32), y: f32) {
+        let bar = match target {
+            Scrolling::Page => self.bar,
+            Scrolling::Frame(id) => self.scrollers.iter().find(|s| s.id == id).and_then(|s| s.bar),
+        };
+        let Some(bar) = bar else { return };
+        let scroll = bar.scroll_for(y - grab);
+        match target {
+            Scrolling::Page => self.scroll.page = scroll,
+            Scrolling::Frame(id) => _ = self.scroll.frames.insert(id, scroll),
+        }
+    }
+
     /// Presses and releases the mouse button at a point. Returns whether
     /// there was anything there to click.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
@@ -192,6 +233,14 @@ impl Browser {
     /// Inputs respond now, so that dragging can select; links wait for the
     /// release. Returns whether the press was on an input.
     pub fn press(&mut self, x: f32, y: f32, clicks: u32) -> bool {
+        // On a scrollbar, the thumb can be dragged. Pressing elsewhere on its
+        // track jumps there, with the thumb centred on the pointer.
+        if let Some((target, bar)) = self.scrollbar_at(x, y) {
+            let grab = if bar.thumb.contains(x, y) { y - bar.thumb.y0 } else { (bar.thumb.y1 - bar.thumb.y0) / 2.0 };
+            self.scroll_drag = Some((target, grab));
+            self.drag_scrollbar((target, grab), y);
+            return false;
+        }
         let Some(input) = self.input_at(x, y) else {
             self.focus = None;
             return false;
@@ -212,8 +261,12 @@ impl Browser {
         true
     }
 
-    /// The mouse moved to a point. Returns whether that changed the selection.
-    pub fn drag_to(&mut self, x: f32) -> bool {
+    /// The mouse moved to a point. Returns whether that scrolled or changed the selection.
+    pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
+        if let Some(drag) = self.scroll_drag {
+            self.drag_scrollbar(drag, y);
+            return true;
+        }
         let Some(focus) = self.focus.filter(|_| self.dragging) else { return false };
         let Some(input) = self.inputs.iter().find(|input| input.id == focus.id) else { return false };
         let cursor = input.caret_at(x);
@@ -227,6 +280,9 @@ impl Browser {
     /// The mouse button came up: follows a link or runs a click handler,
     /// unless the press was in an input. Returns whether anything was clicked.
     pub fn release(&mut self, x: f32, y: f32) -> bool {
+        if self.scroll_drag.take().is_some() {
+            return true;
+        }
         if std::mem::take(&mut self.dragging) || self.input_at(x, y).is_some() {
             return true;
         }
@@ -646,17 +702,75 @@ mod tests {
         let xs = browser.inputs[0].caret_xs.clone();
 
         browser.press(xs[1], y, 1);
-        assert!(browser.drag_to(xs[3]));
+        assert!(browser.drag_to(xs[3], y));
         assert!(browser.release(xs[3], y));
         assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((1, 3)));
 
         browser.press(xs[6], y, 1);
         browser.press(xs[6], y, 2);
-        assert!(!browser.drag_to(xs[0]), "only a single click starts a drag");
+        assert!(!browser.drag_to(xs[0], y), "only a single click starts a drag");
         assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((4, 12)), "double-click selects a word");
 
         browser.press(xs[6], y, 3);
         assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((0, 12)), "triple-click selects everything");
+    }
+
+    /// A page of 200 lines, far taller than the 600px test window, in a
+    /// folder of its own, next to a page that frames it in a 300px frame.
+    /// Returns the folder.
+    fn tall_pages(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("toy-browser-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tall.sx"), r#"(page (map (fn (i) (p (a :href "elsewhere.sx" "line " i))) (range 200)))"#).unwrap();
+        std::fs::write(dir.join("framed.sx"), r#"(page (p "Above") (frame :src "tall.sx" :height 300))"#).unwrap();
+        dir
+    }
+
+    #[test]
+    fn dragging_the_page_scrollbar() {
+        let dir = tall_pages("scrollbar");
+        let mut browser = Browser::new(dir.join("tall.sx").to_string_lossy().into(), false);
+        render(&mut browser);
+        let bar = browser.bar.expect("a scrollbar");
+        assert!(bar.thumb.x1 <= 900.0 && bar.thumb.x0 > 880.0, "at the right edge: {bar:?}");
+        assert_eq!(bar.thumb.y0, bar.track.y0, "at the top");
+
+        // Drag the thumb past the bottom.
+        let x = (bar.thumb.x0 + bar.thumb.x1) / 2.0;
+        assert!(!browser.press(x, bar.thumb.y0 + 5.0, 1));
+        assert!(browser.drag_to(x, 2000.0));
+        assert!(browser.release(x, 2000.0), "the release ends the drag");
+        render(&mut browser);
+        assert!(browser.history.is_empty(), "rather than following a link under the scrollbar");
+        assert_eq!(browser.scroll.page, bar.max_scroll.round(), "scrolled to the end");
+        assert_eq!(browser.bar.unwrap().thumb.y1, bar.track.y1, "with the thumb at the bottom");
+
+        // Pressing the track jumps to that point.
+        browser.click(x, (bar.track.y0 + bar.track.y1) / 2.0);
+        render(&mut browser);
+        let middle = bar.max_scroll / 2.0;
+        assert!((browser.scroll.page - middle).abs() < 2.0, "{} is about {middle}", browser.scroll.page);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn frames_have_scrollbars_too() {
+        let dir = tall_pages("frame-scrollbar");
+        let mut browser = Browser::new(dir.join("framed.sx").to_string_lossy().into(), false);
+        render(&mut browser);
+        assert_eq!(browser.bar, None, "the outer page fits, so it has none");
+        let frame = &browser.scrollers[0];
+        let (id, bar) = (frame.id, frame.bar.expect("the frame's scrollbar"));
+        assert!(bar.track.y0 > frame.area.y0 && bar.track.y1 < frame.area.y1, "inside the frame");
+        let x = (bar.thumb.x0 + bar.thumb.x1) / 2.0;
+        browser.press(x, bar.thumb.y0 + 1.0, 1);
+        browser.drag_to(x, bar.thumb.y0 + 101.0);
+        browser.release(x, bar.thumb.y0 + 101.0);
+        render(&mut browser);
+        assert_eq!(browser.scroll.page, 0.0);
+        assert_eq!(browser.scroll.frames[&id], bar.scroll_for(bar.thumb.y0 + 100.0).round());
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -6,7 +6,7 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
-    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scroller},
+    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scrollbar, Scroller},
     style::{Color, Face, Palette, Style},
 };
 
@@ -71,6 +71,8 @@ pub struct Rendered {
     pub inputs: Vec<InputBox>,
     /// The offsets actually used, after clamping.
     pub scroll: Scroll,
+    /// The page's own scrollbar, if it's taller than the window.
+    pub bar: Option<Scrollbar>,
 }
 
 pub struct Renderer {
@@ -112,6 +114,10 @@ impl Renderer {
                 DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
             }
         }
+        let bar = Scrollbar::new(screen, content_height, dy, view.scale);
+        if let Some(bar) = bar {
+            fill_rect(buf, w, bar.thumb, palette.scrollbar);
+        }
         for link in &mut links {
             link.y -= dy;
         }
@@ -119,8 +125,11 @@ impl Renderer {
             area.y0 -= dy;
             area.y1 -= dy;
         }
+        for scroller in &mut scrollers {
+            scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
+        }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames } }
+        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames }, bar }
     }
 
     #[allow(clippy::too_many_arguments)]

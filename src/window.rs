@@ -179,7 +179,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x as f32, position.y as f32);
                 self.update_cursor();
-                if self.browser.drag_to(self.pointer.0) {
+                if self.browser.drag_to(self.pointer.0, self.pointer.1) {
                     self.redraw();
                 }
             }

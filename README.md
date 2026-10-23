@@ -106,6 +106,8 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 Scroll with a trackpad, mouse wheel, arrow keys, Page Up/Down, Space and
 Shift+Space, or Home/End. This scrolls the frame under the cursor, if it has a
 fixed height, and otherwise the page. Going back restores where you'd scrolled to.
+Anything taller than the space it's shown in gets a scrollbar on its right
+edge: drag the thumb, or press the track to jump to that point.
 
 ## Styles are values
 
