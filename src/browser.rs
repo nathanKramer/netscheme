@@ -189,8 +189,11 @@ impl Browser {
     fn render_once(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
         let caret_visible = (self.caret_moved.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
         let search = self.find.as_ref().map(|find| Search { query: &find.query, current: find.current, frames_only: self.chrome });
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark: self.host.dark_mode.get(), search };
+        let images = self.host.images.borrow();
+        let dark = self.host.dark_mode.get();
+        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark, search, images: Some(&images) };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
+        drop(images);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
         (self.bar, self.matches) = (rendered.bar, rendered.matches);
         self.viewport = (h as f32, scale);
@@ -399,6 +402,7 @@ impl Browser {
             Key::FocusAddressBar => return self.focus_address_bar(),
             Key::Reload => {
                 self.host.forget_downloads();
+                self.host.images.borrow_mut().clear();
                 self.page_state = Rc::default();
                 (self.focus, self.error) = (None, None);
                 return self.reload();
@@ -1035,6 +1039,27 @@ mod tests {
         assert_eq!(browser.title(), "Moved here — Netscheme");
         click_link(&mut browser, to("next.sx"));
         assert_eq!(browser.site, server.url("sub/next.sx"), "relative to where the redirect led");
+    }
+
+    #[test]
+    fn images_load_from_files_and_the_web() {
+        let mut browser = Browser::new("pages/hello.sx".into(), false);
+        render(&mut browser);
+        let logo = browser.host.images.borrow().get("pages/../assets/images/logo.png").cloned();
+        assert_eq!(logo.expect("the home page shows the logo").map(|image| image.width), Ok(1254));
+
+        let server = crate::test_server::TestServer::start(&[("index.sx", r#"(page (img :src "logo.png" :width 40) (img :src "missing.png"))"#)]);
+        server.add("logo.png", &std::fs::read("assets/images/logo.png").unwrap());
+        let mut browser = Browser::new(server.url("index.sx"), false);
+        render(&mut browser);
+        let images = browser.host.images.borrow();
+        assert!(images[&server.url("logo.png")].is_ok(), "downloaded relative to the page");
+        assert!(images[&server.url("missing.png")].as_ref().is_err_and(|e| e.contains("404")), "{:?}", images[&server.url("missing.png")].as_ref().err());
+        drop(images);
+
+        let requests = server.requests();
+        press(&mut browser, [Key::Tab, Key::Tab]);
+        assert_eq!(server.requests(), requests, "images aren't downloaded again when the page runs again");
     }
 
     #[test]

@@ -60,6 +60,11 @@ impl TestServer {
         TestServer { base, dir, requests }
     }
 
+    /// Serves another file, which can be binary.
+    pub fn add(&self, path: &str, contents: &[u8]) {
+        fs::write(self.dir.join(path), contents).unwrap();
+    }
+
     pub fn url(&self, path: &str) -> String {
         format!("{}/{path}", self.base)
     }

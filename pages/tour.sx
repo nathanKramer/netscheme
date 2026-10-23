@@ -36,7 +36,7 @@
   (entry "div, row" "Boxes that stack their children. A " (code "row")
          " puts its children side by side, in columns of equal width.")
   (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
-  (entry "span, b, code, a, button, input" "Inline elements, which flow along a line of text and wrap with it.")
+  (entry "span, b, code, a, button, input, img" "Inline elements, which flow along a line of text and wrap with it.")
   (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
 
   (section "Children can be anything")
@@ -64,6 +64,19 @@
              (p :margin 0 "This one passes its own " (code ":background") "."))))
   (note "When an attribute is given twice, the later one wins. That's how the"
         " second card's background replaces the one " (code "card") " sets.")
+
+  (section "Images")
+  (p "An " (code "img") " shows a PNG image from its " (code ":src") ", a location"
+     " relative to the page like a link's. Give it a " (code ":width") " or a "
+     (code ":height") " and it keeps its proportions; give neither and it's its"
+     " natural size. Images sit on the line like letters do, or centred on the"
+     " text beside them with " (code ":align \"middle\"") ":")
+  (example
+    '(p (img :src logo :width 24 :align "middle") " small, "
+        (img :src logo :width 48 :align "middle") " medium, and "
+        (img :src logo :width 96 :align "middle") " large."))
+  (p "An image inside an " (code "a") " is a link. One that can't be loaded"
+     " keeps its space as an empty box, and the reason is printed to the terminal.")
 
   (section "Links")
   (p "An " (code "a") " element with an " (code ":href") " goes to another page when"

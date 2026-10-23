@@ -144,7 +144,13 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         loader::fill_frame(&c, &mut el);
         Ok(Value::Element(Rc::new(el)))
     });
-    // A page's code as data, without running it.
+    let c = ctx.clone();
+    def(&env, "img", move |args| {
+        let mut el = dom::build_element("img", args)?;
+        loader::fill_image(&c, &mut el);
+        Ok(Value::Element(Rc::new(el)))
+    });
+        // A page's code as data, without running it.
     let c = ctx.clone();
     def(&env, "source", move |args| {
         let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };

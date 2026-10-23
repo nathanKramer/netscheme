@@ -5,13 +5,17 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     dom::{self, Element, Node},
+    image::Image,
     lisp::{self, Value},
+    loader::Images,
     paint::Fonts,
     style::{Color, Face, Palette, Style},
 };
 
 pub enum DisplayItem {
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
+    /// An image scaled to `w` × `h`, or an empty box if it couldn't be loaded.
+    Image { x: f32, y: f32, w: f32, h: f32, image: Option<Rc<Image>> },
     /// `y` is the text baseline.
     Text { x: f32, y: f32, text: String, size: f32, face: Face, color: Color },
     /// Items after this are only drawn inside `Clip`, until the next `Clip`.
@@ -188,13 +192,33 @@ struct Segment {
     padding: f32,
     /// Whether the text stays on one line, as in a button.
     nowrap: bool,
-    /// Set if this segment is a text input rather than text.
-    input: Option<Rc<Element>>,
+    /// Set if this segment is something other than text.
+    embed: Option<Embed>,
+}
+
+/// Something in a line of text that isn't text.
+enum Embed {
+    Input(Rc<Element>),
+    /// An image, or `None` for one that couldn't be loaded, at this size.
+    Image(Option<Rc<Image>>, f32, f32, Align),
+}
+
+/// Where an image sits on its line.
+#[derive(Clone, Copy)]
+enum Align {
+    /// Its bottom on the baseline, like a letter.
+    Baseline,
+    /// Centred on the middle of the text's lowercase letters.
+    Middle,
 }
 
 impl Segment {
     fn text(text: &Rc<str>, style: &Rc<Style>) -> Segment {
-        Segment { text: text.clone(), style: style.clone(), action: None, padding: 0.0, nowrap: false, input: None }
+        Segment { text: text.clone(), style: style.clone(), action: None, padding: 0.0, nowrap: false, embed: None }
+    }
+
+    fn is_text(&self) -> bool {
+        self.embed.is_none()
     }
 }
 
@@ -238,6 +262,8 @@ pub struct Layout<'a> {
     pub inputs: Vec<InputBox>,
     /// What to find, and where it was found.
     search: Option<(Search<'a>, Vec<char>)>,
+    /// Images that pages have loaded, by location.
+    images: Option<&'a Images>,
     pub matches: Vec<Match>,
     /// How many frames deep layout is, and the fixed-height frame it's in.
     frame_depth: usize,
@@ -271,10 +297,15 @@ impl<'a> Layout<'a> {
             scrollers: Vec::new(),
             inputs: Vec::new(),
             search: None,
+            images: None,
             matches: Vec::new(),
             frame_depth: 0,
             scroller: None,
         }
+    }
+
+    pub fn images(&mut self, images: &'a Images) {
+        self.images = Some(images);
     }
 
     /// Finds and highlights `search` as the page is laid out.
@@ -521,7 +552,7 @@ impl<'a> Layout<'a> {
         let mut word = Word::default();
         let mut space_segment = None;
         for (i, segment) in run.iter().enumerate() {
-            if segment.input.is_some() {
+            if !segment.is_text() {
                 if word.pieces.is_empty() {
                     word.space_segment = space_segment.take();
                 }
@@ -570,8 +601,9 @@ impl<'a> Layout<'a> {
                 let segment = &run[piece.segment];
                 piece.padding = segment.padding * self.scale;
                 piece.x = word.width;
-                piece.w = match &segment.input {
-                    Some(input) => self.input_width(input),
+                piece.w = match &segment.embed {
+                    Some(Embed::Input(input)) => self.input_width(input),
+                    Some(Embed::Image(_, w, ..)) => *w,
                     None => self.measure(&piece.text, &segment.style) + 2.0 * piece.padding,
                 };
                 word.width += piece.w;
@@ -595,9 +627,19 @@ impl<'a> Layout<'a> {
             let segment = &run[piece.segment];
             let (height, baseline) = self.piece_box(segment);
             let (px, py) = (x + piece.x, baseline_y - baseline);
-            if let Some(input) = &segment.input {
-                self.input(input, &segment.style, Clip::rect(px, py, piece.w, height));
-                continue;
+            match &segment.embed {
+                Some(Embed::Input(input)) => {
+                    self.input(input, &segment.style, Clip::rect(px, py, piece.w, height));
+                    continue;
+                }
+                Some(Embed::Image(image, w, h, _)) => {
+                    self.items.push(DisplayItem::Image { x: px, y: py, w: *w, h: *h, image: image.clone() });
+                    if let Some(action) = &segment.action {
+                        self.push_link(Clip::rect(px, py, *w, *h), action.clone());
+                    }
+                    continue;
+                }
+                None => {}
             }
             if let Some(color) = segment.style.background {
                 self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
@@ -608,7 +650,7 @@ impl<'a> Layout<'a> {
         }
         // Highlights go over backgrounds but under the text.
         self.find_in_line(line, run, x, y, above + below);
-        for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
+        for piece in line.iter().filter(|piece| run[piece.segment].is_text()) {
             let style = &run[piece.segment].style;
             let size = style.font_size * self.scale;
             if !piece.text.trim().is_empty() {
@@ -635,7 +677,7 @@ impl<'a> Layout<'a> {
         }
         // Each character of the line, lowercased, with its left and right edges.
         let mut chars = Vec::new();
-        for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
+        for piece in line.iter().filter(|piece| run[piece.segment].is_text()) {
             let style = &run[piece.segment].style;
             let left = x + piece.x + piece.padding;
             let mut prefix = String::new();
@@ -677,7 +719,7 @@ impl<'a> Layout<'a> {
         let mut style = Style::compute(el, parent);
         if &*el.tag == "input" {
             let style = Rc::new(style);
-            out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, input: Some(el.clone()) });
+            out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Input(el.clone())) });
             return;
         }
         style.background = style.background.or(background);
@@ -686,26 +728,61 @@ impl<'a> Layout<'a> {
             (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
             _ => action,
         };
+        if &*el.tag == "img" {
+            let image = self.image_box(el);
+            out.push(Segment { text: "".into(), style: Rc::new(style), action, padding: 0.0, nowrap: true, embed: Some(image) });
+            return;
+        }
         let (padding, nowrap) = (style.padding, matches!(&*el.tag, "button" | "code"));
         let style = Rc::new(style);
         for child in &el.children {
             match child {
                 Node::Text(text) => {
-                    out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap, input: None })
+                    out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap, embed: None })
                 }
                 Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), out),
             }
         }
     }
 
+    /// An image's picture and size. Given a `:width` or a `:height`, it
+    /// keeps the image's proportions; given neither, it's its natural size.
+    fn image_box(&self, el: &Element) -> Embed {
+        let location = match el.attr("location") {
+            Some(Value::Str(location)) => location,
+            _ => "",
+        };
+        let image = self.images.and_then(|images| images.get(location)).and_then(|image| image.as_ref().ok()).cloned();
+        let attr = |name| match el.attr(name) {
+            Some(Value::Num(n)) => Some((*n as f32).max(0.0)),
+            _ => None,
+        };
+        // A missing image keeps its space, or a small box's if it has no size.
+        let natural = image.as_ref().map_or((24.0, 24.0), |image| (image.width as f32, image.height as f32));
+        let (w, h) = match (attr("width"), attr("height")) {
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, w * natural.1 / natural.0.max(1.0)),
+            (None, Some(h)) => (h * natural.0 / natural.1.max(1.0), h),
+            (None, None) => natural,
+        };
+        let align = match el.attr("align") {
+            Some(Value::Str(align)) if &**align == "middle" => Align::Middle,
+            _ => Align::Baseline,
+        };
+        Embed::Image(image, w * self.scale, h * self.scale, align)
+    }
+
     /// Like `line_box`, but for any piece of a line.
     fn piece_box(&self, segment: &Segment) -> (f32, f32) {
         let (height, baseline) = self.line_box(&segment.style);
-        match segment.input {
-            Some(_) => {
+        match segment.embed {
+            Some(Embed::Input(_)) => {
                 let inset = self.input_inset(&segment.style);
                 (height + 2.0 * inset, baseline + inset)
             }
+            Some(Embed::Image(_, _, h, Align::Baseline)) => (h, h),
+            // Lowercase letters are about half the font size tall.
+            Some(Embed::Image(_, _, h, Align::Middle)) => (h, h / 2.0 + segment.style.font_size * self.scale * 0.25),
             None => (height, baseline),
         }
     }
@@ -868,7 +945,57 @@ mod tests {
         assert!(texts(&items).iter().any(|(text, ..)| *text == "b c d"), "{:?}", texts(&items));
     }
 
-    fn search(src: &str, query: &str, frames_only: bool) -> Vec<Match> {
+    /// Lays out `src` with a 40 × 20 image at "pic.png".
+    fn layout_with_image(src: &str) -> (Vec<DisplayItem>, Vec<Link>) {
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let image = Image { id: 0, width: 40, height: 20, pixels: vec![255; 40 * 20 * 4] };
+        let images = Images::from([("pic.png".to_string(), Ok(Rc::new(image)))]);
+        let (fonts, scrolls) = (Fonts::load(), HashMap::new());
+        let mut layout = Layout::new(&fonts, &Palette::LIGHT, 1.0, 600.0, &scrolls, None, true);
+        layout.images(&images);
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 800.0);
+        (layout.items, layout.links)
+    }
+
+    fn image_boxes(items: &[DisplayItem]) -> Vec<(f32, f32, bool)> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Image { w, h, image, .. } => Some((*w, *h, image.is_some())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn images_keep_their_proportions() {
+        let (items, _) = layout_with_image(
+            r#"(page (p (img :src "pic.png") (img :src "pic.png" :width 80) (img :src "pic.png" :height 10)
+                        (img :src "pic.png" :width 5 :height 50) (img :src "nope.png") (img :src "nope.png" :width 30)))"#,
+        );
+        let natural = (40.0, 20.0, true);
+        assert_eq!(image_boxes(&items), [natural, (80.0, 40.0, true), (20.0, 10.0, true), (5.0, 50.0, true), (24.0, 24.0, false), (30.0, 30.0, false)]);
+    }
+
+    #[test]
+    fn images_sit_on_the_line_and_can_be_links() {
+        let (items, links) = layout_with_image(r#"(page :padding 0 (p "x" (a :href "big.sx" (img :src "pic.png" :width 80))))"#);
+        let image_bottom = items.iter().find_map(|item| match item {
+            DisplayItem::Image { y, h, .. } => Some(y + h),
+            _ => None,
+        });
+        assert_eq!(image_bottom, Some(texts(&items)[0].2), "on the baseline");
+        assert!(links.iter().any(|link| link.w == 80.0 && link.h == 40.0), "the image is the link");
+
+        let (items, _) = layout_with_image(r#"(page :padding 0 (p "x" (img :src "pic.png" :width 80 :align "middle")))"#);
+        let (image_top, baseline) = (items.iter().find_map(|item| match item {
+            DisplayItem::Image { y, .. } => Some(*y),
+            _ => None,
+        }), texts(&items)[0].2);
+        assert!(image_top.unwrap() + 40.0 > baseline, "centred on the text, so it reaches below the baseline");
+    }
+
+        fn search(src: &str, query: &str, frames_only: bool) -> Vec<Match> {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
         let scrolls = HashMap::new();

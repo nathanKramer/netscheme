@@ -1,14 +1,19 @@
 //! Rasterizes a display list into a 0RGB pixel buffer.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
+    image::Image,
     layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Match, Scrollbar, Scroller, Search},
+    loader::Images,
     style::{Color, Face, Palette, Style},
 };
+
+/// How many scaled copies of images to keep before starting afresh.
+const MAX_SCALED_IMAGES: usize = 64;
 
 pub struct Fonts {
     regular: Font,
@@ -61,6 +66,8 @@ pub struct View<'a> {
     /// Whether to use the browser's dark colours.
     pub dark: bool,
     pub search: Option<Search<'a>>,
+    /// The images pages have loaded, for `img` elements to show.
+    pub images: Option<&'a Images>,
 }
 
 pub struct Rendered {
@@ -81,11 +88,13 @@ pub struct Rendered {
 pub struct Renderer {
     pub fonts: Fonts,
     glyphs: HashMap<(char, u32, Face), (Metrics, Vec<u8>)>,
+    /// Images scaled to the sizes they're drawn at, by `Image::id`, width and height.
+    scaled: HashMap<(u64, u32, u32), Vec<u8>>,
 }
 
 impl Renderer {
     pub fn new() -> Renderer {
-        Renderer { fonts: Fonts::load(), glyphs: HashMap::new() }
+        Renderer { fonts: Fonts::load(), glyphs: HashMap::new(), scaled: HashMap::new() }
     }
 
     /// Lays out `page` and paints it into `buf` (`w` × `h` physical pixels),
@@ -98,6 +107,9 @@ impl Renderer {
         let mut layout = Layout::new(&self.fonts, palette, view.scale, h as f32, &view.scroll.frames, view.focus, view.caret_visible);
         if let Some(search) = view.search {
             layout.search(search);
+        }
+        if let Some(images) = view.images {
+            layout.images(images);
         }
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
@@ -115,6 +127,13 @@ impl Renderer {
                     let baseline = *y - dy;
                     if baseline + size >= clip.y0 && baseline - size < clip.y1 {
                         self.draw_text(buf, w, clip, *x, baseline, text, *size, *face, *color)
+                    }
+                }
+                DisplayItem::Image { x, y, w: iw, h: ih, image } => {
+                    let area = Clip::rect(*x, *y - dy, *iw, *ih);
+                    match image {
+                        Some(image) => self.draw_image(buf, w, clip, area, image),
+                        None => fill_rect(buf, w, area.intersect(clip), palette.button),
                     }
                 }
                 DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
@@ -137,6 +156,33 @@ impl Renderer {
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
         Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames }, bar, matches }
+    }
+
+    /// Draws `image` scaled to fill `area`, blending it by its transparency.
+    fn draw_image(&mut self, buf: &mut [u32], w: usize, clip: Clip, area: Clip, image: &Rc<Image>) {
+        let (x0, y0) = (area.x0.round() as i64, area.y0.round() as i64);
+        let (iw, ih) = ((area.x1 - area.x0).round().max(1.0) as u32, (area.y1 - area.y0).round().max(1.0) as u32);
+        let visible = Clip::rect(x0 as f32, y0 as f32, iw as f32, ih as f32).intersect(clip);
+        if visible.is_empty() {
+            return;
+        }
+        if self.scaled.len() >= MAX_SCALED_IMAGES {
+            self.scaled.clear();
+        }
+        let pixels = self.scaled.entry((image.id, iw, ih)).or_insert_with(|| image.scaled(iw, ih));
+        for py in visible.y0.round() as i64..visible.y1.round() as i64 {
+            for px in visible.x0.round() as i64..visible.x1.round() as i64 {
+                let i = (((py - y0) * iw as i64 + (px - x0)) * 4) as usize;
+                let [r, g, b, a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+                if a == 0 {
+                    continue;
+                }
+                let dst = &mut buf[py as usize * w + px as usize];
+                // The colours are premultiplied, so they're added to what's left showing through.
+                let over = |s: u8, shift: u32| (s as u32 + ((*dst >> shift) & 0xff) * (255 - a as u32) / 255).min(255);
+                *dst = over(r, 16) << 16 | over(g, 8) << 8 | over(b, 0);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -191,7 +237,7 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None })
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, images: None })
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
@@ -231,7 +277,7 @@ mod tests {
         let mut buf = vec![0; 200 * 300];
         let mut render = |frames: HashMap<usize, f32>| {
             let scroll = Scroll { page: 0.0, frames };
-            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None })
+            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, images: None })
         };
 
         let top = render(HashMap::new());

@@ -1,5 +1,6 @@
 mod browser;
 mod dom;
+mod image;
 mod layout;
 mod loader;
 mod lisp;

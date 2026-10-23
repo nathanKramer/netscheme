@@ -4,6 +4,7 @@
 (eval `(do ,@(source "site.sx")))
 
 (site-page "Welcome"
+  (p :margin 6 (img :src logo :width 128 :alt "The Netscheme logo: a globe between parentheses, with a lambda"))
   (p :margin 6 eyebrow "A TOY WEB BROWSER")
   (h1 :size 48 :margin 14 :color accent "Netscheme")
   (p :margin 14 lede

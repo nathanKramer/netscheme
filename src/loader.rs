@@ -20,6 +20,7 @@ use ureq::ResponseExt;
 
 use crate::{
     dom::{Element, Node, build_element},
+    image::Image,
     lisp::{self, PageState, Value},
 };
 
@@ -30,6 +31,11 @@ const MAX_FRAME_DEPTH: u32 = 8;
 const MIN_FRAME_SCALE: f32 = 0.04;
 /// Pages bigger than this aren't downloaded.
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
+/// The biggest image file the browser will read or download.
+const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Decoded images, by location, or why one couldn't be loaded.
+pub type Images = HashMap<String, Result<Rc<Image>, String>>;
 
 /// What a running page knows about where it was loaded from.
 pub struct PageContext {
@@ -78,6 +84,9 @@ pub struct Host {
     downloads: RefCell<HashMap<String, Result<Source, String>>>,
     /// A change to the search asked for by the chrome's find bar.
     find: RefCell<Option<FindRequest>>,
+    /// Images that pages have shown. Unlike downloaded pages, they're kept
+    /// when the browser navigates, until a reload.
+    pub images: RefCell<Images>,
 }
 
 /// What the find bar can ask of the browser.
@@ -103,6 +112,21 @@ impl Host {
     /// Forgets downloaded pages, so they're downloaded afresh next time.
     pub fn forget_downloads(&self) {
         self.downloads.borrow_mut().clear();
+    }
+
+    /// Reads and decodes the image at `location`, unless it already has.
+    /// Errors are kept too, so a missing image isn't looked for again.
+    pub fn load_image(&self, location: &str) -> Result<Rc<Image>, String> {
+        if let Some(image) = self.images.borrow().get(location) {
+            return image.clone();
+        }
+        let image = read_bytes(location, MAX_IMAGE_BYTES).and_then(|bytes| Image::decode_png(&bytes)).map(Rc::new);
+        let image = image.map_err(|e| format!("{location}: {e}"));
+        if let Err(e) = &image {
+            eprintln!("image {e}");
+        }
+        self.images.borrow_mut().insert(location.into(), image.clone());
+        image
     }
 
     pub fn request_navigation(&self, href: &str, from: &str) {
@@ -212,6 +236,17 @@ pub fn read_source(location: &str, host: &Host) -> Result<Source, String> {
 }
 
 fn download(url: &str) -> Result<Source, String> {
+    let (bytes, location) = fetch(url, MAX_PAGE_BYTES)?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("couldn't load {url}: it isn't text"))?;
+    if text.trim_start().starts_with('<') {
+        return Err(format!("{url} looks like HTML. This browser only reads pages written in its own Lisp."));
+    }
+    Ok(Source { text, location })
+}
+
+/// Downloads up to `limit` bytes from `url`, giving up after a while.
+/// Returns them with the location they came from, after any redirects.
+fn fetch(url: &str, limit: u64) -> Result<(Vec<u8>, String), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(5)))
         .timeout_global(Some(Duration::from_secs(10)))
@@ -221,11 +256,23 @@ fn download(url: &str) -> Result<Source, String> {
     let failed = |e: ureq::Error| format!("couldn't load {url}: {e}");
     let mut response = agent.get(url).call().map_err(failed)?;
     let location = response.get_uri().to_string();
-    let text = response.body_mut().with_config().limit(MAX_PAGE_BYTES).read_to_string().map_err(failed)?;
-    if text.trim_start().starts_with('<') {
-        return Err(format!("{url} looks like HTML. This browser only reads pages written in its own Lisp."));
+    let bytes = response.body_mut().with_config().limit(limit).read_to_vec().map_err(failed)?;
+    Ok((bytes, location))
+}
+
+/// The contents of a file or web resource, up to `limit` bytes.
+fn read_bytes(location: &str, limit: u64) -> Result<Vec<u8>, String> {
+    if is_remote(location) {
+        return fetch(location, limit).map(|(bytes, _)| bytes);
     }
-    Ok(Source { text, location })
+    if location.contains("://") || location.starts_with(BROWSER) {
+        return Err("only files and web resources can be loaded".into());
+    }
+    let size = fs::metadata(location).map_err(|e| format!("couldn't read it: {e}"))?.len();
+    if size > limit {
+        return Err(format!("it's {size} bytes, which is more than the limit of {limit}"));
+    }
+    fs::read(location).map_err(|e| format!("couldn't read it: {e}"))
 }
 
 pub fn is_remote(location: &str) -> bool {
@@ -326,6 +373,16 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
         // Too deep to show the page; show why instead, which is shallow.
         frame.set_children(vec![Node::Element(error_page(&e))]).expect("an error page fits");
     }
+}
+
+/// Resolves an image's `:src`, loads it, and records where it came from as
+/// its `:location`, for layout to find it by.
+pub fn fill_image(parent: &PageContext, img: &mut Element) {
+    let Some(Value::Str(src)) = img.attr("src").cloned() else { return };
+    let location = resolve(&parent.location, &src);
+    // An image that can't be loaded shows as an empty box.
+    let _ = may_reach(&parent.location, &location).and_then(|()| parent.host.load_image(&location));
+    img.attrs.push(("location".into(), Value::Str(location.into())));
 }
 
 /// Evaluates a page program. Errors become an error page, like a browser would show.

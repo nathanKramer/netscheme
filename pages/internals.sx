@@ -33,7 +33,8 @@
          " frames, producing a list of rectangles and runs of text to draw.")
   (stage "Paint" "paint.rs"
          "Draws the list into a buffer of pixels, with fontdue rasterizing each"
-         " glyph. The buffer goes to the window through softbuffer.")
+         " glyph, and images scaled to size and blended by their transparency."
+         " The buffer goes to the window through softbuffer.")
   (stage "Run the session" "browser.rs, window.rs"
          "Holds the history, the state, scrolling and focus, and turns clicks"
          " and keys into calls on the page.")

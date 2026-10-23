@@ -18,6 +18,9 @@
 (define rule-colour (light-dark "#e3dfe8" "#36323d"))
 (define code-paper (light-dark "#f4f1f8" "#211e26"))
 
+; The browser's logo, relative to the pages that load this file.
+(define logo "../assets/images/logo.png")
+
 ; Code is coloured by what each token is.
 (define code-colours
   (dict :string (light-dark "#2a7a3a" "#86d993")
@@ -79,7 +82,7 @@
 (define (masthead)
   (div :margin 32
     (p :margin 8
-       (a plain-link :href "hello.sx" (b :size 22 "λ Netscheme"))
+       (a plain-link :href "hello.sx" (img :src logo :width 36 :align "middle") " " (b :size 22 "Netscheme"))
        (span small "   a browser where pages are written in Lisp"))
     (p :margin 14 :size 15
        (interpose (span muted "  ·  ")

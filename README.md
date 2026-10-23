@@ -58,7 +58,8 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `dom.rs` | `Element` / `Node` tree | DOM |
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
 | `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
-| `paint.rs` | Rectangles and glyphs into a pixel buffer | Painting and compositing |
+| `paint.rs` | Rectangles, glyphs and images into a pixel buffer | Painting and compositing |
+| `image.rs` | Decoding PNG files, and scaling images | Image decoders |
 | `browser.rs` | A browsing session: navigation, history, state, scrolling, focus, editing | The browser process |
 | `window.rs` | Turns window events into calls on a `Browser` | The browser's window |
 
@@ -88,7 +89,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - A builtin costs one evaluation step however much work it does, so
   `(sort (range 100000))` fits easily in a page's budget, where the same sort
   written in the page wouldn't.
-- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input`.
+- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input img`.
   `pre` keeps its spaces and line breaks, and `code` and `pre` use a monospaced font.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists are spliced in, attributes and
@@ -196,6 +197,21 @@ Three more attributes are for inputs that act like controls, as the find
 bar's does: `:autofocus true` focuses the input when it first appears,
 `:on-escape` is called with no arguments when Escape leaves it, and
 `:on-shift-submit` is called instead of `:on-submit` for Shift+Enter.
+
+### Images
+
+`(img :src "logo.png" :width 48)` shows a PNG image, from a file or the web,
+resolved relative to the page like a link. With only `:width` or `:height` it
+keeps its proportions; with neither, it's its natural size. It sits on the
+baseline like a letter, or with `:align "middle"` centred on the text beside
+it, and inside an `a` it's a link. An image that can't be loaded keeps its
+space as an empty box, and the reason is printed to stderr.
+
+Images are decoded once and kept, as premultiplied RGBA, until a reload (F5).
+The painter scales each to the size it's drawn at, averaging pixels to shrink
+it or blending them to enlarge it, and keeps the scaled copies too. Files can
+be up to 16 MB, and 4096 × 4096 pixels once decoded. Web pages can only load
+images from the web. The site's pages show `assets/images/logo.png`.
 
 ### Finding text
 
