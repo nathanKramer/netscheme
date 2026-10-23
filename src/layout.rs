@@ -58,15 +58,24 @@ pub struct Scroller {
     pub scroll: f32,
 }
 
-/// A clickable region produced by an `(a :href ...)` element.
+/// A clickable region: an `(a :href ...)`, or any element with `:on-click`.
 pub struct Link {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    pub href: Rc<str>,
-    /// Location of the framed page the link is on, if it isn't the top-level page.
-    pub base: Option<Rc<str>>,
+    pub action: Action,
+}
+
+#[derive(Clone)]
+pub enum Action {
+    Go {
+        href: Rc<str>,
+        /// Location of the framed page the link is on, if it isn't the top-level page.
+        base: Option<Rc<str>>,
+    },
+    /// Call this function with no arguments.
+    Run(Value),
 }
 
 impl Link {
@@ -79,7 +88,17 @@ impl Link {
 struct Segment {
     text: Rc<str>,
     style: Rc<Style>,
-    href: Option<Rc<str>>,
+    action: Option<Action>,
+    /// Padding on the left and right of each piece, for inline elements.
+    padding: f32,
+    /// Whether the text stays on one line, as in a button.
+    nowrap: bool,
+}
+
+impl Segment {
+    fn text(text: &Rc<str>, style: &Rc<Style>) -> Segment {
+        Segment { text: text.clone(), style: style.clone(), action: None, padding: 0.0, nowrap: false }
+    }
 }
 
 /// A piece of a line: all of its text comes from one segment.
@@ -88,6 +107,8 @@ struct Piece {
     w: f32,
     text: String,
     segment: usize,
+    /// Space on each side of the text, inside `w`.
+    padding: f32,
 }
 
 /// An unbreakable unit. It may span several segments, e.g. `"x" (b "y")`.
@@ -150,6 +171,10 @@ impl<'a> Layout<'a> {
         if let Some(color) = style.background {
             self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color });
         }
+        // After the children's, so a click on a child's own handler or link wins.
+        if let Some(handler) = el.attr("on-click") {
+            self.push_link(Clip::rect(x, y, w, h), Action::Run(handler.clone()));
+        }
         y + h + style.margin * self.scale
     }
 
@@ -160,8 +185,8 @@ impl<'a> Layout<'a> {
         let mut run = Vec::new();
         for child in children {
             match child {
-                Node::Text(text) => run.push(Segment { text: text.clone(), style: style.clone(), href: None }),
-                Node::Element(child) if dom::is_inline(&child.tag) => collect_inline(child, style, None, None, &mut run),
+                Node::Text(text) => run.push(Segment::text(text, style)),
+                Node::Element(child) if dom::is_inline(&child.tag) => self.collect_inline(child, style, None, None, &mut run),
                 Node::Element(child) => {
                     cy = self.inline_run(&mut run, x, cy, w);
                     cy = self.block(child, style, x, cy, w);
@@ -276,7 +301,7 @@ impl<'a> Layout<'a> {
             if line.is_empty() {
                 space_w = 0.0;
             } else {
-                line.push(Piece { x: line_w, w: space_w, text: " ".into(), segment: space_segment });
+                line.push(Piece { x: line_w, w: space_w, text: " ".into(), segment: space_segment, padding: 0.0 });
             }
             line_w += space_w;
             for piece in word.pieces {
@@ -291,14 +316,20 @@ impl<'a> Layout<'a> {
         cy
     }
 
-    /// Splits a run into words at whitespace, collapsing whitespace like HTML does.
+    /// Splits a run into words at whitespace, collapsing whitespace like HTML
+    /// does. Whitespace inside a `nowrap` segment doesn't split it.
     fn words(&self, run: &[Segment]) -> Vec<Word> {
         let mut words = Vec::new();
         let mut word = Word::default();
         let mut space_segment = None;
         for (i, segment) in run.iter().enumerate() {
+            let mut inner_space = false;
             for c in segment.text.chars() {
                 if c.is_whitespace() {
+                    if segment.nowrap && word.pieces.last().is_some_and(|p| p.segment == i) {
+                        inner_space = true;
+                        continue;
+                    }
                     if !word.pieces.is_empty() {
                         words.push(std::mem::take(&mut word));
                     }
@@ -309,9 +340,20 @@ impl<'a> Layout<'a> {
                     word.space_segment = space_segment.take();
                 }
                 match word.pieces.last_mut() {
-                    Some(piece) if piece.segment == i => piece.text.push(c),
-                    _ => word.pieces.push(Piece { x: 0.0, w: 0.0, text: c.into(), segment: i }),
+                    Some(piece) if piece.segment == i => {
+                        if inner_space {
+                            piece.text.push(' ');
+                        }
+                        piece.text.push(c);
+                    }
+                    _ => word.pieces.push(Piece { x: 0.0, w: 0.0, text: c.into(), segment: i, padding: 0.0 }),
                 }
+                inner_space = false;
+            }
+            // Whitespace at the end of a nowrap segment still separates words.
+            if inner_space {
+                words.push(std::mem::take(&mut word));
+                space_segment = Some(i);
             }
         }
         if !word.pieces.is_empty() {
@@ -320,8 +362,10 @@ impl<'a> Layout<'a> {
 
         for word in &mut words {
             for piece in &mut word.pieces {
+                let segment = &run[piece.segment];
+                piece.padding = segment.padding * self.scale;
                 piece.x = word.width;
-                piece.w = self.measure(&piece.text, &run[piece.segment].style);
+                piece.w = self.measure(&piece.text, &segment.style) + 2.0 * piece.padding;
                 word.width += piece.w;
             }
         }
@@ -346,12 +390,8 @@ impl<'a> Layout<'a> {
             if let Some(color) = segment.style.background {
                 self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
             }
-            let visible = Clip::rect(px, py, piece.w, height).intersect(self.clip);
-            if let Some(href) = &segment.href
-                && !visible.is_empty()
-            {
-                let (x, y, w, h) = (visible.x0, visible.y0, visible.x1 - visible.x0, visible.y1 - visible.y0);
-                self.links.push(Link { x, y, w, h, href: href.clone(), base: self.base.clone() });
+            if let Some(action) = &segment.action {
+                self.push_link(Clip::rect(px, py, piece.w, height), action.clone());
             }
         }
         for piece in line {
@@ -359,7 +399,7 @@ impl<'a> Layout<'a> {
             let size = style.font_size * self.scale;
             if piece.text != " " {
                 let text = piece.text.clone();
-                let (x, y) = (x + piece.x, baseline_y);
+                let (x, y) = (x + piece.x + piece.padding, baseline_y);
                 self.items.push(DisplayItem::Text { x, y, text, size, bold: style.bold, color: style.color });
             }
             if style.underline {
@@ -369,6 +409,38 @@ impl<'a> Layout<'a> {
             }
         }
         y + above + below
+    }
+
+    /// Records a clickable area, trimmed to what's visible.
+    fn push_link(&mut self, area: Clip, action: Action) {
+        let visible = area.intersect(self.clip);
+        if !visible.is_empty() {
+            let (x, y, w, h) = (visible.x0, visible.y0, visible.x1 - visible.x0, visible.y1 - visible.y0);
+            self.links.push(Link { x, y, w, h, action });
+        }
+    }
+
+    /// Flattens an inline element into styled segments. Inline backgrounds
+    /// and actions apply to everything inside them; block elements nested in
+    /// inline ones are flattened too, as this engine has no anonymous block boxes.
+    fn collect_inline(&self, el: &Element, parent: &Style, background: Option<Color>, action: Option<Action>, out: &mut Vec<Segment>) {
+        let mut style = Style::compute(el, parent);
+        style.background = style.background.or(background);
+        let action = match (el.attr("on-click"), el.attr("href")) {
+            (Some(handler), _) => Some(Action::Run(handler.clone())),
+            (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
+            _ => action,
+        };
+        let (padding, nowrap) = (style.padding, &*el.tag == "button");
+        let style = Rc::new(style);
+        for child in &el.children {
+            match child {
+                Node::Text(text) => {
+                    out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap })
+                }
+                Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), out),
+            }
+        }
     }
 
     /// The line height for `style`, and the baseline's offset from the top of the line.
@@ -381,25 +453,6 @@ impl<'a> Layout<'a> {
 
     fn measure(&self, text: &str, style: &Style) -> f32 {
         self.fonts.measure(text, style.font_size * self.scale, style.bold)
-    }
-}
-
-/// Flattens an inline element into styled segments. Inline backgrounds apply
-/// to everything inside them; block elements nested in inline ones are
-/// flattened too, as this engine has no anonymous block boxes.
-fn collect_inline(el: &Element, parent: &Style, background: Option<Color>, href: Option<Rc<str>>, out: &mut Vec<Segment>) {
-    let mut style = Style::compute(el, parent);
-    style.background = style.background.or(background);
-    let href = match el.attr("href") {
-        Some(Value::Str(target)) if &*el.tag == "a" => Some(target.clone()),
-        _ => href,
-    };
-    let style = Rc::new(style);
-    for child in &el.children {
-        match child {
-            Node::Text(text) => out.push(Segment { text: text.clone(), style: style.clone(), href: href.clone() }),
-            Node::Element(child) => collect_inline(child, &style, style.background, href.clone(), out),
-        }
     }
 }
 
@@ -446,7 +499,7 @@ mod tests {
     #[test]
     fn links_record_hit_boxes_with_their_href() {
         let (_, links) = layout(r#"(page :padding 0 (p "see " (a :href "x.sx" "here")))"#, 800.0);
-        assert!(!links.is_empty() && links.iter().all(|l| &*l.href == "x.sx"));
+        assert!(!links.is_empty() && links.iter().all(|l| matches!(&l.action, Action::Go { href, .. } if &**href == "x.sx")));
         assert!(links[0].contains(links[0].x + 1.0, links[0].y + 1.0));
         assert!(!links[0].contains(1.0, 1.0), "the unlinked 'see' is not clickable");
     }

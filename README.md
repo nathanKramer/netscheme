@@ -57,19 +57,20 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 ## The language today
 
 - Atoms: numbers, `"strings"`, `true`, `false`, `nil`, `symbols`, `:keywords`
-- Special forms: `define`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
+- Special forms: `define`, `define-state`, `set!`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
 - Builtins: `+ - * / mod = < > not str repr url-encode`, the list functions
   `list first rest nth cons length empty? map filter`, the predicates
   `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
   `children` for looking inside elements
-- Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a`.
+- Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a button`.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists of children are spliced in,
   and `nil` is skipped, so `if` and functions that return lists compose naturally.
 - Style attributes: `:color`, `:background`, `:size`, `:bold`, `:underline`, `:padding`,
   `:padding-left`, `:margin`.
-  Padding and margin apply only to block elements.
+  Margin applies only to block elements; padding on an inline element pads its
+  left and right.
 - Links: `(a :href "other.sx" ...)` opens a local page, resolved relative to the
   current page. An href starting with `/` is relative to the working directory.
   Go back with Alt+←, the mouse's back button, or the toolbar.
@@ -77,6 +78,30 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 Scroll with a trackpad, mouse wheel, arrow keys, Page Up/Down, Space and
 Shift+Space, or Home/End. This scrolls the frame under the cursor, if it has a
 fixed height, and otherwise the page. Going back restores where you'd scrolled to.
+
+## State and clicks
+
+```lisp
+(define-state count 0)
+
+(page
+  (h1 "Clicked " count " times")
+  (button :on-click (fn () (set! count (+ count 1))) "Click me"))
+```
+
+- `(define-state name initial)` defines a variable that keeps its value when
+  the page runs again. `initial` is only evaluated the first time.
+- `(set! name value)` changes a variable, state or not.
+- `:on-click` takes a function of no arguments, and works on any element.
+  Clicking runs it, then the browser runs the whole page again with the new
+  state and redraws. Nothing edits the document in place.
+
+Each frame keeps its own state, keyed by its position among the frames, so two
+frames of the same page count separately. Following a link starts the new
+page with fresh state; going back restores the old page's state.
+
+`--click X,Y` (repeatable) clicks before taking a screenshot:
+`cargo run -- pages/counter.sx --screenshot out.png --click 60,92`.
 
 ## Code as data
 
@@ -117,8 +142,7 @@ The chrome can frame itself, too:
 ## Roadmap
 
 1. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
-2. **Interactivity**: `:on-click` handlers. State changes re-evaluate the page and
-   re-render it, React-style, so there is no mutable DOM API to design.
+2. **Text input**: an `input` element with keyboard focus and editing.
 3. **Networking**: load `http://` pages, and add forward history.
-4. **An editable address bar**, which needs text input.
+4. **An editable address bar** in `chrome.sx`, built from `input` and `define-state`.
 5. More of the language: macros, tail calls.

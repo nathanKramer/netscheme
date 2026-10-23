@@ -180,6 +180,9 @@ mod tests {
             params: Vec::new(),
             depth: 0,
             scale: 1.0,
+            state_key: String::new(),
+            store: Default::default(),
+            frames_created: Default::default(),
         });
         let src = r#"(page :padding 0 (p "toolbar") (frame :src "long.sx" :height "fill" :margin 0))"#;
         let Ok(Value::Element(page)) = lisp::run(src, &ctx) else { panic!("not a page") };

@@ -2,14 +2,47 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use super::value::Value;
 
+/// A page's `define-state` variables, kept between runs of the page.
+#[derive(Default)]
+pub struct PageState {
+    cells: RefCell<HashMap<Rc<str>, Rc<RefCell<Value>>>>,
+}
+
 pub struct Env {
     vars: RefCell<HashMap<Rc<str>, Value>>,
     parent: Option<Rc<Env>>,
+    /// Set on a page's global environment only.
+    state: Option<Rc<PageState>>,
 }
 
 impl Env {
     pub fn new(parent: Option<Rc<Env>>) -> Rc<Env> {
-        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent })
+        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent, state: None })
+    }
+
+    pub fn global(state: Rc<PageState>) -> Rc<Env> {
+        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent: None, state: Some(state) })
+    }
+
+    fn page_state(&self) -> Option<&Rc<PageState>> {
+        match &self.parent {
+            Some(parent) => parent.page_state(),
+            None => self.state.as_ref(),
+        }
+    }
+
+    /// Changes an existing variable, writing through to its cell if it's state.
+    fn set(&self, name: &str, value: Value) -> Result<(), String> {
+        let mut vars = self.vars.borrow_mut();
+        match vars.get_mut(name) {
+            Some(Value::State(cell)) => *cell.borrow_mut() = value,
+            Some(slot) => *slot = value,
+            None => {
+                drop(vars);
+                return self.parent.as_ref().ok_or_else(|| format!("set!: undefined variable: {name}"))?.set(name, value);
+            }
+        }
+        Ok(())
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
@@ -32,7 +65,11 @@ pub struct Lambda {
 
 pub fn eval(expr: &Value, env: &Rc<Env>) -> Result<Value, String> {
     match expr {
-        Value::Sym(name) => env.get(name).ok_or_else(|| format!("undefined symbol: {name}")),
+        Value::Sym(name) => match env.get(name) {
+            Some(Value::State(cell)) => Ok(cell.borrow().clone()),
+            Some(value) => Ok(value),
+            None => Err(format!("undefined symbol: {name}")),
+        },
         Value::List(items) if !items.is_empty() => eval_list(items, env),
         _ => Ok(expr.clone()),
     }
@@ -85,6 +122,15 @@ fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
             // Code is data: evaluate the argument, then evaluate the result as code.
             "eval" => return eval(&eval(arg(items, 1, "eval")?, env)?, env),
             "define" => return eval_define(items, env),
+            "define-state" => return eval_define_state(items, env),
+            "set!" => {
+                let Some(Value::Sym(name)) = items.get(1) else {
+                    return Err("set!: expected a variable name".into());
+                };
+                let value = eval(arg(items, 2, "set!")?, env)?;
+                env.set(name, value)?;
+                return Ok(Value::Nil);
+            }
             "fn" => return make_lambda(arg(items, 1, "fn")?, &items[2..], env),
             _ => {}
         }
@@ -175,6 +221,27 @@ fn unquoted<'a>(form: &'a Value, marker: &str) -> Option<&'a Value> {
         },
         _ => None,
     }
+}
+
+/// `(define-state name initial)`: like `define`, but the variable keeps
+/// its value when the page runs again, so `initial` is only used the first
+/// time. Change it with `set!`.
+fn eval_define_state(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+    let Some(Value::Sym(name)) = items.get(1) else {
+        return Err("define-state: expected a variable name".into());
+    };
+    let state = env.page_state().ok_or("define-state: only pages can have state")?;
+    let existing = state.cells.borrow().get(name).cloned();
+    let cell = match existing {
+        Some(cell) => cell,
+        None => {
+            let cell = Rc::new(RefCell::new(eval(arg(items, 2, "define-state")?, env)?));
+            state.cells.borrow_mut().insert(name.clone(), cell.clone());
+            cell
+        }
+    };
+    env.define(name.clone(), Value::State(cell));
+    Ok(Value::Nil)
 }
 
 /// `(define name value)` or `(define (name params...) body...)`.

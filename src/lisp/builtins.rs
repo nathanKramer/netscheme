@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
-    let env = Env::new(None);
+    let env = Env::global(ctx.store.page(&ctx.state_key));
 
     def(&env, "+", |args| fold_nums(args, |a, b| a + b));
     def(&env, "-", |args| match args {

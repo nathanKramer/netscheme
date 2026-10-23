@@ -15,9 +15,9 @@ use winit::{
 
 use crate::{
     dom::Element,
-    layout::{Link, Scroller},
-    lisp::Value,
-    loader,
+    layout::{Action, Link, Scroller},
+    lisp::{self, Value},
+    loader::{self, StateStore},
     paint::{Renderer, Scroll},
 };
 
@@ -28,9 +28,11 @@ const BACK: &str = "browser:back";
 
 pub fn run(site: String, renderer: Renderer) {
     let event_loop = EventLoop::new().expect("create event loop");
+    let page_state = Rc::new(StateStore::default());
     let mut app = App {
-        page: loader::open(&chrome_location(&site, false)),
+        page: loader::open(&chrome_location(&site, false), &page_state),
         site,
+        page_state,
         history: Vec::new(),
         scroll: Scroll::default(),
         renderer,
@@ -53,8 +55,10 @@ struct App {
     site: String,
     /// The chrome page, with the site framed inside it.
     page: Rc<Element>,
-    /// Sites to return to with "back" and how they were scrolled, most recent last.
-    history: Vec<(String, Scroll)>,
+    /// `define-state` variables of the chrome and the site.
+    page_state: Rc<StateStore>,
+    /// Sites to return to with "back", with their scroll offsets and state, most recent last.
+    history: Vec<(String, Scroll, Rc<StateStore>)>,
     scroll: Scroll,
     renderer: Renderer,
     /// Link hit boxes from the last render.
@@ -101,7 +105,11 @@ impl App {
         let current = chrome_location(&self.site, !self.history.is_empty());
         match loader::resolve(base.unwrap_or(&current), href) {
             Ok(site) => {
-                let previous = (std::mem::replace(&mut self.site, site), std::mem::take(&mut self.scroll));
+                let previous = (
+                    std::mem::replace(&mut self.site, site),
+                    std::mem::take(&mut self.scroll),
+                    std::mem::take(&mut self.page_state),
+                );
                 self.history.push(previous);
                 self.reload();
             }
@@ -113,14 +121,27 @@ impl App {
     }
 
     fn back(&mut self) {
-        if let Some((site, scroll)) = self.history.pop() {
-            (self.site, self.scroll) = (site, scroll);
+        if let Some((site, scroll, page_state)) = self.history.pop() {
+            (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
             self.reload();
         }
     }
 
+    /// Runs a click handler, then runs the page again so it shows any state
+    /// the handler changed.
+    fn run(&mut self, handler: &Value) {
+        match lisp::apply(handler, &[]) {
+            Ok(_) => self.reload(),
+            Err(e) => {
+                self.page = loader::error_page(&format!("in a click handler: {e}"));
+                self.redraw();
+            }
+        }
+    }
+
+    /// Runs the page, keeping its state and scroll offsets.
     fn reload(&mut self) {
-        self.page = loader::open(&chrome_location(&self.site, !self.history.is_empty()));
+        self.page = loader::open(&chrome_location(&self.site, !self.history.is_empty()), &self.page_state);
         self.links.clear();
         self.scrollers.clear();
         self.redraw();
@@ -220,11 +241,11 @@ impl ApplicationHandler for App {
                 self.scroll_by(dy);
             }
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => match button {
-                MouseButton::Left => {
-                    if let Some((href, base)) = self.link_under_cursor().map(|link| (link.href.clone(), link.base.clone())) {
-                        self.follow(&href, base.as_deref());
-                    }
-                }
+                MouseButton::Left => match self.link_under_cursor().map(|link| link.action.clone()) {
+                    Some(Action::Go { href, base }) => self.follow(&href, base.as_deref()),
+                    Some(Action::Run(handler)) => self.run(&handler),
+                    None => {}
+                },
                 MouseButton::Back => self.back(),
                 _ => {}
             },

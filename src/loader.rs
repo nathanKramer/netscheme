@@ -3,11 +3,17 @@
 //! `browser:view-source`, which lives in this project's `ui/` folder. Either
 //! can end in a query: `browser:view-source?page=pages/hello.sx`.
 
-use std::{fs, path::Path, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    fs,
+    path::Path,
+    rc::Rc,
+};
 
 use crate::{
     dom::{Element, Node, build_element},
-    lisp::{self, Value},
+    lisp::{self, PageState, Value},
 };
 
 /// Frames nested deeper than this are left empty, so a page that frames
@@ -24,19 +30,46 @@ pub struct PageContext {
     pub depth: u32,
     /// The product of the `:scale` of every frame around this page.
     pub scale: f32,
+    /// Where this page's state lives in `store`: its position in the tree
+    /// of frames, so two frames of the same page have separate state.
+    pub state_key: String,
+    pub store: Rc<StateStore>,
+    /// How many frames this page has created so far, to key their state.
+    pub frames_created: Cell<usize>,
+}
+
+/// The `define-state` variables of a page and every frame inside it.
+#[derive(Default)]
+pub struct StateStore {
+    pages: RefCell<HashMap<String, Rc<PageState>>>,
+}
+
+impl StateStore {
+    pub fn page(&self, key: &str) -> Rc<PageState> {
+        self.pages.borrow_mut().entry(key.into()).or_default().clone()
+    }
 }
 
 #[cfg(test)]
 pub fn test_context() -> Rc<PageContext> {
-    Rc::new(PageContext { location: "test.sx".into(), params: Vec::new(), depth: 0, scale: 1.0 })
+    Rc::new(PageContext {
+        location: "test.sx".into(),
+        params: Vec::new(),
+        depth: 0,
+        scale: 1.0,
+        state_key: String::new(),
+        store: Rc::default(),
+        frames_created: Cell::new(0),
+    })
 }
 
-/// Loads and evaluates the top-level page at `location`.
-pub fn open(location: &str) -> Rc<Element> {
-    open_nested(location, 0, 1.0)
+/// Loads and evaluates the top-level page at `location`. State from earlier
+/// runs of the page is taken from, and kept in, `store`.
+pub fn open(location: &str, store: &Rc<StateStore>) -> Rc<Element> {
+    open_nested(location, 0, 1.0, String::new(), store)
 }
 
-fn open_nested(location: &str, depth: u32, scale: f32) -> Rc<Element> {
+fn open_nested(location: &str, depth: u32, scale: f32, state_key: String, store: &Rc<StateStore>) -> Rc<Element> {
     let (_, query) = location.split_once('?').unwrap_or((location, ""));
     let params = query
         .split('&')
@@ -46,7 +79,15 @@ fn open_nested(location: &str, depth: u32, scale: f32) -> Rc<Element> {
             (decode(k), decode(v))
         })
         .collect();
-    let ctx = Rc::new(PageContext { location: location.into(), params, depth, scale });
+    let ctx = Rc::new(PageContext {
+        location: location.into(),
+        params,
+        depth,
+        scale,
+        state_key,
+        store: store.clone(),
+        frames_created: Cell::new(0),
+    });
     match read_source(location) {
         Ok(source) => evaluate(&source, &ctx),
         Err(e) => error_page(&e),
@@ -134,9 +175,11 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     if parent.depth >= MAX_FRAME_DEPTH || scale < MIN_FRAME_SCALE {
         return;
     }
+    let index = parent.frames_created.replace(parent.frames_created.get() + 1);
+    let state_key = format!("{}/{index}", parent.state_key);
     let page = match resolve(&parent.location, &src) {
         Ok(location) => {
-            let page = open_nested(&location, parent.depth + 1, scale);
+            let page = open_nested(&location, parent.depth + 1, scale, state_key, &parent.store);
             frame.attrs.push(("location".into(), Value::Str(location.into())));
             page
         }
@@ -184,6 +227,37 @@ mod tests {
     }
 
     #[test]
+    fn each_frame_has_its_own_state() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-state-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("counter.sx"), "(define-state n 0) (page :on-click (fn () (set! n (+ n 1))) n)").unwrap();
+        fs::write(dir.join("two.sx"), r#"(page (frame :src "counter.sx") (frame :src "counter.sx"))"#).unwrap();
+        let two = dir.join("two.sx").to_string_lossy().into_owned();
+        let store = Rc::new(StateStore::default());
+
+        let counters = |page: &Element| -> Vec<Rc<Element>> {
+            page.children
+                .iter()
+                .filter_map(|frame| match frame {
+                    Node::Element(frame) => match frame.children.first() {
+                        Some(Node::Element(counter)) => Some(counter.clone()),
+                        _ => None,
+                    },
+                    Node::Text(_) => None,
+                })
+                .collect()
+        };
+        let page = open(&two, &store);
+        let second = counters(&page)[1].clone();
+        lisp::apply(second.attr("on-click").unwrap(), &[]).unwrap();
+
+        let page = open(&two, &store);
+        let shown: Vec<String> = counters(&page).iter().map(|c| c.to_string()).collect();
+        assert!(shown[0].ends_with(r#""0")"#) && shown[1].ends_with(r#""1")"#), "{shown:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_page_that_frames_itself_stops() {
         let dir = std::env::temp_dir().join(format!("toy-browser-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -197,7 +271,7 @@ mod tests {
             });
             deepest.max().unwrap_or(0) + (&*el.tag == "frame") as u32
         }
-        let page = open(file.to_str().unwrap());
+        let page = open(file.to_str().unwrap(), &Rc::default());
         // 0.5^4 is above MIN_FRAME_SCALE; 0.5^5 is below it.
         assert_eq!(depth(&page), 5, "4 frames with pages, then an empty one");
         fs::remove_dir_all(dir).unwrap();

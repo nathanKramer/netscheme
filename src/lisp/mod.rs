@@ -7,6 +7,7 @@ mod value;
 
 use std::rc::Rc;
 
+pub use eval::{PageState, apply};
 pub use value::{Value, write_quoted};
 
 use crate::loader::PageContext;
@@ -59,5 +60,23 @@ mod tests {
         assert_eq!(eval("(map (fn (x) (* x x)) (filter (fn (x) (> x 1)) '(1 2 3)))"), "(4 9)");
         assert_eq!(eval("(list (first '(1 2)) (rest '(1 2)) (cons 0 '(1)) (nth '(a b) 1) (empty? '()))"), "(1 (2) (0 1) b true)");
         assert_eq!(eval(r#"(repr '(a "b" :c 1))"#), r#""(a \"b\" :c 1)""#);
+    }
+
+    #[test]
+    fn state_survives_running_the_page_again() {
+        let ctx = crate::loader::test_context();
+        let src = "(define-state n (+ 1 1)) (define (bump) (set! n (* n 10))) (list n bump)";
+        let Ok(Value::List(first)) = run(src, &ctx) else { panic!() };
+        assert_eq!(format!("{}", first[0]), "2");
+        apply(&first[1], &[]).unwrap();
+        let Ok(Value::List(second)) = run(src, &ctx) else { panic!() };
+        assert_eq!(format!("{}", second[0]), "20", "the initial value isn't used again");
+    }
+
+    #[test]
+    fn set_changes_the_nearest_variable() {
+        assert_eq!(eval("(define x 1) (define (f) (set! x 5)) (f) x"), "5");
+        assert_eq!(eval("(define-state x 1) (define (f x) (set! x 5) x) (list (f 0) x)"), "(5 1)", "a parameter shadows state");
+        assert!(eval("(set! nope 1)").starts_with("error: set!: undefined"));
     }
 }

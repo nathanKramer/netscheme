@@ -1,0 +1,30 @@
+; State that survives the page running again. Clicking a button runs its
+; handler, which changes some state with `set!`. The browser then runs this
+; whole file again, and the page shows the new values.
+
+(define-state count 0)
+(define-state colour 0)
+(define-state open false)
+
+(define colours (list "#b8336a" "#5b3ab8" "#2a7a3a" "#b85a1a"))
+
+(define (plural n word)
+  (str n " " word (if (= n 1) "" "s")))
+
+(page :title (str "Counter: " count)
+  (h1 :color (nth colours colour) "Clicked " (plural count "time"))
+  (p (button :on-click (fn () (set! count (+ count 1))) "Click me")
+     " "
+     (button :on-click (fn () (set! count 0)) "Reset")
+     " "
+     (button :on-click (fn () (set! colour (mod (+ colour 1) (length colours)))) "Change colour"))
+
+  ; Any element can be clicked, not just buttons.
+  (div :background "#f3eef7" :padding 12 :on-click (fn () (set! open (not open)))
+    (p :margin (if open 8 0) (b (if open "Hide" "Show")) " how this works (click anywhere in this box)")
+    (if open
+        (div
+          (p :margin 8 "Each " (b "define-state") " variable keeps its value when the page"
+             " runs again; its initial value is only used the first time.")
+          (p :margin 0 "A click runs the handler, then the browser runs the page again from"
+             " the top and redraws it. Nothing edits the page in place.")))))

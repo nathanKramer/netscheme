@@ -72,6 +72,7 @@ impl Style {
             "b" => s.bold = true,
             "a" => (s.color, s.underline) = (Color::LINK, true),
             "frame" => s.margin = 12.0,
+            "button" => (s.background, s.padding) = (Some(Color(0xe4, 0xdf, 0xeb)), 8.0),
             _ => {}
         }
 

@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::{cell::RefCell, fmt, rc::Rc};
 
 use super::eval::Lambda;
 use crate::dom::Element;
@@ -18,6 +18,9 @@ pub enum Value {
     Native(Rc<str>, NativeFn),
     Lambda(Rc<Lambda>),
     Element(Rc<Element>),
+    /// What a `define-state` variable is bound to. Evaluating the variable
+    /// reads the cell, so this never appears as a value in a running page.
+    State(Rc<RefCell<Value>>),
 }
 
 impl Value {
@@ -76,6 +79,7 @@ impl fmt::Display for Value {
             Value::Native(name, _) => write!(f, "#<builtin {name}>"),
             Value::Lambda(_) => write!(f, "#<fn>"),
             Value::Element(el) => write!(f, "{el}"),
+            Value::State(cell) => cell.borrow().fmt(f),
         }
     }
 }
