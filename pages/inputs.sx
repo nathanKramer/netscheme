@@ -2,28 +2,31 @@
 ; with the new text, and Enter calls :on-submit. The handlers store the text
 ; in state, and the page runs again with it.
 
+(eval `(do ,@(source "site.sx")))
+
 (define-state name "")
 (define-state draft "")
 (define-state todos (list "Add a text input" "Build an address bar"))
 
-(define (without item items)
-  (filter (fn (x) (not (= x item))) items))
+(demo "Inputs"
+  "A greeting and a to-do list, built from inputs whose text lives in state."
 
-(page :title "Inputs"
-  (h1 "Hello, " (if (empty? name) "stranger" name) "!")
+  (h2 :size 25 :margin 12 "Hello, " (span :color accent (if (empty? name) "stranger" name)) "!")
   (p "Your name: "
      (input :value name :placeholder "Type your name"
             :on-input (fn (text) (set! name text))))
 
-  (h2 "To do")
-  (p (input :value draft :placeholder "Something to do, then Enter" :width 300
+  (section "To do")
+  (p (input :value draft :placeholder "Something to do, then Enter" :width 320
             :on-input (fn (text) (set! draft text))
             :on-submit (fn (text)
                          (if (not (empty? text))
                              (do (set! todos (append todos (list text)))
                                  (set! draft ""))))))
-  (map (fn (item)
-         (p :margin 6 (button :on-click (fn () (set! todos (without item todos))) "Done") " " item))
-       todos)
-  (if (empty? todos) (p :color "#888" "Nothing left to do."))
-  (p :color "#888" "Click an input to type in it. Tab moves to the next one, Escape leaves it."))
+  (div :background panel :padding 14 :margin 16
+    (map (fn (item)
+           (p :margin 8 (button :on-click (fn () (set! todos (without item todos))) "Done") "  " item))
+         todos)
+    (if (empty? todos) (p :margin 8 muted "Nothing left to do.")))
+  (p muted (plural (length todos) "thing") " to do. Click an input to type in it."
+     " Tab moves to the next one, and Escape leaves it."))

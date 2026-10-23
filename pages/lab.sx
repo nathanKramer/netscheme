@@ -1,0 +1,280 @@
+; The lab: a bigger page, to see how the browser copes. Each tab is a small
+; app, and all of them are plain functions of the page's state. Every click
+; runs this whole file again, so the busier tabs are also a benchmark.
+
+(eval `(do ,@(source "site.sx")))
+
+(define-state tab "life")
+
+; Colours for the Game of Life. The rest come from site.sx.
+(define live (light-dark "#2a7a3a" "#86d993"))
+(define dead (light-dark "#e4dfe9" "#35303d"))
+
+(define card (style :background panel :padding 14 :margin 12))
+
+; ---------------------------------------------------------------------------
+; The Game of Life, on a grid that wraps at the edges. The grid is a flat
+; list of 0s and 1s, and each generation is computed from the last by `map`.
+
+(define W 24)
+(define H 14)
+(define cells (range (* W H)))
+
+(define (shape points)
+  (let ((live (map (fn (p) (+ (first p) (* W (nth p 1)))) points)))
+    (map (fn (i) (if (contains? live i) 1 0)) cells)))
+
+(define glider (shape '((2 1) (3 2) (1 3) (2 3) (3 3))))
+(define r-pentomino (shape '((12 6) (13 6) (11 7) (12 7) (12 8))))
+
+(define-state grid glider)
+(define-state generation 0)
+(define-state seed 2024)
+
+(define (alive g x y)
+  (nth g (+ (mod x W) (* W (mod y H)))))
+
+(define (step g)
+  (map (fn (i)
+         (let ((x (mod i W))
+               (y (floor (/ i W)))
+               (n (+ (alive g (- x 1) (- y 1)) (alive g x (- y 1)) (alive g (+ x 1) (- y 1))
+                     (alive g (- x 1) y) (alive g (+ x 1) y)
+                     (alive g (- x 1) (+ y 1)) (alive g x (+ y 1)) (alive g (+ x 1) (+ y 1)))))
+           (if (or (= n 3) (and (= n 2) (= (nth g i) 1))) 1 0)))
+       cells))
+
+(define (steps g n) (if (< n 1) g (steps (step g) (- n 1))))
+
+(define (flip g k)
+  (map (fn (i) (if (= i k) (- 1 (nth g i)) (nth g i))) cells))
+
+; Park–Miller random numbers. The products stay exact in a double.
+(define (next-seed s) (mod (* s 16807) 2147483647))
+(define (random-grid s n)
+  (if (< n 1) (list)
+      (cons (if (< (mod s 100) 30) 1 0) (random-grid (next-seed s) (- n 1)))))
+
+(define (advance n)
+  (set! grid (steps grid n))
+  (set! generation (+ generation n)))
+
+(define (reset g)
+  (set! grid g)
+  (set! generation 0))
+
+(define (life-row y)
+  (p :margin 0 :size 28
+     (map (fn (x)
+            (let ((i (+ x (* W y))))
+              (span :color (if (= (nth grid i) 1) live dead)
+                    :on-click (fn () (set! grid (flip grid i)))
+                    "■")))
+          (range W))))
+
+(define (life)
+  (div
+    (p "Conway's Game of Life on a " W "×" H " grid that wraps around. Click a"
+       " square to flip it. Each step computes every cell from its eight"
+       " neighbours, so " (b "Step ×10") " evaluates about "
+       (* 10 W H 8) " neighbour lookups.")
+    (p (button :on-click (fn () (advance 1)) "Step")
+       " " (button :on-click (fn () (advance 10)) "Step ×10")
+       " " (button :on-click (fn () (reset glider)) "Glider")
+       " " (button :on-click (fn () (reset r-pentomino)) "R-pentomino")
+       " " (button :on-click (fn () (do (reset (random-grid seed (* W H)))
+                                         (set! seed (next-seed seed)))) "Random")
+       " " (button :on-click (fn () (reset (map (fn (i) 0) cells))) "Clear"))
+    (div card (map life-row (range H)))
+    (p small "Generation " generation " · population " (sum grid))))
+
+; ---------------------------------------------------------------------------
+; A calculator. The display is a number, built up digit by digit.
+
+(define-state display 0)
+(define-state stored nil)
+(define-state operator nil)
+(define-state fresh true)
+(define-state tape (list))
+
+(define (calculate op a b)
+  (cond ((= op "+") (+ a b))
+        ((= op "−") (- a b))
+        ((= op "×") (* a b))
+        ((= op "÷") (/ a b))))
+
+(define (press-digit d)
+  (if fresh
+      (do (set! display d) (set! fresh false))
+      (set! display (+ (* display 10) (if (< display 0) (- d) d)))))
+
+(define (finish)
+  (if operator
+      (let ((result (calculate operator stored display)))
+        (set! tape (cons (str stored " " operator " " display " = " result) (take tape 5)))
+        (set! display result)))
+  (set! stored nil)
+  (set! operator nil)
+  (set! fresh true))
+
+(define (press-operator op)
+  (if (and operator (not fresh)) (finish))
+  (set! stored display)
+  (set! operator op)
+  (set! fresh true))
+
+(define key-style (style :size 20 :bold true :padding 12))
+
+(define (key label on-click & more)
+  (div :margin 4 (button key-style :on-click on-click more label)))
+
+(define (digit d) (key (str d) (fn () (press-digit d))))
+(define (operator-key op) (key op (fn () (press-operator op)) :background (light-dark "#e0d4ff" "#4a3a75")))
+
+(define (calculator)
+  (div
+    (p "A calculator. Its state is five variables, and each key is a button"
+       " whose handler updates them.")
+    (div card
+      (p :margin 4 small (if operator (str stored " " operator) "Ready"))
+      (p :margin 4 :size 34 :bold true display))
+    (row (digit 7) (digit 8) (digit 9) (operator-key "÷"))
+    (row (digit 4) (digit 5) (digit 6) (operator-key "×"))
+    (row (digit 1) (digit 2) (digit 3) (operator-key "−"))
+    (row (key "C" (fn () (do (set! display 0) (set! stored nil) (set! operator nil) (set! fresh true))))
+         (digit 0)
+         (key "±" (fn () (set! display (- display))))
+         (operator-key "+"))
+    (row (div) (div) (div) (key "=" (fn () (finish)) :background (light-dark "#c8f0d0" "#2f5a3a")))
+    (if (not (empty? tape))
+        (div (h3 "Tape") (map (fn (line) (p :margin 4 small line)) tape)))))
+
+; ---------------------------------------------------------------------------
+; A sortable table, with bars drawn out of text.
+
+(define planets
+  (list (dict :name "Mercury" :distance 0.39 :moons 0 :diameter 4879)
+        (dict :name "Venus" :distance 0.72 :moons 0 :diameter 12104)
+        (dict :name "Earth" :distance 1 :moons 1 :diameter 12756)
+        (dict :name "Mars" :distance 1.52 :moons 2 :diameter 6792)
+        (dict :name "Jupiter" :distance 5.2 :moons 97 :diameter 142984)
+        (dict :name "Saturn" :distance 9.58 :moons 274 :diameter 120536)
+        (dict :name "Uranus" :distance 19.2 :moons 28 :diameter 51118)
+        (dict :name "Neptune" :distance 30.05 :moons 16 :diameter 49528)))
+
+(define columns (list (list :name "Planet") (list :distance "Distance (AU)")
+                      (list :moons "Moons") (list :diameter "Diameter (km)")))
+
+(define-state sort-column :distance)
+(define-state descending false)
+
+(define (bar value column)
+  (let ((biggest (max (map (fn (p) (get p column)) planets))))
+    (join (repeat (round (* 12 (/ value biggest))) "█"))))
+
+(define (heading-cell column)
+  (let ((key (first column)) (sorted (= (first column) sort-column)))
+    (div (b :color (if sorted accent ink)
+            :on-click (fn () (if sorted
+                                 (set! descending (not descending))
+                                 (do (set! sort-column key) (set! descending false))))
+            (nth column 1)
+            (if sorted (if descending " ▼" " ▲") "")))))
+
+(define (cell planet key)
+  (let ((value (get planet key)))
+    (if (= key :name)
+        (div (b value))
+        (div value " " (span :color accent :size 12 (bar value key))))))
+
+(define (table)
+  (let ((sorted (sort-by (fn (p) (get p sort-column)) planets)))
+    (div
+      (p "The planets, as a list of dictionaries. Click a heading to sort by"
+         " it, and again to reverse the order.")
+      (div card
+        (row (map heading-cell columns))
+        (map (fn (planet) (row (map (fn (c) (cell planet (first c))) columns)))
+             (if descending (reverse sorted) sorted))))))
+
+; ---------------------------------------------------------------------------
+; A tree explorer: a recursive component over nested lists. A folder is
+; (name child ...), and a file is a string.
+
+(define project
+  '("toy-browser"
+    ("src" ("lisp" "budget.rs" "builtins.rs" "eval.rs" "library.rs" "mod.rs" "prelude.sx" "reader.rs" "value.rs")
+           "browser.rs" "dom.rs" "layout.rs" "loader.rs" "main.rs" "paint.rs" "style.rs" "window.rs")
+    ("pages" "code-as-data.sx" "counter.sx" "fractal.sx" "hello.sx" "inputs.sx" "internals.sx"
+             "lab.sx" "language.sx" "library.sx" "runaway.sx" "site.sx" "state.sx" "styles.sx" "tour.sx")
+    ("ui" "chrome.sx" "prelude.sx" "view-source.sx")
+    "Cargo.toml" "README.md"))
+
+(define (generate depth label)
+  (if (< depth 1)
+      (str "leaf " label)
+      (list (if (= label "") "root" (str "node " label)) (generate (- depth 1) (str label "0")) (generate (- depth 1) (str label "1")))))
+
+(define-state open (list "/toy-browser"))
+(define-state depth 4)
+
+(define (folders node path)
+  (if (string? node) (list)
+      (let ((key (str path "/" (first node))))
+        (cons key (concat (map (fn (child) (folders child key)) (rest node)))))))
+
+(define (tree node path level)
+  (if (string? node)
+      (p :margin 2 :padding-left (+ 22 (* 20 level)) :color faint node)
+      (let ((key (str path "/" (first node)))
+            (expanded (contains? open key)))
+        (div
+          (p :margin 2 :padding-left (* 20 level)
+             :on-click (fn () (set! open (toggle key open)))
+             (span :color accent (if expanded "▼ " "► ")) (b (first node)))
+          (if expanded (map (fn (child) (tree child key (+ level 1))) (rest node)))))))
+
+(define (explorer)
+  (let ((generated (generate depth "")))
+    (div
+      (p "A recursive component. Click a folder to open or close it.")
+      (div card (tree project "" 0))
+      (h3 "A generated tree")
+      (p "A full binary tree " depth " levels deep: "
+         (plural (+ (* 2 (length (folders generated ""))) 1) "node") ".")
+      (p (button :on-click (fn () (if (> depth 1) (set! depth (- depth 1)))) "Shallower")
+         " " (button :on-click (fn () (if (< depth 10) (set! depth (+ depth 1)))) "Deeper")
+         " " (button :on-click (fn () (set! open (append open (folders generated "")))) "Open all")
+         " " (button :on-click (fn () (set! open (list "/toy-browser"))) "Close all"))
+      (div card (tree generated "" 0)))))
+
+; ---------------------------------------------------------------------------
+; The page itself. It counts its own elements: the document is a value, so
+; the page can look at what it built before returning it.
+
+(define tabs (list (list "life" "Life") (list "calculator" "Calculator")
+                   (list "table" "Table") (list "explorer" "Explorer")))
+
+(define (tab-button t)
+  (let ((selected (= (first t) tab)))
+    (button :on-click (fn () (set! tab (first t)))
+            :background (if selected accent panel)
+            :color (if selected (light-dark "#ffffff" "#1d1a22") ink)
+            (nth t 1))))
+
+(define content
+  (cond ((= tab "life") (life))
+        ((= tab "calculator") (calculator))
+        ((= tab "table") (table))
+        (else (explorer))))
+
+(define (count-elements x)
+  (if (or (string? x) (number? x)) 0
+      (+ 1 (sum (map count-elements (children x))))))
+
+(demo "The lab"
+  "Four small apps on one page, to see how the browser copes. Every click runs the whole file again."
+  (p (interpose " " (map tab-button tabs)))
+  content
+  (p small "This tab is " (plural (count-elements content) "element") ", rebuilt from"
+     " scratch on every click."))

@@ -1,0 +1,79 @@
+(eval `(do ,@(source "site.sx")))
+
+(define (stage name file & description)
+  (div :margin 14
+    (p :margin 3 (b :size 17 name) "  " (code file))
+    (p :margin 0 muted description)))
+
+(chapter "internals.sx"
+  (p "Netscheme is written in Rust, in under five thousand lines. It draws"
+     " everything itself, from the text to the caret in the address bar, using a"
+     " window, a buffer of pixels, and a font.")
+
+  (section "From source to pixels")
+  (p "Showing a page takes six steps, and each is a module of its own:")
+  (code-block
+"source text --read--> forms --evaluate--> element tree
+             --style--> styled boxes --lay out--> display list
+             --paint--> pixels")
+  (stage "Read" "lisp/reader.rs"
+         "Turns the text into values: lists, symbols, strings and numbers. It's"
+         " the equivalent of a browser's HTML parser, but it doesn't know about"
+         " elements at all.")
+  (stage "Evaluate" "lisp/eval.rs"
+         "Runs those values as a program. Element functions build the element"
+         " tree as a side effect of ordinary function calls, so this step is a"
+         " JavaScript engine and the DOM's construction at once.")
+  (stage "Style" "style.rs"
+         "Works out each element's colours, font and spacing: first its tag's"
+         " defaults, then its attributes, with text properties inherited from its"
+         " parent. It's CSS's cascade with only one, very specific, selector.")
+  (stage "Lay out" "layout.rs"
+         "Stacks blocks, breaks text into words and words into lines, and places"
+         " frames, producing a list of rectangles and runs of text to draw.")
+  (stage "Paint" "paint.rs"
+         "Draws the list into a buffer of pixels, with fontdue rasterizing each"
+         " glyph. The buffer goes to the window through softbuffer.")
+  (stage "Run the session" "browser.rs, window.rs"
+         "Holds the history, the state, scrolling and focus, and turns clicks"
+         " and keys into calls on the page.")
+
+  (section "Running again")
+  (p "Netscheme keeps no live document between events. When you click a"
+     " button, the browser calls its handler, which changes some state, and then"
+     " it runs the page again from the top. The new element tree is styled, laid"
+     " out and painted from scratch.")
+  (p "That's simple, and the browser is fast enough for it to work: a click on"
+     " a page of a few hundred elements takes milliseconds. The state that"
+     " survives lives outside the program, in a store kept for each page, and"
+     " each " (code "define-state") " finds its value there by its position.")
+  (note "A web browser does the opposite. It keeps the DOM, a tree of live"
+        " objects, and scripts change it in place. Things like focus, scroll"
+        " positions and what's typed in a form live on those objects. Here they"
+        " have to be kept on the side, by the browser or in page state.")
+
+  (section "Loading pages")
+  (p "A location can be one of three things:")
+  (entry "pages/hello.sx" "A file, relative to where the browser was started.")
+  (entry "browser:chrome" "One of the browser's own pages, from its " (code "ui") " folder.")
+  (entry "https://example.com/page.sx" "A page on the web, downloaded over HTTP or"
+         " HTTPS. Downloads give up after 10 seconds, or at 4 MB, and a response"
+         " that looks like HTML is refused.")
+  (p "A download is kept until you leave the page, because the page runs again"
+     " on every click and keystroke. F5 or Ctrl+R downloads it again, and starts"
+     " its state over.")
+  (subsection "The origin rule")
+  (p "A page from the web can only reach other pages on the web. It can't link"
+     " to, frame, or read the source of a file on your computer, or a "
+     (code "browser:") " page. Files and browser pages can reach anything.")
+
+  (section "Taking screenshots")
+  (p "The browser can draw a page straight into a PNG file, without opening a"
+     " window. It can click and type first, which is how its tests and this"
+     " guide's pictures were checked:")
+  (code-block
+"cargo run -- pages/hello.sx --screenshot out.png
+cargo run -- pages/lab.sx --screenshot out.png --chrome --dark \\
+    --click 117,178 --width 1000 --height 800")
+  (p "The source is all in the " (code "src") " folder, and the README describes"
+     " each part in more detail."))

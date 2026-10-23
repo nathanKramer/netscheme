@@ -1,0 +1,114 @@
+(eval `(do ,@(source "site.sx")))
+
+(chapter "library.sx"
+  (p "The library comes in two halves. The builtins are written in Rust, inside"
+     " the browser. Each call to one counts as a single step of a page's budget,"
+     " however much work it does, so sorting a hundred thousand items is cheap."
+     " The prelude is written in Netscheme, and runs before every page.")
+
+  (section "Numbers")
+  (entry "(+ a b ...), (- a b ...), (* a b ...), (/ a b ...)" "Arithmetic. With one"
+         " argument, " (code "-") " negates it.")
+  (entry "(mod a b)" "The remainder of dividing a by b, which is never negative when b is positive.")
+  (entry "(floor x), (ceil x), (round x), (abs x)" "Rounding down, up and to the nearest, and the absolute value.")
+  (entry "(sqrt x), (pow x y)" "The square root of x, and x to the power y.")
+  (entry "(min a b ...), (max a b ...)" "The smallest or largest argument. Given one"
+         " list, the smallest or largest item in it.")
+
+  (section "Comparisons")
+  (entry "(= a b ...)" "Whether the values are all equal. It compares lists and"
+         " dictionaries by their contents.")
+  (entry "(< a b ...), (> a b ...), (<= a b ...), (>= a b ...)" "Whether the"
+         " arguments are in order. They compare numbers, or strings alphabetically.")
+  (entry "(not x)" "True if x is " (code "false") " or " (code "nil") ".")
+
+  (section "Lists")
+  (entry "(list a b ...)" "A list of the arguments.")
+  (entry "(first xs), (rest xs), (last xs), (nth xs i)" "The first item, all but the"
+         " first, the last, and the item at index i, counting from 0.")
+  (entry "(cons x xs), (append xs ys ...)" "A list with x in front, and lists joined together.")
+  (entry "(length xs), (empty? xs)" "How many items there are, and whether there are none.")
+  (entry "(range end), (range start end), (range start end step)" "Numbers from"
+         " start, which is 0 if left out, up to but not including end.")
+  (entry "(repeat n x)" "A list of n copies of x.")
+  (entry "(reverse xs), (take xs n), (drop xs n)" "The items backwards, the first n,"
+         " and all but the first n.")
+  (entry "(contains? xs x), (index-of xs x)" "Whether x is in the list, and where, or nil.")
+  (entry "(map f xs), (filter f xs)" "f applied to each item, and the items for which f is true.")
+  (entry "(reduce f init xs)" "Combines the items, starting from init: each step"
+         " calls " (code "(f result item)") ".")
+  (entry "(sort xs), (sort-by f xs)" "The items in order, or in the order of what f"
+         " returns for them. Items that tie keep their order.")
+  (entry "(apply f a ... xs)" "Calls f with the arguments before the list, then the list's items.")
+  (example
+    '(let ((words '("banana" "fig" "cherry" "apple")))
+       (div
+         (p :margin 4 "Sorted: " (join (sort words) ", "))
+         (p :margin 4 "By length: " (join (sort-by length words) ", "))
+         (p :margin 4 "Total letters: " (reduce + 0 (map length words))))))
+
+  (section "Strings")
+  (entry "(str a b ...)" "The arguments as text, joined together.")
+  (entry "(repr x)" "How x would be written as code: strings get their quotes.")
+  (entry "(join xs sep), (split s sep)" "Items joined into a string with sep between"
+         " them, and a string split at each sep, or into characters if sep is \"\".")
+  (entry "(upper s), (lower s), (trim s)" "Changes case, and removes spaces from the ends.")
+  (entry "(substring s start end)" "Characters from start up to end, or to the end of"
+         " the string if end is left out.")
+  (entry "(starts-with? s prefix), (ends-with? s suffix)" "Whether s begins or ends with the other.")
+  (entry "(parse-number s)" "The number s spells, or nil if it isn't one.")
+  (entry "(url-encode s)" "s made safe to put in a location's query.")
+  (p (code "length") ", " (code "empty?") ", " (code "reverse") ", " (code "take") ", "
+     (code "drop") ", " (code "contains?") " and " (code "index-of") " work on strings"
+     " too, treating them as lists of characters.")
+
+  (section "Dictionaries")
+  (entry "(dict k v ...)" "A dictionary. Keys can be numbers, strings or keywords,"
+         " and are kept in order: numbers, then strings, then keywords.")
+  (entry "(get d k), (get d k default)" "The value for k, or nil or the default if there isn't one.")
+  (entry "(assoc d k v ...), (dissoc d k ...)" "A copy with some keys set, or removed."
+         " The original doesn't change, which suits state.")
+  (entry "(keys d), (values d)" "The keys and values, as lists, in key order.")
+  (p (code "length") ", " (code "empty?") " and " (code "contains?") " work on dictionaries"
+     " too, and a dictionary prints as the code that makes it:")
+  (example
+    '(let ((planet (dict :name "Mars" :moons 2)))
+       (div
+         (p :margin 4 (get planet :name) " has " (plural (get planet :moons) "moon") ".")
+         (p :margin 4 "With a correction: " (code (repr (assoc planet :name "Mars, the red planet")))))))
+
+  (section "Types")
+  (entry "(list? x), (string? x), (number? x), (symbol? x), (keyword? x), (fn? x), (dict? x)"
+         "Whether x is that kind of value.")
+
+  (section "For pages")
+  (entry "(style :attr value ...)" "Attributes as a list, to put in elements. See "
+         (a :href "styles.sx" "Styles are values") ".")
+  (entry "(dark-mode), (light-dark light dark)" "Whether the browser is in dark mode, and a value for each mode.")
+  (entry "(param name)" "A query parameter from the page's location, as in " (code "page.sx?name=value") ", or nil.")
+  (entry "(go location)" "Goes to another page once the current event handler finishes.")
+  (entry "(source location)" "Another page's code, as a list of forms, without running it.")
+  (entry "(tag el), (attr el :name), (children el)" "What's inside an element: its tag,"
+         " an attribute's value, and its children.")
+
+  (section "The prelude")
+  (p "These are written in Netscheme, in " (code "ui/prelude.sx") ". A page can"
+     " define its own function with the same name, and its version wins.")
+  (entry "(inc n), (dec n)" "n plus or minus one.")
+  (entry "(sum xs), (product xs)" "The items added or multiplied together.")
+  (entry "(concat lists)" "A list of lists joined into one list.")
+  (entry "(without x xs), (toggle x xs)" "The list without x, and the list with x"
+         " removed if it was there or added if not.")
+  (entry "(any? f xs), (all? f xs)" "Whether f is true for some item, or for every one.")
+  (entry "(interpose sep xs)" "The items with sep between each pair. Useful for"
+         " putting commas or spaces between elements.")
+  (entry "(chunk n xs)" "The items in lists of n.")
+  (entry "(map-indexed f xs)" "Like map, but calls " (code "(f index item)") ".")
+  (entry "(update d k f)" "A copy of the dictionary with k's value replaced by f of it.")
+  (entry "(plural n word)" (code "(plural 2 \"cat\")") " is \"2 cats\".")
+  (subsection "Its code")
+  (p "Here's the prelude itself. This page reads it with " (code "(source \"browser:prelude\")")
+     " and prints each definition, so it's always up to date. Reading code as"
+     " data loses its comments, but " (a :href "browser:view-source?page=browser:prelude" "View source")
+     " shows them.")
+  (show-code (cons 'do (source "browser:prelude"))))

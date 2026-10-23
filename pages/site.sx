@@ -1,0 +1,259 @@
+; The code these pages share: colours, layout, navigation, and the
+; components the guide is written with. It isn't a page itself. Each page
+; loads it with
+;
+;   (eval `(do ,@(source "site.sx")))
+;
+; `source` reads this file as a list of forms, and `eval` runs them where
+; that line is, so everything here becomes part of the page.
+
+; ---------------------------------------------------------------------------
+; Colours
+
+(define paper (light-dark "#fcfbfa" "#19171d"))
+(define ink (light-dark "#1f1c24" "#ebe7f0"))
+(define faint (light-dark "#6f6979" "#a19bab"))
+(define accent (light-dark "#5b3ab8" "#c3a6ff"))
+(define panel (light-dark "#f4f1f8" "#25222b"))
+(define rule-colour (light-dark "#e3dfe8" "#36323d"))
+(define code-paper (light-dark "#f4f1f8" "#211e26"))
+
+; Code is coloured by what each token is.
+(define code-colours
+  (dict :string (light-dark "#2a7a3a" "#86d993")
+        :keyword (light-dark "#8a3ab8" "#d7a6ff")
+        :number (light-dark "#b85a1a" "#f2ab73")
+        :symbol (light-dark "#1a5fb4" "#8ab4f8")
+        :punctuation faint))
+
+; ---------------------------------------------------------------------------
+; Text styles
+
+(define lede (style :size 19 :color faint))
+(define muted (style :color faint))
+(define small (style :size 14 :color faint))
+(define eyebrow (style :size 13 :bold true :color accent))
+(define plain-link (style :underline false :color accent))
+
+; ---------------------------------------------------------------------------
+; The site's contents. Each chapter and demo is a dictionary.
+
+(define chapters
+  (list (dict :file "tour.sx" :title "Pages are programs"
+              :blurb "Elements, attributes and components: how a page is put together.")
+        (dict :file "styles.sx" :title "Styles are values"
+              :blurb "Colours, sizes and spacing, kept in variables and combined like any other data.")
+        (dict :file "state.sx" :title "State and events"
+              :blurb "Buttons, text inputs, and the state that survives a page running again.")
+        (dict :file "language.sx" :title "The language"
+              :blurb "Values, special forms, functions, and the rules that tie them together.")
+        (dict :file "library.sx" :title "The library"
+              :blurb "Every built-in function, and the prelude that's written in Netscheme itself.")
+        (dict :file "code-as-data.sx" :title "Code is data"
+              :blurb "Reading a page's source, building code with quasiquote, and pages inside pages.")
+        (dict :file "internals.sx" :title "How it works"
+              :blurb "From source text to pixels: the reader, evaluator, layout and painter.")))
+
+(define demos
+  (list (dict :file "counter.sx" :title "Counter"
+              :blurb "The smallest interactive page: three pieces of state and some buttons.")
+        (dict :file "inputs.sx" :title "Text inputs"
+              :blurb "A greeting and a to-do list, built from controlled inputs.")
+        (dict :file "lab.sx" :title "The lab"
+              :blurb "A Game of Life, a calculator, a sortable table and a tree explorer.")
+        (dict :file "fractal.sx" :title "Fractal"
+              :blurb "A page that frames itself, twice, at half size.")
+        (dict :file "runaway.sx" :title "Runaway code"
+              :blurb "Infinite loops and deep recursion, stopped before they freeze the browser.")))
+
+; ---------------------------------------------------------------------------
+; Page layout
+
+(define (hr) (div :background rule-colour :padding 0.5))
+(define (gap n) (div :padding (/ n 2)))
+
+(define nav
+  (list (list "hello.sx" "Home") (list "tour.sx" "Guide") (list "language.sx" "Language")
+        (list "library.sx" "Library") (list "lab.sx" "Lab")))
+
+(define (masthead)
+  (div :margin 32
+    (p :margin 8
+       (a plain-link :href "hello.sx" (b :size 22 "λ Netscheme"))
+       (span small "   a browser where pages are written in Lisp"))
+    (p :margin 14 :size 15
+       (interpose (span muted "  ·  ")
+                  (map (fn (item) (a plain-link :href (first item) (nth item 1))) nav)))
+    (hr)))
+
+(define (colophon)
+  (div
+    (gap 24)
+    (hr)
+    (p :margin 0 small
+       "Every page here is a Netscheme program. Choose "
+       (b "View source") " in the toolbar to read it.")))
+
+; A page of the site, with its masthead and footer.
+(define (site-page title & body)
+  (page :title title :background paper :color ink :padding 32 :max-width 720
+    (masthead)
+    body
+    (colophon)))
+
+(define (title-block kicker title intro)
+  (div :margin 8
+    (p :margin 6 eyebrow kicker)
+    (h1 :size 38 :margin 12 title)
+    (p :margin 20 lede intro)))
+
+(define (chapter-index file)
+  (index-of (map (fn (c) (get c :file)) chapters) file))
+
+(define (chapter-link label c)
+  (div (p :margin 4 small label)
+       (p :margin 0 (a plain-link :href (get c :file) (b :size 17 (get c :title))))))
+
+; A chapter of the guide: its title, its body, and links to its neighbours.
+(define (chapter file & body)
+  (let ((i (chapter-index file))
+        (c (nth chapters i)))
+    (site-page (get c :title)
+      (title-block (str "CHAPTER " (inc i) " OF " (length chapters)) (get c :title) (get c :blurb))
+      body
+      (gap 24)
+      (hr)
+      (gap 16)
+      (row (if (> i 0) (chapter-link "← Previous" (nth chapters (dec i))) (div))
+           (if (< (inc i) (length chapters)) (chapter-link "Next →" (nth chapters (inc i))) (div))))))
+
+; A demo page, with a line about what it shows.
+(define (demo title intro & body)
+  (site-page title
+    (title-block "DEMO" title intro)
+    body))
+
+; ---------------------------------------------------------------------------
+; Components for writing the guide
+
+(define (section title)
+  (list (gap 20) (h2 :size 25 :margin 12 title)))
+
+(define (subsection title)
+  (list (gap 8) (h3 :size 19 :margin 8 title)))
+
+; A paragraph set apart, with a bar down its left side.
+(define (note & body)
+  (div :background accent :padding-left 3 :margin 18
+    (div :background panel :padding 14
+      (p :margin 0 body))))
+
+; A reference entry: a signature in code, then what it does.
+(define (entry signature & description)
+  (div :margin 12
+    (p :margin 3 (code :color (get code-colours :symbol) signature))
+    (p :margin 0 :padding-left 18 muted description)))
+
+; A list of links with a line about each, like a table of contents.
+(define (contents items numbered)
+  (map-indexed
+    (fn (i item)
+      (div :margin 16
+        (p :margin 3
+           (if numbered (list (span :mono true :color faint (str (if (< i 9) "0" "") (inc i))) " "))
+           (a plain-link :href (get item :file) (b :size 18 (get item :title))))
+        (p :margin 0 :padding-left (if numbered 24 0) muted (get item :blurb))))
+    items))
+
+; Code as text, exactly as written, with its comments and line breaks.
+(define (code-block text)
+  (pre :background code-paper :color ink :margin 16 text))
+
+; ---------------------------------------------------------------------------
+; Showing code that is data. Examples in the guide are quoted lists, so
+; they can be both printed and run. The printer breaks a form across lines
+; when it's too long for one, and colours each token.
+
+(define (atom? x) (not (list? x)))
+
+(define (token x)
+  (span :color (get code-colours
+                    (cond ((string? x) :string) ((keyword? x) :keyword)
+                          ((number? x) :number) (else :symbol)))
+        (repr x)))
+
+(define (paren s) (span :color (get code-colours :punctuation) s))
+
+; Quoting forms print with their short prefixes: (quote x) is 'x.
+(define prefixes (dict "quote" "'" "quasiquote" "`" "unquote" "," "unquote-splicing" ",@"))
+
+(define (prefix x)
+  (if (and (= (length x) 2) (symbol? (first x))) (get prefixes (str (first x)))))
+
+; A form on one line.
+(define (flat x)
+  (cond ((atom? x) (token x))
+        ((prefix x) (list (paren (prefix x)) (flat (nth x 1))))
+        (else (list (paren "(") (interpose " " (map flat x)) (paren ")")))))
+
+; The printer fills lines like a paragraph: it puts each argument after the
+; last if there's room, and starts a new line if not. An :attribute and its
+; value always stay together.
+(define line-width 72)
+
+(define (units xs)
+  (cond ((empty? xs) (list))
+        ((and (keyword? (first xs)) (> (length xs) 1)) (cons (take xs 2) (units (drop xs 2))))
+        (else (cons (list (first xs)) (units (rest xs))))))
+
+(define (width unit) (+ (dec (length unit)) (sum (map (fn (form) (length (repr form))) unit))))
+
+(define (flat-unit unit) (interpose " " (map flat unit)))
+
+(define (pretty-unit unit indent)
+  (if (= (length unit) 1)
+      (pretty (first unit) indent)
+      (list (flat (first unit)) " " (pretty (nth unit 1) (+ indent 1 (width (take unit 1)))))))
+
+; Adds a unit to a line in progress, which is (dict :parts ... :column n).
+(define (place line unit indent)
+  (let ((column (get line :column))
+        (w (width unit))
+        (newline (str "\n" (join (repeat indent " ")))))
+    (cond ((<= (+ column 1 w) line-width)
+           (dict :parts (append (get line :parts) (list " " (flat-unit unit))) :column (+ column 1 w)))
+          ((<= (+ indent w) line-width)
+           (dict :parts (append (get line :parts) (list newline (flat-unit unit))) :column (+ indent w)))
+          (else
+           ; Too long for any line: print it across several, and start afresh after it.
+           (dict :parts (append (get line :parts) (list newline (pretty-unit unit indent))) :column line-width)))))
+
+; A form, across as many lines as it needs, when it starts `indent` spaces in.
+(define (pretty x indent)
+  (cond
+    ((or (atom? x) (empty? x) (<= (+ indent (length (repr x))) line-width)) (flat x))
+    ((prefix x) (list (paren (prefix x)) (pretty (nth x 1) (+ indent (length (prefix x))))))
+    (else
+      (let ((head (first x))
+            (head-fits (<= (+ indent 1 (length (repr head))) line-width))
+            (start (dict :parts (list) :column (if head-fits (+ indent 1 (length (repr head))) line-width)))
+            (filled (reduce (fn (line unit) (place line unit (+ indent 2))) start (units (rest x)))))
+        (list (paren "(") (if head-fits (flat head) (pretty head (inc indent)))
+              (get filled :parts) (paren ")"))))))
+
+; Shows a form. A (do ...) shows as the forms inside it, with a blank line
+; between each.
+(define (show-code form)
+  (pre :background code-paper :color ink :margin 0
+    (if (and (list? form) (= (first form) 'do))
+        (interpose "\n\n" (map (fn (f) (pretty f 0)) (rest form)))
+        (pretty form 0))))
+
+; Code, and below it what the code makes when it runs.
+(define (example form)
+  (div :margin 18
+    (show-code form)
+    (div :background rule-colour :padding 1
+      (div :background paper :padding 16
+        (p :margin 8 :size 12 :bold true :color faint "RESULT")
+        (eval form)))))

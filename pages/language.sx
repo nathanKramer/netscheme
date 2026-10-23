@@ -1,0 +1,77 @@
+(eval `(do ,@(source "site.sx")))
+
+(chapter "language.sx"
+  (section "Reading code")
+  (p "Netscheme is a Lisp, so its code is made of lists written in parentheses."
+     " A list whose first item names a function calls it with the rest as"
+     " arguments: " (code "(+ 1 2)") " is 3, and " (code "(* 2 (+ 1 2))") " is 6."
+     " A semicolon starts a comment that runs to the end of the line.")
+
+  (section "Values")
+  (entry "42, -1.5" "Numbers. There's one kind, a 64-bit float, and whole numbers print without a decimal point.")
+  (entry "\"text\"" "Strings. Inside one, " (code "\\\"") " is a quote, " (code "\\\\")
+         " a backslash, " (code "\\n") " a new line and " (code "\\t") " a tab.")
+  (entry "true, false, nil" (code "nil") " means nothing, and is also the empty list."
+         " Only " (code "false") " and " (code "nil") " count as false: 0 and"
+         " " (code "\"\"") " are true.")
+  (entry "name" "Symbols name variables. Evaluating one looks the variable up.")
+  (entry ":name" "Keywords evaluate to themselves. Elements use them for attributes,"
+         " and dictionaries often use them as keys.")
+  (entry "(1 2 3)" "Lists. To write one as data rather than a call, quote it: " (code "'(1 2 3)") ".")
+  (entry "(dict :a 1 :b 2)" "Dictionaries, which map keys to values. Keys can be numbers,"
+         " strings or keywords.")
+  (entry "(fn (x) (* x x))" "Functions, which are values like any other.")
+  (entry "(p \"hi\")" "Elements: what the element functions return, and what a page is made of.")
+
+  (section "Special forms")
+  (p "A few forms aren't function calls, because they don't evaluate all their"
+     " arguments first, or because they define names:")
+  (entry "(define name value)" "Defines a variable.")
+  (entry "(define (name params...) body...)" "Defines a function. It's shorthand for"
+         " " (code "(define name (fn (params...) body...))") ".")
+  (entry "(fn (params...) body...)" "Makes a function. Its body's last value is"
+         " what it returns. A parameter after " (code "&") " collects the remaining"
+         " arguments as a list.")
+  (entry "(define-state name initial)" "Defines a variable that keeps its value"
+         " when the page runs again. See " (a :href "state.sx" "State and events") ".")
+  (entry "(set! name value)" "Changes an existing variable, or state.")
+  (entry "(if test then else)" "Evaluates " (code "then") " if the test is true, and"
+         " otherwise " (code "else") ", or gives " (code "nil") " if there's no else.")
+  (entry "(cond (test body...) ... (else body...))" "Tries each test in turn, and"
+         " evaluates the body of the first that's true.")
+  (entry "(let ((name value) ...) body...)" "Names some values for the body. Each"
+         " value can use the names before it.")
+  (entry "(and a b ...), (or a b ...)" "Stop at the first false value, or the first"
+         " true one, and give that value.")
+  (entry "(do a b ...)" "Evaluates each in turn and gives the last.")
+  (entry "(quote x), 'x" "Gives " (code "x") " itself, without evaluating it.")
+  (entry "`(a ,b ,@c)" "Quasiquote: like quote, but " (code ",") " evaluates one"
+         " part, and " (code ",@") " evaluates a list and splices it in. See"
+         " " (a :href "code-as-data.sx" "Code is data") ".")
+  (entry "(eval x)" "Evaluates " (code "x") ", then evaluates the result as code.")
+
+  (section "Functions")
+  (p "Functions close over the variables around them, so a function can make"
+     " another function that remembers something:")
+  (example
+    '(let ((adder (fn (n) (fn (x) (+ x n))))
+           (add-ten (adder 10)))
+       (p "Adding ten to each: " (interpose ", " (map add-ten '(1 2 3))))))
+  (p "Rest parameters make variadic functions, and " (code "apply") " calls a"
+     " function with a list of arguments:")
+  (example
+    '(let ((average (fn (& xs) (/ (apply + xs) (length xs)))))
+       (p "The average of 3, 4 and 8 is " (average 3 4 8) ".")))
+
+  (section "When things go wrong")
+  (p "An error while a page loads, like calling something that isn't a function"
+     " or misspelling a name, replaces the page with a message saying what went"
+     " wrong. An error in an event handler shows in a banner below the toolbar,"
+     " and the page stays as it was.")
+  (p "Pages also have limits on how much work they can do, so a mistake can't"
+     " freeze the browser:")
+  (div :padding-left 18 :margin 12
+    (p :margin 4 "• " (b "A million evaluation steps") " for each run of a page, and each event handler.")
+    (p :margin 4 "• " (b "Ten thousand levels of nesting") ", so runaway recursion stops quickly.")
+    (p :margin 4 "• " (b "A million characters or items") " in any string or list a builtin makes."))
+  (p "See " (a :href "runaway.sx" "Runaway code") " for what happens when a page goes over."))

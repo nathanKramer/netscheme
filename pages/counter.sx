@@ -2,31 +2,34 @@
 ; handler, which changes some state with `set!`. The browser then runs this
 ; whole file again, and the page shows the new values.
 
+(eval `(do ,@(source "site.sx")))
+
 (define-state count 0)
 (define-state colour 0)
 (define-state open false)
 
 (define colours
   (light-dark (list "#b8336a" "#5b3ab8" "#2a7a3a" "#b85a1a")
-              (list "#f07aa8" "#b39bff" "#7fd38c" "#f0a66a")))
+              (list "#f07aa8" "#c3a6ff" "#86d993" "#f2ab73")))
 
-(define (plural n word)
-  (str n " " word (if (= n 1) "" "s")))
+(demo (str "Counter: " count)
+  "The smallest interactive page: three pieces of state, and buttons that change them."
 
-(page :title (str "Counter: " count)
-  (h1 :color (nth colours colour) "Clicked " (plural count "time"))
-  (p (button :on-click (fn () (set! count (+ count 1))) "Click me")
-     " "
-     (button :on-click (fn () (set! count 0)) "Reset")
-     " "
-     (button :on-click (fn () (set! colour (mod (+ colour 1) (length colours)))) "Change colour"))
+  (div :background panel :padding 24 :margin 16
+    (p :margin 18 :size 56 :bold true :color (nth colours colour) count)
+    (p :margin 0
+       (button :on-click (fn () (set! count (inc count))) "Click me")
+       " " (button :on-click (fn () (set! count 0)) "Reset")
+       " " (button :on-click (fn () (set! colour (mod (inc colour) (length colours)))) "Change colour")))
+  (p muted "Clicked " (plural count "time") " so far.")
 
   ; Any element can be clicked, not just buttons.
-  (div :background (light-dark "#f3eef7" "#2a2631") :padding 12 :on-click (fn () (set! open (not open)))
-    (p :margin (if open 8 0) (b (if open "Hide" "Show")) " how this works (click anywhere in this box)")
-    (if open
-        (div
-          (p :margin 8 "Each " (b "define-state") " variable keeps its value when the page"
-             " runs again; its initial value is only used the first time.")
-          (p :margin 0 "A click runs the handler, then the browser runs the page again from"
-             " the top and redraws it. Nothing edits the page in place.")))))
+  (div :background accent :padding-left 3 :margin 16 :on-click (fn () (set! open (not open)))
+    (div :background panel :padding 14
+      (p :margin (if open 10 0) (b (if open "▼ Hide" "► Show")) " how this works (click anywhere here)")
+      (if open
+          (div
+            (p :margin 10 "Each " (code "define-state") " variable keeps its value when the"
+               " page runs again. Its initial value is only used the first time.")
+            (p :margin 0 "A click runs the handler, then the browser runs the page again"
+               " from the top and draws it afresh. Nothing edits the page in place."))))))

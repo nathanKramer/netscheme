@@ -41,6 +41,7 @@ pub struct Palette {
     pub link: Color,
     pub button: Color,
     pub input: Color,
+    pub code: Color,
     pub border: Color,
     pub focus: Color,
     pub placeholder: Color,
@@ -54,6 +55,7 @@ impl Palette {
         link: Color(0x1a, 0x5f, 0xb4),
         button: Color(0xe4, 0xdf, 0xeb),
         input: Color(0xff, 0xff, 0xff),
+        code: Color(0xf4, 0xf1, 0xf7),
         border: Color(0xb9, 0xb2, 0xc3),
         focus: Color(0x5b, 0x3a, 0xb8),
         placeholder: Color(0x9a, 0x94, 0xa3),
@@ -66,6 +68,7 @@ impl Palette {
         link: Color(0x8a, 0xb4, 0xf8),
         button: Color(0x3a, 0x35, 0x44),
         input: Color(0x26, 0x22, 0x2d),
+        code: Color(0x29, 0x25, 0x30),
         border: Color(0x5a, 0x53, 0x66),
         focus: Color(0xb8, 0x9c, 0xff),
         placeholder: Color(0x82, 0x7b, 0x8d),
@@ -77,12 +80,20 @@ impl Palette {
     }
 }
 
+/// Which of the bundled fonts text is drawn in.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Face {
+    pub bold: bool,
+    pub mono: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Style {
     // Inherited
     pub palette: &'static Palette,
     pub font_size: f32,
     pub bold: bool,
+    pub mono: bool,
     pub color: Color,
     pub underline: bool,
     // Not inherited
@@ -98,6 +109,7 @@ impl Style {
             palette,
             font_size: 16.0,
             bold: false,
+            mono: false,
             color: palette.text,
             underline: false,
             background: None,
@@ -105,6 +117,10 @@ impl Style {
             padding_left: 0.0,
             margin: 0.0,
         }
+    }
+
+    pub fn face(&self) -> Face {
+        Face { bold: self.bold, mono: self.mono }
     }
 
     pub fn compute(el: &Element, parent: &Style) -> Style {
@@ -123,6 +139,8 @@ impl Style {
             "h3" => (s.font_size, s.bold, s.margin) = (19.0, true, 10.0),
             "p" => s.margin = 12.0,
             "b" => s.bold = true,
+            "code" => (s.mono, s.font_size, s.background, s.padding) = (true, s.font_size * 0.9, Some(palette.code), 2.0),
+            "pre" => (s.mono, s.font_size, s.background, s.padding, s.margin) = (true, 14.0, Some(palette.code), 14.0, 12.0),
             "a" => (s.color, s.underline) = (palette.link, true),
             "frame" => s.margin = 12.0,
             "button" => (s.background, s.padding) = (Some(palette.button), 8.0),
@@ -136,6 +154,7 @@ impl Style {
                 ("background", Value::Str(c)) => s.background = Some(parse_color(c, palette.page)),
                 ("size", Value::Num(n)) => s.font_size = *n as f32,
                 ("bold", v) => s.bold = v.truthy(),
+                ("mono", v) => s.mono = v.truthy(),
                 ("underline", v) => s.underline = v.truthy(),
                 ("padding", Value::Num(n)) => s.padding = *n as f32,
                 ("padding-left", Value::Num(n)) => padding_left = Some(*n as f32),

@@ -1,0 +1,89 @@
+(eval `(do ,@(source "site.sx")))
+
+; The live demos on this page. Each is code kept as data, which the page
+; both prints and runs.
+(define counter-code
+  '(do
+     (define-state clicks 0)
+     (define (clicker)
+       (p (button :on-click (fn () (set! clicks (inc clicks))) "Click me")
+          "  Clicked " (b (plural clicks "time")) "."))))
+(eval counter-code)
+
+(define greeting-code
+  '(do
+     (define-state name "")
+     (define (greeter)
+       (div
+         (p :margin 8 (input :value name :placeholder "Your name"
+                             :on-input (fn (text) (set! name text))))
+         (p :margin 0 "Hello, " (b (if (empty? name) "stranger" name)) "!")))))
+(eval greeting-code)
+
+(define list-code
+  '(do
+     (define-state items (list "Read the guide"))
+     (define-state draft "")
+     (define (todo)
+       (div
+         (p :margin 8
+            (input :value draft :placeholder "Something to do, then Enter"
+                   :on-input (fn (text) (set! draft text))
+                   :on-submit (fn (text)
+                                (if (not (empty? text))
+                                    (do (set! items (append items (list text)))
+                                        (set! draft ""))))))
+         (map (fn (item)
+                (p :margin 4
+                   (button :on-click (fn () (set! items (without item items))) "Done")
+                   " " item))
+              items)))))
+(eval list-code)
+
+(define (live code view)
+  (div :margin 18
+    (show-code code)
+    (div :background rule-colour :padding 1
+      (div :background paper :padding 16
+        (p :margin 8 :size 12 :bold true :color faint "LIVE")
+        view))))
+
+(chapter "state.sx"
+  (section "State")
+  (p "A variable defined with " (code "define-state") " keeps its value when the"
+     " page runs again. The value after its name is only used the first time."
+     " Change it with " (code "set!") ", usually from an event handler.")
+  (p "Here's a counter. This page defines it by evaluating the quoted code"
+     " below, so the code you see is exactly the code that's running:")
+  (live counter-code (clicker))
+
+  (section "Events")
+  (p "Any element can have an " (code ":on-click") " handler: a function that"
+     " takes no arguments. Buttons are the usual place for one, but a"
+     " " (code "div") " or a " (code "span") " can be clicked too.")
+  (p "After a handler runs, the browser runs the " (b "whole page") " again. The new"
+     " values of the state variables give a new document, which replaces the old"
+     " one. Nothing edits the page in place.")
+  (note "This is the same idea as React: the page is a function of its state."
+        " It also means a handler doesn't need to know what on the page depends on"
+        " what it changed.")
+
+  (section "Text inputs")
+  (p "An " (code "input") " shows the text in its " (code ":value") ". Typing calls"
+     " " (code ":on-input") " with the new text, and the handler decides what to"
+     " keep, usually by storing it in state. Enter calls " (code ":on-submit") ".")
+  (live greeting-code (greeter))
+  (p "Inputs have " (code ":placeholder") " text for when they're empty, and a"
+     " " (code ":width") " in pixels. Tab moves to the next input, and Escape leaves it.")
+  (subsection "A to-do list")
+  (p "Put state, inputs and lists together and you have an app:")
+  (live list-code (todo))
+
+  (section "Where state lives")
+  (p "State belongs to the page and lasts while you're on it. Each "
+     (code "define-state") " is identified by its order in the page, so state"
+     " should be defined at the top level, the same way every time the page runs."
+     " Going back to a page restores the state it had. Reloading, with F5 or"
+     " Ctrl+R, starts it over.")
+  (p "For more, see the " (a :href "counter.sx" "counter") " and "
+     (a :href "inputs.sx" "text inputs") " demos."))

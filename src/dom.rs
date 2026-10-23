@@ -6,11 +6,11 @@ use crate::lisp::{Value, check_length, write_quoted};
 
 /// Element constructors available to pages as ordinary functions.
 /// `frame` is defined separately, as it loads a page when called.
-pub const TAGS: &[&str] = &["page", "div", "row", "h1", "h2", "h3", "p", "span", "b", "a", "button", "input"];
+pub const TAGS: &[&str] = &["page", "div", "row", "h1", "h2", "h3", "p", "pre", "span", "b", "code", "a", "button", "input"];
 
 /// Tags laid out within a line of text rather than as their own block.
 pub fn is_inline(tag: &str) -> bool {
-    matches!(tag, "span" | "b" | "a" | "button" | "input")
+    matches!(tag, "span" | "b" | "code" | "a" | "button" | "input")
 }
 
 /// Elements nested deeper than this are refused, so that laying out or

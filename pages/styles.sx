@@ -1,47 +1,70 @@
-; Styles are values: lists of attributes that an element splices in. Define
-; them with variables, combine them with append, compute them from state,
-; and wrap them in components.
+(eval `(do ,@(source "site.sx")))
 
-; Starts in the browser's mode, but this page has its own switch too.
-(define-state dark (dark-mode))
+; Styles this chapter defines and shows, kept as code so it can print them.
+(define styles-code
+  '(do
+     (define warm (light-dark "#b85a1a" "#f2ab73"))
+     (define callout (style :background (light-dark "#fff1d6" "#3d2f1c") :padding 12 :margin 8))
+     (define loud (style :color warm :bold true :size 20))))
+(eval styles-code)
 
-; The palette depends on state, so switching theme is just a click.
-(define ink (if dark "#e8e4ee" "#1a1a1a"))
-(define paper (if dark "#1d1a22" "#ffffff"))
-(define faint (if dark "#9a94a3" "#6b6475"))
-(define accent (if dark "#c8a8ff" "#5b3ab8"))
-(define panel (if dark "#2a2631" "#f3eef7"))
+(chapter "styles.sx"
+  (section "Style attributes")
+  (p "Elements are styled with attributes. There are no stylesheets and no"
+     " selectors: each element says how it looks.")
+  (entry ":color \"#5b3ab8\"" "Text colour, as " (code "#rgb") ", " (code "#rrggbb")
+         " or one of a few names like " (code "red") ". Children inherit it.")
+  (entry ":background \"#f3eef7\"" "Fills the element's box.")
+  (entry ":size 20" "Font size in pixels. Inherited.")
+  (entry ":bold true" "Bold text. Inherited.")
+  (entry ":mono true" "Monospaced text, as in " (code "code") ". Inherited.")
+  (entry ":underline true" "Underlined text. Inherited.")
+  (entry ":padding 12" "Space inside the box, on every side. On inline elements, on the left and right.")
+  (entry ":padding-left 24" "Space inside on the left only, after " (code ":padding") ".")
+  (entry ":margin 16" "Space below a block, before whatever comes next.")
+  (entry ":max-width 720" "The widest the content may be. Narrower content is centred, and the"
+         " background still fills the whole box. These pages use it on " (code "page") ".")
+  (example
+    '(div :background (light-dark "#e8f1fb" "#1f2530") :padding 16
+       (p :size 20 :bold true :margin 6 "A heading of sorts")
+       (p :margin 0 :color (light-dark "#555" "#aaa") "With a quieter line below.")))
 
-; Styles built from the palette.
-(define body (style :color ink :background paper))
-(define muted (style :color faint :size 14))
-(define heading (style :color accent))
-(define card (style :background panel :padding 14 :margin 12))
-(define control (style :background panel :color ink :bold true))
+  (section "Styles are values")
+  (p "The " (code "style") " function takes attributes and returns them as a list."
+     " Put that list in an element and it's spliced in, just like children that"
+     " come from a " (code "map") ". So a style is a value you can name, pass"
+     " around and compute:")
+  (show-code styles-code)
+  (gap 8)
+  (example
+    '(div callout
+       (p :margin 0 "A callout with some " (span loud "loud") " words.")))
 
-; Combining styles is appending lists. Later attributes win, so this is a
-; card with a different background.
-(define warning (append card (style :background (if dark "#3d2f1c" "#fff1d6"))))
+  (subsection "Combining styles")
+  (p "Combining two styles is " (code "append") ", because they're lists. When an"
+     " attribute appears twice the later one wins, so put the style you want to"
+     " take priority last:")
+  (example
+    '(div (append callout (style :background (light-dark "#e3f4e6" "#212a22")))
+       (p :margin 0 "The callout's padding and margin, with a green background.")))
 
-; Components pass their arguments through with `&`, so callers can add
-; children and override attributes.
-(define (title & body) (h1 heading body))
-(define (note & body) (p muted body))
-(define (card-box & body) (div card body))
+  (subsection "Styles in components")
+  (p "A component that passes its arguments through, with " (code "&") ", lets"
+     " whoever calls it add attributes that override its own:")
+  (example
+    '(let ((badge (fn (& body)
+                    (span :background warm :color "#fff" :padding 6 :bold true body))))
+       (p (badge "new") " " (badge :background "#2a7a3a" "done") " " (badge :size 12 "small"))))
 
-(page :title "Styles" body
-  (title "Styles are values")
-  (p "Everything on this page gets its look from ordinary variables and"
-     " functions. There's no stylesheet and no selectors.")
-  (card-box
-    (p :margin 0 "This is a " (b "card-box") ": a div with the " (b "card")
-       " style spliced in."))
-  (div warning
-    (p :margin 0 "This one uses " (b "warning") ", which is the card style with"
-       " another background appended."))
-  (note "This is a " (b "note") ": a p with the muted style.")
-  (note :color accent
-        "This note passes its own :color. It comes after the muted style's, so it wins.")
-  (p (button control :on-click (fn () (set! dark (not dark)))
-             (if dark "Switch to light" "Switch to dark"))
-     " The palette is computed from state, so the whole page follows it."))
+  (section "Dark mode")
+  (p "The browser has a dark mode, which the toolbar's button switches. Pages"
+     " that pick no colours of their own follow it automatically. A page that"
+     " does pick colours can ask which mode is on:")
+  (entry "(dark-mode)" "True when the browser is in dark mode.")
+  (entry "(light-dark light dark)" "Whichever of its arguments suits the mode, like CSS's"
+         " function of the same name. It works on any value, not just colours.")
+  (example
+    '(p "This browser is in " (b (if (dark-mode) "dark" "light")) " mode, so this is "
+        (span :color (light-dark "#b8336a" "#f07aa8") "pink for it") "."))
+  (note "Every colour on these pages comes from a " (code "light-dark") " in "
+        (code "site.sx") ". Switch modes in the toolbar to see them change."))

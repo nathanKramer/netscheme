@@ -1,4 +1,4 @@
-# Toy Browser
+# Netscheme
 
 A toy web browser whose pages are written in a small Lisp instead of
 HTML, CSS, and JavaScript. One language covers all three jobs:
@@ -13,6 +13,10 @@ HTML, CSS, and JavaScript. One language covers all three jobs:
 
 A page is a program. The browser evaluates it, and the last value it
 produces, a `(page ...)` element, is the document.
+
+The browser opens on its own guide, which is written in Netscheme: start at
+`pages/hello.sx` for a tour of the language, its library, and how the browser
+works, with live examples that are printed from the same code they run.
 
 ```sh
 cargo run                                   # opens pages/hello.sx
@@ -31,7 +35,7 @@ cargo run -- pages/hello.sx --chrome --screenshot out.png
 | Language | Rust | Fast enough to re-layout every frame, and enums plus pattern matching suit an interpreter. |
 | Window and input | `winit` | Cross-platform, including Wayland and X11. |
 | Pixels | `softbuffer` | A plain CPU framebuffer. We paint every pixel ourselves, the way a simple browser engine does. |
-| Text | `fontdue` + bundled Liberation Sans | Rasterizes glyphs. Shaping and kerning are left out for now. |
+| Text | `fontdue` + bundled Liberation Sans and Mono | Rasterizes glyphs. Shaping and kerning are left out for now. |
 | Screenshots | `png` | Headless rendering for checking pages and, later, golden-image tests. |
 
 No GUI toolkit is used on purpose. Parsing, styling, layout, and
@@ -48,6 +52,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 |---|---|---|
 | `lisp/reader.rs` | Text to `Value`s | HTML tokenizer and parser |
 | `lisp/eval.rs`, `builtins.rs` | Runs the page program | JS engine, plus building the DOM |
+| `lisp/library.rs`, `ui/prelude.sx` | The standard library, in Rust and in the language | JS's built-in objects |
 | `lisp/budget.rs` | Limits on steps, nesting and sizes | Script timeouts |
 | `loader.rs` | Locations, downloading, URL resolution, the origin rule, and loading pages into frames | Networking and navigation |
 | `dom.rs` | `Element` / `Node` tree | DOM |
@@ -63,19 +68,37 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - Special forms: `define`, `define-state`, `set!`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
 - Functions take a rest parameter after `&`: `(fn (first & more) ...)`.
-- Builtins: `+ - * / mod = < > not str repr url-encode style dark-mode light-dark`, the list functions
-  `list first rest nth cons append length empty? map filter`, the predicates
-  `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
-  `children` for looking inside elements
-- Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a button input`.
+- Builtins, written in Rust:
+  - Numbers: `+ - * / mod floor ceil round abs sqrt pow min max`
+  - Comparisons: `= < > <= >= not`. `<` and friends compare two numbers or two strings.
+  - Lists: `list first rest nth last cons append length empty? range repeat
+    reverse take drop contains? index-of sort sort-by map filter reduce apply`
+  - Strings: `str repr join split upper lower trim substring starts-with?
+    ends-with? parse-number url-encode`. `length`, `empty?`, `take`, `drop`,
+    `reverse`, `contains?` and `index-of` work on strings too.
+  - Dictionaries: `(dict :key value ...)`, `get`, `assoc`, `dissoc`, `keys`, `values`.
+    Keys are numbers, strings or keywords, kept in order. `assoc` and `dissoc`
+    return a new dictionary rather than changing the old one.
+  - Predicates: `list? string? number? symbol? keyword? fn? dict?`
+  - Pages: `style dark-mode light-dark param go source frame`, and `tag`, `attr`
+    and `children` for looking inside elements
+- The prelude, `ui/prelude.sx`, is written in the language itself and
+  runs before every page: `inc dec sum product concat without toggle any? all?
+  map-indexed update plural`. A page can define its own versions instead.
+- A builtin costs one evaluation step however much work it does, so
+  `(sort (range 100000))` fits easily in a page's budget, where the same sort
+  written in the page wouldn't.
+- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input`.
+  `pre` keeps its spaces and line breaks, and `code` and `pre` use a monospaced font.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists are spliced in, attributes and
   all, and `nil` is skipped, so `if` and functions that return lists compose
   naturally. When an attribute is given twice, the later one wins.
-- Style attributes: `:color`, `:background`, `:size`, `:bold`, `:underline`, `:padding`,
-  `:padding-left`, `:margin`.
+- Style attributes: `:color`, `:background`, `:size`, `:bold`, `:mono`, `:underline`, `:padding`,
+  `:padding-left`, `:margin`, `:max-width`.
   Margin applies only to block elements; padding on an inline element pads its
-  left and right.
+  left and right. `:max-width` narrows a block's content and centres it, while
+  its background keeps the full width.
 - Links: `(a :href "other.sx" ...)` opens a local page, resolved relative to the
   current page. An href starting with `/` is relative to the working directory.
   Go back with Alt+←, the mouse's back button, or the toolbar.
@@ -101,8 +124,7 @@ which an element splices in like any other list:
   lets callers add children and override attributes:
   `(define (note & body) (p muted body))`, then `(note :color "red" "hi")`.
 - **Variables and themes are just code.** Styles are computed when the page
-  runs, so a palette can depend on `define-state`, as the dark mode toggle in
-  `pages/styles.sx` does.
+  runs, so a palette can depend on `define-state` or on dark mode.
 
 ### Dark mode
 
@@ -175,7 +197,7 @@ order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 `--chrome` includes the toolbar, as the window shows it, and `--dark` turns on dark mode:
 
 ```sh
-cargo run -- pages/inputs.sx --screenshot out.png --click 200,98 --type $'Ada\tWrite docs\n'
+cargo run -- pages/inputs.sx --screenshot out.png --click 250,332 --type $'Ada\tWrite docs\n'
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
 ```
 
@@ -215,6 +237,17 @@ gives `"(p :color \"red\" \"hi\")"`, and reading that back builds the same eleme
 - `(row ...)` lays its children out side by side in equal columns.
 
 `pages/fractal.sx` frames itself twice.
+
+There's no import statement. The pages in `pages/` share their theme and
+components by reading `site.sx` as data and running it in place:
+
+```lisp
+(eval `(do ,@(source "site.sx")))
+```
+
+`site.sx` also has the guide's code printer. Examples in the guide are quoted
+forms, which a page both prints, with line breaks and colours, and evaluates,
+so an example always shows what its code makes.
 
 ## The web
 

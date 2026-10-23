@@ -2,8 +2,8 @@ use std::{fmt, rc::Rc};
 
 use super::{
     budget::{self, MAX_LENGTH},
-    eval::{Env, apply},
-    reader,
+    eval::{self, Env, apply},
+    library, reader,
     value::{NativeFn, Value},
 };
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     loader::{self, PageContext},
 };
 
-pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
+pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
     let env = Env::global(ctx.store.page(&ctx.state_key));
 
     def(&env, "+", |args| fold_nums(args, |a, b| a + b));
@@ -23,8 +23,6 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     def(&env, "/", |args| fold_nums(args, |a, b| a / b));
     def(&env, "mod", |args| fold_nums(args, f64::rem_euclid));
     def(&env, "=", |args| Ok(Value::Bool(args.windows(2).all(|w| w[0].equals(&w[1])))));
-    def(&env, "<", |args| compare(args, |a, b| a < b));
-    def(&env, ">", |args| compare(args, |a, b| a > b));
     def(&env, "not", |args| match args {
         [x] => Ok(Value::Bool(!x.truthy())),
         _ => Err("not: expected one argument".into()),
@@ -66,10 +64,12 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     });
     def(&env, "length", |args| match args {
         [Value::Str(s)] => Ok(Value::Num(s.chars().count() as f64)),
+        [Value::Dict(d)] => Ok(Value::Num(d.len() as f64)),
         _ => Ok(Value::Num(list_arg("length", args)?.len() as f64)),
     });
     def(&env, "empty?", |args| match args {
         [Value::Str(s)] => Ok(Value::Bool(s.is_empty())),
+        [Value::Dict(d)] => Ok(Value::Bool(d.is_empty())),
         _ => Ok(Value::Bool(list_arg("empty?", args)?.is_empty())),
     });
     def(&env, "append", |args| {
@@ -187,12 +187,20 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         Ok(c.params.iter().find(|(k, _)| k == &**name).map_or(Value::Nil, |(_, v)| Value::Str(v.as_str().into())))
     });
 
-    env
+    library::define_all(&env);
+    PRELUDE.with(|prelude| prelude.iter().try_for_each(|form| eval::eval(form, &env).map(drop)))
+        .map_err(|e| format!("in the prelude: {e}"))?;
+    Ok(env)
+}
+
+thread_local! {
+    /// The library functions written in the page language, read once.
+    static PRELUDE: Vec<Value> = reader::read_all(include_str!("../../ui/prelude.sx")).expect("the prelude reads");
 }
 
 /// Builds a string with `write`, stopping once it's longer than `MAX_LENGTH`
 /// rather than after building something enormous.
-fn bounded_string(what: &str, write: impl FnOnce(&mut Bounded) -> fmt::Result) -> Result<Value, String> {
+pub(super) fn bounded_string(what: &str, write: impl FnOnce(&mut Bounded) -> fmt::Result) -> Result<Value, String> {
     let mut out = Bounded(String::new());
     match write(&mut out) {
         Ok(()) => Ok(Value::Str(out.0.into())),
@@ -200,7 +208,7 @@ fn bounded_string(what: &str, write: impl FnOnce(&mut Bounded) -> fmt::Result) -
     }
 }
 
-struct Bounded(String);
+pub(super) struct Bounded(String);
 
 impl fmt::Write for Bounded {
     fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -212,7 +220,7 @@ impl fmt::Write for Bounded {
     }
 }
 
-fn def(env: &Env, name: &str, f: impl Fn(&[Value]) -> Result<Value, String> + 'static) {
+pub(super) fn def(env: &Env, name: &str, f: impl Fn(&[Value]) -> Result<Value, String> + 'static) {
     let f: NativeFn = Rc::new(f);
     env.define(name.into(), Value::Native(name.into(), f));
 }
@@ -224,7 +232,7 @@ fn predicate(env: &Env, name: &'static str, test: fn(&Value) -> bool) {
     });
 }
 
-fn list_arg<'a>(name: &str, args: &'a [Value]) -> Result<&'a [Value], String> {
+pub(super) fn list_arg<'a>(name: &str, args: &'a [Value]) -> Result<&'a [Value], String> {
     match args {
         [Value::List(xs)] => Ok(xs),
         [Value::Nil] => Ok(&[]),
@@ -247,6 +255,3 @@ fn fold_nums(args: &[Value], op: fn(f64, f64) -> f64) -> Result<Value, String> {
     Ok(Value::Num(rest.iter().fold(*first, |acc, n| op(acc, *n))))
 }
 
-fn compare(args: &[Value], op: fn(f64, f64) -> bool) -> Result<Value, String> {
-    Ok(Value::Bool(nums(args)?.windows(2).all(|w| op(w[0], w[1]))))
-}

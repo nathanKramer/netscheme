@@ -1,0 +1,73 @@
+(eval `(do ,@(source "site.sx")))
+
+; A component this chapter defines, prints and uses. It's kept as data so
+; the page can show its code, and `eval` defines it.
+(define card-code
+  '(define (card title & body)
+     (div :background (light-dark "#f3eef7" "#2a2631") :padding 14 :margin 10
+       (b :size 18 title)
+       body)))
+(eval card-code)
+
+(chapter "tour.sx"
+  (section "A page is a program")
+  (p "A Netscheme page is a file of Lisp code, usually ending in " (code ".sx")
+     ". The browser runs the whole file, top to bottom, and the value of the"
+     " last expression is the page. Here's a complete one:")
+  (code-block
+"; Definitions come first, then the page itself.
+(define who \"world\")
+
+(page :title \"Greetings\"
+  (h1 \"Hello, \" who \"!\")
+  (p \"This is a whole page.\"))")
+  (p "Save that as " (code "greetings.sx") " and open it with "
+     (code "cargo run -- greetings.sx") ", or type its path into the address bar.")
+
+  (section "Elements are functions")
+  (p "Each element is an ordinary function. Its arguments are attributes,"
+     " which come in pairs of a " (code ":keyword") " and a value, and children,"
+     " which are text or other elements:")
+  (example
+    '(p :color (light-dark "#2a7a3a" "#7fd38c")
+        "A paragraph with " (b "bold") " and " (span :size 22 "bigger") " text."))
+  (p "These are the elements there are:")
+  (entry "page" "The whole document. It takes " (code ":title") ", and styles that apply to everything.")
+  (entry "div, row" "Boxes that stack their children. A " (code "row")
+         " puts its children side by side, in columns of equal width.")
+  (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
+  (entry "span, b, code, a, button, input" "Inline elements, which flow along a line of text and wrap with it.")
+  (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
+
+  (section "Children can be anything")
+  (p "Numbers become text. " (code "nil") " is skipped, so an " (code "if")
+     " without an else branch can leave something out. And lists are spliced in,"
+     " so a " (code "map") " can produce several children:")
+  (example
+    '(div
+       (p "Six times seven is " (* 6 7) ".")
+       (p "Today is " (if false "a holiday") "an ordinary day.")
+       (map (fn (fruit) (p "• " fruit)) '("apple" "banana" "cherry"))))
+
+  (section "Components are functions too")
+  (p "Since elements are functions, a component is just a function that returns"
+     " elements. This chapter defines one:")
+  (show-code card-code)
+  (gap 8)
+  (p "The " (code "&") " collects the rest of the arguments into " (code "body")
+     ", so a card can take any number of children, and attributes too. Using it"
+     " looks just like using a built-in element:")
+  (example
+    '(div
+       (card "A card" (p :margin 0 "With a paragraph inside."))
+       (card "Another" :background (light-dark "#fff1d6" "#3d2f1c")
+             (p :margin 0 "This one passes its own " (code ":background") "."))))
+  (note "When an attribute is given twice, the later one wins. That's how the"
+        " second card's background replaces the one " (code "card") " sets.")
+
+  (section "Links")
+  (p "An " (code "a") " element with an " (code ":href") " goes to another page when"
+     " clicked. Relative locations are resolved against the current page, like"
+     " on the web, and " (code "http://") " and " (code "https://") " links download"
+     " pages from servers. Alt+← goes back.")
+  (example '(p "Read on: " (a :href "styles.sx" "styles are values") ".")))

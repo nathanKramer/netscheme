@@ -130,8 +130,8 @@ impl Browser {
 
     pub fn title(&self) -> String {
         match self.page.attr("title") {
-            Some(Value::Str(t)) => format!("{t} — Toy Browser"),
-            _ => "Toy Browser".into(),
+            Some(Value::Str(t)) => format!("{t} — Netscheme"),
+            _ => "Netscheme".into(),
         }
     }
 
@@ -610,7 +610,7 @@ mod tests {
         let mut browser = Browser::new(from, false);
         render(&mut browser);
         assert!(browser.click(5.0, 5.0));
-        assert_eq!(browser.title(), "Arrived — Toy Browser", "resolved relative to the page, and not followed again");
+        assert_eq!(browser.title(), "Arrived — Netscheme", "resolved relative to the page, and not followed again");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -668,7 +668,7 @@ mod tests {
         assert!(browser.click(x, y));
         assert!(browser.dark_mode(), "the toolbar's button turns it on");
 
-        press(&mut browser, [Key::FocusAddressBar, Key::Text("pages/about.sx".into()), Key::Enter]);
+        press(&mut browser, [Key::FocusAddressBar, Key::Text("pages/tour.sx".into()), Key::Enter]);
         press(&mut browser, [Key::Back]);
         assert!(browser.dark_mode(), "it outlasts navigation");
     }
@@ -737,19 +737,19 @@ mod tests {
         ]);
         let mut browser = Browser::new(server.url("index.sx"), true);
         render(&mut browser);
-        assert_eq!(browser.title(), "Remote — Toy Browser");
+        assert_eq!(browser.title(), "Remote — Netscheme");
         assert!(browser.page.to_string().contains(r#""forms: " "1""#), "source reads other pages: {}", browser.page);
 
         click_link(&mut browser, to("other.sx"));
         assert_eq!(browser.site, server.url("other.sx"));
-        assert_eq!(browser.title(), "Other — Toy Browser");
+        assert_eq!(browser.title(), "Other — Netscheme");
 
         press(&mut browser, [Key::Back]);
         click_link(&mut browser, to("next.sx"));
         assert_eq!(browser.site, server.url("sub/next.sx"), "relative to the framed page");
 
         press(&mut browser, [Key::FocusAddressBar, Key::Text(server.url("moved")), Key::Enter]);
-        assert_eq!(browser.title(), "Moved here — Toy Browser");
+        assert_eq!(browser.title(), "Moved here — Netscheme");
         click_link(&mut browser, to("next.sx"));
         assert_eq!(browser.site, server.url("sub/next.sx"), "relative to where the redirect led");
     }

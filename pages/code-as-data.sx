@@ -1,0 +1,75 @@
+(eval `(do ,@(source "site.sx")))
+
+(chapter "code-as-data.sx"
+  (p "In a Lisp, code is written as lists, and lists are data. Netscheme leans"
+     " on that everywhere: a page can read code, build it, run it, and print"
+     " what it made as code again.")
+
+  (section "Elements print as code")
+  (p "An element is a value, and printing one gives the code that would build it."
+     " That code, run again, makes the same element:")
+  (example
+    '(let ((el (p :color "#b8336a" "Hello, " (b "world"))))
+       (div (p :margin 6 "The element: " el)
+            (p :margin 0 "Printed: " (code (repr el))))))
+  (p "Elements can be taken apart, too. " (code "tag") ", " (code "attr") " and"
+     " " (code "children") " look inside one, so a page can inspect what it built"
+     " before returning it. " (a :href "lab.sx" "The lab") " counts its own elements this way.")
+  (example
+    '(let ((menu (div (p "Soup") (p "Bread") (p "Cake"))))
+       (p "The menu is a " (code (str (tag menu))) " with "
+          (plural (length (children menu)) "item") ": "
+          (join (map (fn (item) (first (children item))) (children menu)) ", ") ".")))
+
+  (section "Reading a page's source")
+  (p (code "(source location)") " reads another page and returns its code as a"
+     " list of forms, without running it. The home page has this many:")
+  (example
+    '(let ((forms (source "hello.sx")))
+       (p (plural (length forms) "form") ", the first of which starts with "
+          (code (repr (first (first forms)))) ".")))
+  (p "The toolbar's " (b "View source") " button opens "
+     (a :href "browser:view-source?page=browser:view-source" "a page") " that does"
+     " exactly this: it reads a page's forms with " (code "source") ", then turns"
+     " them into coloured, indented elements. The code samples in this guide are"
+     " printed the same way, by functions in " (code "site.sx") ".")
+
+  (section "Building code")
+  (p "Quasiquote, written with a backquote, is a template for code. Inside it,"
+     " " (code ",x") " puts in the value of x, and " (code ",@xs") " splices in a"
+     " list. " (code "eval") " then runs the result:")
+  (example
+    '(let ((tag 'b) (words '("built" "from" "parts")))
+       (div (p :margin 6 "The code: " (code (repr `(,tag ,@words))))
+            (p :margin 0 "Run: " (eval `(,tag ,@(interpose " " words)))))))
+
+  (subsection "How these pages share code")
+  (p "Netscheme has no import statement, and doesn't need one. Each page of this"
+     " site starts with:")
+  (code-block "(eval `(do ,@(source \"site.sx\")))")
+  (p (code "source") " reads " (a :href "browser:view-source?page=pages/site.sx" "site.sx")
+     " as a list of definitions. The quasiquote wraps them in a " (code "do") ", and"
+     " " (code "eval") " runs that right where the line is, so every definition"
+     " becomes part of the page.")
+
+  (section "Pages inside pages")
+  (p "A " (code "frame") " shows another page inside this one. The framed page"
+     " runs separately, with its own state, and clicks inside it go to it.")
+  (entry ":src \"page.sx\"" "The page to show, relative to this one.")
+  (entry ":scale 0.5" "How big to draw it. Frames inside frames multiply their scales.")
+  (entry ":height 300" "A fixed height, which the frame scrolls within. "
+         (code "\"fill\"") " reaches the bottom of the window.")
+  (entry ":border false" "Leaves out the frame's border.")
+  (example '(frame :src "hello.sx" :scale 0.5 :height 260))
+  (p "Since a page can frame any page, it can frame itself. "
+     (a :href "fractal.sx" "The fractal") " does, twice, and the browser stops"
+     " once the copies are too small to see.")
+
+  (subsection "The browser is a page")
+  (p "The toolbar at the top of the window is "
+     (a :href "browser:view-source?page=browser:chrome" "a Netscheme page") " too,"
+     " called " (code "browser:chrome") ". Its address bar is an " (code "input")
+     ", its buttons are " (code "button") "s, and the site you're reading is in its"
+     " " (code "frame") ". Pages at " (code "browser:") " locations live in the"
+     " browser's " (code "ui") " folder, and they're the only pages allowed to"
+     " change the browser's settings."))

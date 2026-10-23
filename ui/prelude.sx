@@ -1,0 +1,40 @@
+; The prelude: the half of Netscheme's standard library that's written in
+; Netscheme. It runs before every page, so a page can use these, or define
+; its own instead. The other half is built into the browser.
+
+(define (inc n) (+ n 1))
+(define (dec n) (- n 1))
+(define (sum xs) (reduce + 0 xs))
+(define (product xs) (reduce * 1 xs))
+
+; Joins a list of lists into one list.
+(define (concat lists) (apply append lists))
+
+; The list without any items equal to x.
+(define (without x xs) (filter (fn (y) (not (= x y))) xs))
+
+; Removes x if the list has it, and adds it if not.
+(define (toggle x xs) (if (contains? xs x) (without x xs) (cons x xs)))
+
+(define (any? f xs) (not (empty? (filter f xs))))
+(define (all? f xs) (empty? (filter (fn (x) (not (f x))) xs)))
+
+; Puts sep between the items: (interpose ", " '(a b c)) is (a ", " b ", " c).
+(define (interpose sep xs)
+  (if (or (empty? xs) (empty? (rest xs)))
+      xs
+      (cons (first xs) (cons sep (interpose sep (rest xs))))))
+
+; Splits a list into lists of n items: (chunk 2 '(a b c)) is ((a b) (c)).
+(define (chunk n xs)
+  (if (empty? xs) (list) (cons (take xs n) (chunk n (drop xs n)))))
+
+; Calls (f index item) for each item.
+(define (map-indexed f xs)
+  (map (fn (i) (f i (nth xs i))) (range (length xs))))
+
+; Replaces the value at key with (f value).
+(define (update d key f) (assoc d key (f (get d key))))
+
+; "1 apple", "2 apples".
+(define (plural n word) (str n " " word (if (= n 1) "" "s")))

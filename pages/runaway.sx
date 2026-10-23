@@ -2,6 +2,8 @@
 ; event handler, gets a budget of evaluation steps and a limit on how deeply
 ; evaluation nests. Going over either stops it with an error instead.
 
+(eval `(do ,@(source "site.sx")))
+
 (define (forever) (forever))
 
 (define (fib n)
@@ -12,15 +14,15 @@
 
 (define-state result "nothing yet")
 
-(page :title "Runaway code"
-  (h1 "Runaway code")
-  (p "Each button runs some code when clicked. The first two never finish in"
-     " reasonable time, so the browser stops them and reports why.")
+(demo "Runaway code"
+  "Each button runs some code when clicked. The first two would never finish in reasonable time."
   (p (button :on-click (fn () (forever)) "Recurse forever")
-     " "
-     (button :on-click (fn () (set! result (fib 40))) "Compute fib 40")
-     " "
-     (button :on-click (fn () (set! result (count-down 3000))) "Recurse 3000 deep"))
-  (p "Last result: " (b result))
-  (p "A page that loops while it loads gets the same treatment: "
-     (a :href "forever.sx" "try one") "."))
+     " " (button :on-click (fn () (set! result (fib 40))) "Compute fib 40")
+     " " (button :on-click (fn () (set! result (count-down 3000))) "Recurse 3000 deep"))
+  (div :background panel :padding 14 :margin 16
+    (p :margin 0 "Last result: " (b result)))
+  (p "The browser stops the first two and says why in a banner, and the page"
+     " carries on. The third recurses deeply too, but finishes well within the"
+     " limits.")
+  (note "A page that loops while it loads gets the same treatment, except that"
+        " the error replaces the page: " (a :href "forever.sx" "try one") "."))

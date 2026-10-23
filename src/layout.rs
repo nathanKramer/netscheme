@@ -7,13 +7,13 @@ use crate::{
     dom::{self, Element, Node},
     lisp::{self, Value},
     paint::Fonts,
-    style::{Color, Palette, Style},
+    style::{Color, Face, Palette, Style},
 };
 
 pub enum DisplayItem {
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
     /// `y` is the text baseline.
-    Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: Color },
+    Text { x: f32, y: f32, text: String, size: f32, face: Face, color: Color },
     /// Items after this are only drawn inside `Clip`, until the next `Clip`.
     Clip(Clip),
 }
@@ -211,13 +211,22 @@ impl<'a> Layout<'a> {
     fn block_on_stack(&mut self, el: &Element, parent: &Style, x: f32, y: f32, w: f32) -> f32 {
         let style = Rc::new(Style::compute(el, parent));
         let (pad, pad_left) = (style.padding * self.scale, style.padding_left * self.scale);
-        let (inner_x, inner_w) = (x + pad_left, (w - pad - pad_left).max(0.0));
+        let (mut inner_x, mut inner_w) = (x + pad_left, (w - pad - pad_left).max(0.0));
+        // `:max-width` narrows the content, centred, while the background keeps the full width.
+        if let Some(Value::Num(max)) = el.attr("max-width") {
+            let max = (*max as f32 * self.scale).max(0.0);
+            if inner_w > max {
+                inner_x += (inner_w - max) / 2.0;
+                inner_w = max;
+            }
+        }
         let background_index = self.items.len();
 
         let top = y + pad;
         let bottom = match &*el.tag {
             "row" => self.row(&el.children, &style, inner_x, top, inner_w),
             "frame" => self.frame(el, inner_x, top, inner_w),
+            "pre" => self.preformatted(&el.children, &style, inner_x, top),
             _ => self.flow(&el.children, &style, inner_x, top, inner_w),
         };
 
@@ -248,6 +257,45 @@ impl<'a> Layout<'a> {
             }
         }
         self.inline_run(&mut run, x, cy, w)
+    }
+
+    /// Text that keeps its spaces and line breaks, as code needs. Lines
+    /// don't wrap. Inline elements inside can style parts of it.
+    fn preformatted(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32) -> f32 {
+        let mut run = Vec::new();
+        for child in children {
+            match child {
+                Node::Text(text) => run.push(Segment::text(text, style)),
+                Node::Element(child) => self.collect_inline(child, style, None, None, &mut run),
+            }
+        }
+        let mut cy = y;
+        let mut line: Vec<Piece> = Vec::new();
+        let mut line_w = 0.0;
+        for (i, segment) in run.iter().enumerate() {
+            for (n, part) in segment.text.split('\n').enumerate() {
+                if n > 0 {
+                    if line.is_empty() {
+                        // A blank line still takes up a line's height.
+                        line.push(Piece { x: 0.0, w: 0.0, text: String::new(), segment: i, padding: 0.0 });
+                    }
+                    cy = self.line(&line, &run, x, cy);
+                    line.clear();
+                    line_w = 0.0;
+                }
+                if !part.is_empty() {
+                    let text = part.replace('\t', "    ");
+                    let padding = segment.padding * self.scale;
+                    let w = self.measure(&text, &segment.style) + 2.0 * padding;
+                    line.push(Piece { x: line_w, w, text, segment: i, padding });
+                    line_w += w;
+                }
+            }
+        }
+        if !line.is_empty() {
+            cy = self.line(&line, &run, x, cy);
+        }
+        cy
     }
 
     /// Equal-width columns, one per child. Returns the bottom of the tallest.
@@ -471,10 +519,10 @@ impl<'a> Layout<'a> {
         for piece in line.iter().filter(|piece| run[piece.segment].input.is_none()) {
             let style = &run[piece.segment].style;
             let size = style.font_size * self.scale;
-            if piece.text != " " {
+            if !piece.text.trim().is_empty() {
                 let text = piece.text.clone();
                 let (x, y) = (x + piece.x + piece.padding, baseline_y);
-                self.items.push(DisplayItem::Text { x, y, text, size, bold: style.bold, color: style.color });
+                self.items.push(DisplayItem::Text { x, y, text, size, face: style.face(), color: style.color });
             }
             if style.underline {
                 let thickness = (size / 14.0).max(1.0).round();
@@ -510,7 +558,7 @@ impl<'a> Layout<'a> {
             (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
             _ => action,
         };
-        let (padding, nowrap) = (style.padding, &*el.tag == "button");
+        let (padding, nowrap) = (style.padding, matches!(&*el.tag, "button" | "code"));
         let style = Rc::new(style);
         for child in &el.children {
             match child {
@@ -569,14 +617,14 @@ impl<'a> Layout<'a> {
             None | Some(Value::Nil) => String::new(),
             Some(value) => value.to_string(),
         };
-        let (size, bold) = (style.font_size * self.scale, style.bold);
+        let (size, face) = (style.font_size * self.scale, style.face());
         let inset = self.input_inset(style);
         let (inner_x, inner_w) = (x + inset, (w - 2.0 * inset).max(0.0));
         let (line_height, baseline) = self.line_box(style);
 
         let mut offsets = vec![0.0];
         for c in value.chars() {
-            offsets.push(offsets[offsets.len() - 1] + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, bold));
+            offsets.push(offsets[offsets.len() - 1] + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, face));
         }
         let len = value.chars().count();
         let cursor = focus.map(|focus| focus.cursor.min(len));
@@ -596,7 +644,7 @@ impl<'a> Layout<'a> {
             Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
             _ => (value.clone(), style.color),
         };
-        self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, bold, color });
+        self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, face, color });
         // Like most text fields, no caret while there's a selection.
         if let Some(c) = cursor
             && self.caret_visible
@@ -616,13 +664,13 @@ impl<'a> Layout<'a> {
     /// The line height for `style`, and the baseline's offset from the top of the line.
     fn line_box(&self, style: &Style) -> (f32, f32) {
         let size = style.font_size * self.scale;
-        let metrics = self.fonts.get(style.bold).horizontal_line_metrics(size).expect("horizontal font");
+        let metrics = self.fonts.get(style.face()).horizontal_line_metrics(size).expect("horizontal font");
         let height = size * 1.3;
         (height, (height - (metrics.ascent - metrics.descent)) / 2.0 + metrics.ascent)
     }
 
     fn measure(&self, text: &str, style: &Style) -> f32 {
-        self.fonts.measure(text, style.font_size * self.scale, style.bold)
+        self.fonts.measure(text, style.font_size * self.scale, style.face())
     }
 }
 
@@ -655,7 +703,7 @@ mod tests {
         let fonts = Fonts::load();
         let texts = texts(&items);
         let [("Hello,", ..), ("world", world_x, y1), ("!", bang_x, y2)] = texts[..] else { panic!("{texts:?}") };
-        assert_eq!(bang_x, world_x + fonts.measure("world", 16.0, true));
+        assert_eq!(bang_x, world_x + fonts.measure("world", 16.0, Face { bold: true, mono: false }));
         assert_eq!(y1, y2);
     }
 
@@ -664,6 +712,32 @@ mod tests {
         let (items, _) = layout(r#"(page :padding 0 (p "aaa " (b "bbb ccc ddd")))"#, 70.0);
         let lines: std::collections::BTreeSet<_> = texts(&items).iter().map(|(_, _, y)| y.to_bits()).collect();
         assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn preformatted_text_keeps_spaces_and_line_breaks() {
+        let (items, _) = layout(r#"(page :padding 0 (pre :padding 0 "a  b\n\n  c" (b "d")))"#, 800.0);
+        let texts = texts(&items);
+        assert_eq!(texts.iter().map(|(text, ..)| *text).collect::<Vec<_>>(), ["a  b", "  c", "d"]);
+        let (first, third) = (texts[0].2, texts[1].2);
+        assert!(third - first > 2.0 * 14.0, "a blank line between them");
+        assert_eq!(texts[2].2, third, "styled text continues the line");
+        let mono = Fonts::load().measure("  c", 14.0, Face { bold: false, mono: true });
+        assert_eq!(texts[2].1, mono, "in the monospaced font");
+    }
+
+    #[test]
+    fn max_width_centres_the_content() {
+        let (items, _) = layout(r#"(page :padding 0 :max-width 100 (p "x"))"#, 300.0);
+        assert_eq!(texts(&items)[0].1, 100.0);
+        let (items, _) = layout(r#"(page :padding 0 :max-width 500 (p "x"))"#, 300.0);
+        assert_eq!(texts(&items)[0].1, 0.0, "no effect when there's room");
+    }
+
+    #[test]
+    fn inline_code_stays_on_one_line() {
+        let (items, _) = layout(r#"(page :padding 0 (p "aaa " (code "b c d")))"#, 60.0);
+        assert!(texts(&items).iter().any(|(text, ..)| *text == "b c d"), "{:?}", texts(&items));
     }
 
     #[test]

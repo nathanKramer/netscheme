@@ -1,24 +1,32 @@
-; A page is a program. Its last value is the document.
+; The home page. Like every page here, it's a program: it loads the site's
+; shared code, and its last value is the document to show.
 
-(define who "world")
+(eval `(do ,@(source "site.sx")))
 
-(page :title "Hello, world"
-  (h1 :color (light-dark "#b8336a" "#f07aa8") "Hello, " (span :color (light-dark "#5b3ab8" "#b39bff") who) "!")
-  (p "This page is written in a " (b "Lisp") ". The same language describes "
-     "the structure, the style, and the behavior of the page.")
-  (div :background (light-dark "#f3eef7" "#2a2631") :padding 16
-    (p :margin 0
-       "Styles are attributes, and logic is just code: 6 × 7 = "
-       (span :background "#ffe08a" :color "#1a1a1a" :bold true (* 6 7))))
-  (p "Inline elements share a line: " (b "bold") ", "
-     (span :color (light-dark "#2a7a3a" "#7fd38c") "coloured") ", "
-     (span :size 22 "bigger") ", and "
-     (a :href "about.sx" (b "a link") " to another page")
-     ". Press Alt+← to come back.")
-  (p "Pages can respond to clicks and typing: try " (a :href "counter.sx" "the counter")
-     " and " (a :href "inputs.sx" "some text inputs") ".")
-  (p "There are no stylesheets: " (a :href "styles.sx" "styles are values") " too.")
-  (p "And " (a :href "runaway.sx" "runaway code") " can't freeze the browser.")
-  (p "Pages can embed pages, even themselves: see " (a :href "fractal.sx" "the fractal")
-     ". The toolbar above, and the View source page it links to, are pages"
-     " too, written in the same language."))
+(site-page "Welcome"
+  (p :margin 6 eyebrow "A TOY WEB BROWSER")
+  (h1 :size 48 :margin 14 :color accent "Netscheme")
+  (p :margin 14 lede
+     "The web, rebuilt on a single language. A Netscheme page is a Lisp program,"
+     " and the same code describes its structure, its style and its behaviour.")
+  (p "There's no HTML, no CSS and no JavaScript. Elements are functions,"
+     " styles are values, and a page that responds to clicks is just a page"
+     " whose code reads some state. Here's a small one, and what it makes:")
+
+  (example
+    '(div
+       (h2 :color (light-dark "#b8336a" "#f07aa8") "Hello, world!")
+       (p "The squares of one to seven are "
+          (interpose ", " (map (fn (n) (b (* n n))) (range 1 8)))
+          ".")))
+
+  (p "The code above is a quoted list. This page prints it, then evaluates it"
+     " to get the element below, so the example can't drift from what it shows.")
+
+  (section "The guide")
+  (p muted "Start at the beginning, or jump to what you're curious about.")
+  (contents chapters true)
+
+  (section "Demos")
+  (p muted "Pages that show off one idea each. Open one, then View source to see how it works.")
+  (contents demos false))

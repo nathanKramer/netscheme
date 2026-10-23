@@ -7,12 +7,14 @@ use fontdue::{Font, FontSettings, Metrics};
 use crate::{
     dom::Element,
     layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scroller},
-    style::{Color, Palette, Style},
+    style::{Color, Face, Palette, Style},
 };
 
 pub struct Fonts {
     regular: Font,
     bold: Font,
+    mono: Font,
+    mono_bold: Font,
 }
 
 impl Fonts {
@@ -21,15 +23,22 @@ impl Fonts {
         Fonts {
             regular: load(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf")),
             bold: load(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf")),
+            mono: load(include_bytes!("../assets/fonts/LiberationMono-Regular.ttf")),
+            mono_bold: load(include_bytes!("../assets/fonts/LiberationMono-Bold.ttf")),
         }
     }
 
-    pub fn get(&self, bold: bool) -> &Font {
-        if bold { &self.bold } else { &self.regular }
+    pub fn get(&self, face: Face) -> &Font {
+        match (face.mono, face.bold) {
+            (false, false) => &self.regular,
+            (false, true) => &self.bold,
+            (true, false) => &self.mono,
+            (true, true) => &self.mono_bold,
+        }
     }
 
-    pub fn measure(&self, text: &str, size: f32, bold: bool) -> f32 {
-        let font = self.get(bold);
+    pub fn measure(&self, text: &str, size: f32, face: Face) -> f32 {
+        let font = self.get(face);
         text.chars().map(|c| font.metrics(c, size).advance_width).sum()
     }
 }
@@ -66,7 +75,7 @@ pub struct Rendered {
 
 pub struct Renderer {
     pub fonts: Fonts,
-    glyphs: HashMap<(char, u32, bool), (Metrics, Vec<u8>)>,
+    glyphs: HashMap<(char, u32, Face), (Metrics, Vec<u8>)>,
 }
 
 impl Renderer {
@@ -94,10 +103,10 @@ impl Renderer {
                 DisplayItem::Rect { x, y, w: rw, h: rh, color } => {
                     fill_rect(buf, w, Clip::rect(*x, *y - dy, *rw, *rh).intersect(clip), *color)
                 }
-                DisplayItem::Text { x, y, text, size, bold, color } => {
+                DisplayItem::Text { x, y, text, size, face, color } => {
                     let baseline = *y - dy;
                     if baseline + size >= clip.y0 && baseline - size < clip.y1 {
-                        self.draw_text(buf, w, clip, *x, baseline, text, *size, *bold, *color)
+                        self.draw_text(buf, w, clip, *x, baseline, text, *size, *face, *color)
                     }
                 }
                 DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
@@ -115,13 +124,13 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_text(&mut self, buf: &mut [u32], w: usize, clip: Clip, x: f32, baseline: f32, text: &str, size: f32, bold: bool, color: Color) {
+    fn draw_text(&mut self, buf: &mut [u32], w: usize, clip: Clip, x: f32, baseline: f32, text: &str, size: f32, face: Face, color: Color) {
         let mut pen = x;
         for c in text.chars() {
             let (m, bitmap) = self
                 .glyphs
-                .entry((c, size.to_bits(), bold))
-                .or_insert_with(|| self.fonts.get(bold).rasterize(c, size));
+                .entry((c, size.to_bits(), face))
+                .or_insert_with(|| self.fonts.get(face).rasterize(c, size));
             let gx = (pen + m.xmin as f32).round() as i32;
             let gy = (baseline - m.height as f32 - m.ymin as f32).round() as i32;
             for row in 0..m.height {
