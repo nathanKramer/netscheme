@@ -9,6 +9,7 @@ pub struct Color(pub u8, pub u8, pub u8);
 impl Color {
     pub const WHITE: Color = Color(255, 255, 255);
     pub const TEXT: Color = Color(0x1a, 0x1a, 0x1a);
+    pub const LINK: Color = Color(0x1a, 0x5f, 0xb4);
 
     pub fn to_u32(self) -> u32 {
         (self.0 as u32) << 16 | (self.1 as u32) << 8 | self.2 as u32
@@ -41,6 +42,7 @@ pub struct Style {
     pub font_size: f32,
     pub bold: bool,
     pub color: Color,
+    pub underline: bool,
     // Not inherited
     pub background: Option<Color>,
     pub padding: f32,
@@ -49,7 +51,7 @@ pub struct Style {
 
 impl Style {
     pub fn root() -> Style {
-        Style { font_size: 16.0, bold: false, color: Color::TEXT, background: None, padding: 0.0, margin: 0.0 }
+        Style { font_size: 16.0, bold: false, color: Color::TEXT, underline: false, background: None, padding: 0.0, margin: 0.0 }
     }
 
     pub fn compute(el: &Element, parent: &Style) -> Style {
@@ -65,6 +67,8 @@ impl Style {
             "h2" => (s.font_size, s.bold, s.margin) = (24.0, true, 12.0),
             "h3" => (s.font_size, s.bold, s.margin) = (19.0, true, 10.0),
             "p" => s.margin = 12.0,
+            "b" => s.bold = true,
+            "a" => (s.color, s.underline) = (Color::LINK, true),
             _ => {}
         }
 
@@ -74,6 +78,7 @@ impl Style {
                 ("background", Value::Str(c)) => s.background = Some(parse_color(c, Color::WHITE)),
                 ("size", Value::Num(n)) => s.font_size = *n as f32,
                 ("bold", v) => s.bold = v.truthy(),
+                ("underline", v) => s.underline = v.truthy(),
                 ("padding", Value::Num(n)) => s.padding = *n as f32,
                 ("margin", Value::Num(n)) => s.margin = *n as f32,
                 _ => {}

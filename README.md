@@ -46,7 +46,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `lisp/eval.rs`, `builtins.rs` | Runs the page program | JS engine, plus building the DOM |
 | `dom.rs` | `Element` / `Node` tree | DOM |
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
-| `layout.rs` | Block flow and word wrapping, producing a display list | Layout engine |
+| `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
 | `paint.rs` | Rectangles and glyphs into a pixel buffer | Painting and compositing |
 | `window.rs` | Event loop and re-render on resize | Browser chrome |
 
@@ -55,18 +55,21 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - Atoms: numbers, `"strings"`, `true`, `false`, `nil`, `symbols`, `:keywords`
 - Special forms: `define`, `fn`, `if`, `do`, `quote` / `'`
 - Builtins: `+ - * / = < > str list`
-- Elements: `page div h1 h2 h3 p`. These are ordinary functions:
+- Block elements: `page div h1 h2 h3 p`. Inline elements: `span b a`.
+  All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists of children are spliced in,
-  and `nil` is skipped, so `map` and `if` compose naturally.
-- Style attributes: `:color`, `:background`, `:size`, `:bold`, `:padding`, `:margin`
+  and `nil` is skipped, so `if` and functions that return lists compose naturally.
+- Style attributes: `:color`, `:background`, `:size`, `:bold`, `:underline`, `:padding`, `:margin`.
+  Padding and margin apply only to block elements.
+- Links: `(a :href "other.sx" ...)` opens a local page, resolved relative to the
+  current page. Go back with Alt+← or the mouse's back button.
 
 ## Roadmap
 
-1. **Inline content**: `span`, `b`, `i`, `a` laid out within a line.
-2. **Scrolling** and a viewport larger than the window.
-3. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
-4. **Interactivity**: `:on-click` handlers. State changes re-evaluate the page and
+1. **Scrolling** and a viewport larger than the window.
+2. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
+3. **Interactivity**: `:on-click` handlers. State changes re-evaluate the page and
    re-render it, React-style, so there is no mutable DOM API to design.
-5. **Networking**: load `http://` pages, follow links, back and forward history.
-6. **Chrome**: an address bar drawn with the same layout engine.
-7. More of the language: `let`, `map`, `filter`, macros, tail calls.
+4. **Networking**: load `http://` pages, and add forward history.
+5. **Chrome**: an address bar drawn with the same layout engine.
+6. More of the language: `let`, `map`, `filter`, macros, tail calls.

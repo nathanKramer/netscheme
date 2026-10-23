@@ -1,0 +1,10 @@
+(define (item label text)
+  (p (b label) " — " text))
+
+(page :title "About"
+  (h1 "About this browser")
+  (item "Pages" "are Lisp programs that evaluate to a document.")
+  (item "Elements" "are functions, so you can define your own, like this list item.")
+  (item "Links" "resolve relative to the current page.")
+  (p (a :href "hello.sx" "Back to hello") " · "
+     (a :href "https://example.com" "an external link (not supported yet)")))

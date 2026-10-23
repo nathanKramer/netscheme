@@ -5,7 +5,12 @@ mod paint;
 mod style;
 mod window;
 
-use std::{fs, process::ExitCode, rc::Rc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    rc::Rc,
+};
 
 use dom::{Element, build_element};
 use lisp::Value;
@@ -37,10 +42,8 @@ fn main() -> ExitCode {
         }
     }
 
-    let page = match fs::read_to_string(&path) {
-        Ok(source) => load_page(&source),
-        Err(e) => error_page(&format!("couldn't read {path}: {e}")),
-    };
+    let path = PathBuf::from(path);
+    let page = open(&path);
     let mut renderer = Renderer::new();
 
     match screenshot {
@@ -52,10 +55,26 @@ fn main() -> ExitCode {
             }
         },
         None => {
-            window::run(page, renderer);
+            window::run(path, page, renderer);
             ExitCode::SUCCESS
         }
     }
+}
+
+/// Loads and evaluates the page at `path`.
+pub fn open(path: &Path) -> Rc<Element> {
+    match fs::read_to_string(path) {
+        Ok(source) => load_page(&source),
+        Err(e) => error_page(&format!("couldn't read {}: {e}", path.display())),
+    }
+}
+
+/// Resolves a link's `href` against the page it appears on.
+pub fn resolve(current: &Path, href: &str) -> Result<PathBuf, String> {
+    if href.contains("://") {
+        return Err(format!("only local links work so far: {href}"));
+    }
+    Ok(current.parent().unwrap_or(Path::new("")).join(href))
 }
 
 /// Evaluates a page program. Errors become an error page, like a browser would show.
@@ -67,7 +86,7 @@ fn load_page(source: &str) -> Rc<Element> {
     }
 }
 
-fn error_page(message: &str) -> Rc<Element> {
+pub fn error_page(message: &str) -> Rc<Element> {
     let heading = build_element("h1", &[Value::Keyword("color".into()), Value::Str("#c00".into()), Value::Str("Page error".into())]);
     let body = build_element("p", &[Value::Str(message.into())]);
     let page = build_element("page", &[Value::Element(Rc::new(heading.unwrap())), Value::Element(Rc::new(body.unwrap()))]);
@@ -83,4 +102,16 @@ fn write_screenshot(renderer: &mut Renderer, page: &Element, w: usize, h: usize,
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header()?.write_image_data(&rgb)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_resolve_relative_to_the_current_page() {
+        assert_eq!(resolve(Path::new("pages/hello.sx"), "about.sx"), Ok(PathBuf::from("pages/about.sx")));
+        assert_eq!(resolve(Path::new("hello.sx"), "sub/a.sx"), Ok(PathBuf::from("sub/a.sx")));
+        assert!(resolve(Path::new("pages/hello.sx"), "https://example.com").is_err());
+    }
 }

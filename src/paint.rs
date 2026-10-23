@@ -6,7 +6,7 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
-    layout::{DisplayItem, Layout},
+    layout::{DisplayItem, Layout, Link},
     style::{Color, Style},
 };
 
@@ -44,13 +44,14 @@ impl Renderer {
         Renderer { fonts: Fonts::load(), glyphs: HashMap::new() }
     }
 
-    /// Lays out and paints `page` into `buf` (`w` × `h` physical pixels).
-    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32) {
+    /// Lays out and paints `page` into `buf` (`w` × `h` physical pixels),
+    /// returning where its links ended up.
+    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32) -> Vec<Link> {
         let root = Style::root();
         let page_background = Style::compute(page, &root).background.unwrap_or(Color::WHITE);
         let mut layout = Layout::new(&self.fonts, scale);
         layout.block(page, &root, 0.0, 0.0, w as f32);
-        let items = layout.items;
+        let (items, links) = (layout.items, layout.links);
 
         buf.fill(page_background.to_u32());
         for item in &items {
@@ -61,6 +62,7 @@ impl Renderer {
                 }
             }
         }
+        links
     }
 
     #[allow(clippy::too_many_arguments)]

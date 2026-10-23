@@ -5,7 +5,12 @@ use std::rc::Rc;
 use crate::lisp::Value;
 
 /// Element constructors available to pages as ordinary functions.
-pub const TAGS: &[&str] = &["page", "div", "h1", "h2", "h3", "p"];
+pub const TAGS: &[&str] = &["page", "div", "h1", "h2", "h3", "p", "span", "b", "a"];
+
+/// Tags laid out within a line of text rather than as their own block.
+pub fn is_inline(tag: &str) -> bool {
+    matches!(tag, "span" | "b" | "a")
+}
 
 pub struct Element {
     pub tag: Rc<str>,
