@@ -46,6 +46,8 @@ pub enum Key {
     SelectAll,
     /// Select the address bar: the chrome's first input.
     FocusAddressBar,
+    /// Load the page afresh: download it again, and start its state over.
+    Reload,
 }
 
 /// What's under the pointer, for choosing its shape.
@@ -251,6 +253,12 @@ impl Browser {
         match key {
             Key::Back => return self.back(),
             Key::FocusAddressBar => return self.focus_address_bar(),
+            Key::Reload => {
+                self.host.forget_downloads();
+                self.page_state = Rc::default();
+                (self.focus, self.error) = (None, None);
+                return self.reload();
+            }
             _ => {}
         }
         if let Some(focus) = self.focus
@@ -337,8 +345,13 @@ impl Browser {
         if href == BACK {
             return self.back();
         }
+        let from = base.map_or_else(|| self.location(), String::from);
+        let site = loader::resolve(&from, href);
+        if let Err(e) = loader::may_reach(&from, &site) {
+            return self.fail(e);
+        }
         self.error = None;
-        let site = loader::resolve(base.unwrap_or(&self.location()), href);
+        self.host.forget_downloads();
         let previous = (
             std::mem::replace(&mut self.site, site),
             std::mem::take(&mut self.scroll),
@@ -353,6 +366,7 @@ impl Browser {
     pub fn back(&mut self) {
         if let Some((site, scroll, page_state)) = self.history.pop() {
             self.error = None;
+            self.host.forget_downloads();
             // The site's state comes back, but the toolbar's describes the
             // current site, so the toolbar (the top-level page) starts afresh.
             if self.chrome {
@@ -366,22 +380,31 @@ impl Browser {
 
     /// Calls a handler, then goes where it asked to with `go`, or else runs
     /// the page again so it shows any state the handler changed.
-    ///
-    /// If the handler fails, the chrome reports it above the page, which
-    /// stays usable; without the chrome, an error page replaces the page.
     fn run(&mut self, handler: &Value, args: &[Value]) {
-        let result = lisp::apply(handler, args);
-        self.error = result.as_ref().err().map(|e| format!("in an event handler: {e}"));
-        match (result, &self.error) {
-            (Ok(_), _) => match self.host.take_navigation() {
+        match lisp::apply(handler, args) {
+            Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
-                None => self.reload(),
+                None => {
+                    self.error = None;
+                    self.reload();
+                }
             },
-            (Err(_), Some(error)) if !self.chrome => self.page = loader::error_page(error),
-            (Err(_), _) => {
+            Err(e) => {
                 self.host.take_navigation();
-                self.reload();
+                self.fail(format!("in an event handler: {e}"));
             }
+        }
+    }
+
+    /// Reports an error from something the user did. The chrome shows it
+    /// above the page, which stays usable; without the chrome, an error page
+    /// replaces the page.
+    fn fail(&mut self, error: String) {
+        if self.chrome {
+            self.error = Some(error);
+            self.reload();
+        } else {
+            self.page = loader::error_page(&error);
         }
     }
 
@@ -687,5 +710,97 @@ mod tests {
         render(&mut browser);
         assert_eq!(browser.error, None, "the next thing that works clears it");
         assert!(browser.page.to_string().contains(r#"(b "done")"#));
+    }
+
+    /// Clicks the last link whose action satisfies `which`. The site comes
+    /// after the toolbar, so this prefers its links.
+    fn click_link(browser: &mut Browser, which: impl Fn(&Action) -> bool) {
+        render(browser);
+        let link = browser.links.iter().rfind(|link| which(&link.action)).expect("a link to click");
+        let (x, y) = (link.x + 1.0, link.y + 1.0);
+        assert!(browser.click(x, y));
+        render(browser);
+    }
+
+    fn to(href: &'static str) -> impl Fn(&Action) -> bool {
+        move |action| matches!(action, Action::Go { href: h, .. } if &**h == href)
+    }
+
+    #[test]
+    fn browsing_the_web() {
+        let server = crate::test_server::TestServer::start(&[
+            ("index.sx", r#"(page :title "Remote" (p (a :href "other.sx" "other")) (frame :src "/sub/framed.sx") (p "forms: " (length (source "other.sx"))))"#),
+            ("other.sx", r#"(page :title "Other")"#),
+            ("sub/framed.sx", r#"(page (a :href "next.sx" "next"))"#),
+            ("sub/next.sx", r#"(page :title "Next")"#),
+            ("sub/index.sx", r#"(page :title "Moved here" (a :href "next.sx" "next"))"#),
+        ]);
+        let mut browser = Browser::new(server.url("index.sx"), true);
+        render(&mut browser);
+        assert_eq!(browser.title(), "Remote — Toy Browser");
+        assert!(browser.page.to_string().contains(r#""forms: " "1""#), "source reads other pages: {}", browser.page);
+
+        click_link(&mut browser, to("other.sx"));
+        assert_eq!(browser.site, server.url("other.sx"));
+        assert_eq!(browser.title(), "Other — Toy Browser");
+
+        press(&mut browser, [Key::Back]);
+        click_link(&mut browser, to("next.sx"));
+        assert_eq!(browser.site, server.url("sub/next.sx"), "relative to the framed page");
+
+        press(&mut browser, [Key::FocusAddressBar, Key::Text(server.url("moved")), Key::Enter]);
+        assert_eq!(browser.title(), "Moved here — Toy Browser");
+        click_link(&mut browser, to("next.sx"));
+        assert_eq!(browser.site, server.url("sub/next.sx"), "relative to where the redirect led");
+    }
+
+    #[test]
+    fn web_pages_cannot_reach_local_ones() {
+        let server = crate::test_server::TestServer::start(&[(
+            "sneaky.sx",
+            r#"(page (frame :src "browser:chrome")
+                     (p (button :on-click (fn () (source "browser:chrome")) "Read"))
+                     (p (a :href "browser:view-source?page=pages/hello.sx" "Peek")))"#,
+        )]);
+        let mut browser = Browser::new(server.url("sneaky.sx"), true);
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("is a web page, so it can't open browser:chrome"), "no framing");
+
+        click_link(&mut browser, |action| matches!(action, Action::Run(_)));
+        assert!(browser.error.as_deref().is_some_and(|e| e.contains("can't open browser:chrome")), "no reading");
+
+        click_link(&mut browser, to("browser:view-source?page=pages/hello.sx"));
+        assert!(browser.error.as_deref().is_some_and(|e| e.contains("can't open browser:view-source")), "no linking");
+        assert_eq!(browser.site, server.url("sneaky.sx"));
+    }
+
+    #[test]
+    fn downloads_are_reused_until_navigating() {
+        let server = crate::test_server::TestServer::start(&[(
+            "form.sx",
+            r#"(define-state text "") (page :padding 0 (input :value text :on-input (fn (t) (set! text t))))"#,
+        )]);
+        let mut browser = Browser::new(server.url("form.sx"), false);
+        render(&mut browser);
+        assert!(browser.click(5.0, 5.0));
+        press(&mut browser, [Key::Text("a".into()), Key::Text("b".into()), Key::Text("c".into())]);
+        assert_eq!(browser.inputs[0].value, "abc");
+        assert_eq!(server.requests(), 1, "typing runs the page again, but doesn't download it again");
+
+        press(&mut browser, [Key::Reload]);
+        assert_eq!(server.requests(), 2);
+        assert_eq!(browser.inputs[0].value, "", "reloading starts the page's state over");
+    }
+
+    #[test]
+    fn failed_downloads_show_why() {
+        let server = crate::test_server::TestServer::start(&[("page.html", "<html><body>hi</body></html>")]);
+        let mut browser = Browser::new(server.url("missing.sx"), true);
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("404"), "{}", browser.page);
+
+        let mut browser = Browser::new(server.url("page.html"), true);
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("looks like HTML"));
     }
 }

@@ -17,6 +17,7 @@ produces, a `(page ...)` element, is the document.
 ```sh
 cargo run                                   # opens pages/hello.sx
 cargo run -- path/to/page.sx
+cargo run -- http://localhost:8000/hello.sx # after: cd pages && python3 -m http.server
 cargo run -- page.sx --screenshot out.png --width 800 --height 600 --scroll 200
 
 # Screenshots show the bare page; add --chrome to include the toolbar:
@@ -48,7 +49,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `lisp/reader.rs` | Text to `Value`s | HTML tokenizer and parser |
 | `lisp/eval.rs`, `builtins.rs` | Runs the page program | JS engine, plus building the DOM |
 | `lisp/budget.rs` | Limits on steps, nesting and sizes | Script timeouts |
-| `loader.rs` | Locations, query parameters, and loading pages into frames | Networking and navigation |
+| `loader.rs` | Locations, downloading, URL resolution, the origin rule, and loading pages into frames | Networking and navigation |
 | `dom.rs` | `Element` / `Node` tree | DOM |
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
 | `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
@@ -215,6 +216,24 @@ gives `"(p :color \"red\" \"hi\")"`, and reading that back builds the same eleme
 
 `pages/fractal.sx` frames itself twice.
 
+## The web
+
+Pages can be loaded over `http://` and `https://`, from any server that serves
+`.sx` files. To try it, run `python3 -m http.server` in `pages/` and open
+`http://localhost:8000/hello.sx`.
+
+- **Links resolve as URLs** on web pages, against the address the page was
+  actually served from, after any redirects.
+- **Web pages can only reach web pages.** They can't frame, `source`, link to,
+  or `go` to local files or `browser:` pages. Local pages can load web pages.
+- **Each page is downloaded once per visit.** Pages run again on every click
+  and keystroke, and reuse the download. Navigating, or reloading with F5 or
+  Ctrl+R, downloads afresh; reloading also starts the page's state over.
+- **Downloading blocks the window**, with a 5 second limit on connecting and
+  10 seconds overall. Pages over 4 MB aren't downloaded.
+- **Failures show in the frame:** a missing page, an unreachable server, or a
+  response that's HTML rather than this browser's Lisp.
+
 ## The browser is a page
 
 Locations starting with `browser:` are the browser's own pages, kept in `ui/`:
@@ -239,5 +258,6 @@ The chrome can frame itself, too:
 ## Roadmap
 
 1. **The clipboard**, and selecting text on pages, not just in inputs.
-2. **Networking**: load `http://` pages, and add forward history.
+2. **Loading in the background**, so a slow server doesn't freeze the window,
+   with a loading indicator in the toolbar. Forward history too.
 3. More of the language: macros, tail calls.

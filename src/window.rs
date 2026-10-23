@@ -112,6 +112,8 @@ impl App {
             WinitKey::Named(NamedKey::Tab) => Key::Tab,
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("l") => Key::FocusAddressBar,
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("a") => Key::SelectAll,
+            WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("r") => Key::Reload,
+            WinitKey::Named(NamedKey::F5) => Key::Reload,
             // Other shortcuts aren't typing.
             _ if m.control_key() || m.alt_key() || m.super_key() => return None,
             _ => {

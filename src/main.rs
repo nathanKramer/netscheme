@@ -5,6 +5,8 @@ mod loader;
 mod lisp;
 mod paint;
 mod style;
+#[cfg(test)]
+mod test_server;
 mod window;
 
 use std::{fs, process::ExitCode};

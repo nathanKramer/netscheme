@@ -1,7 +1,11 @@
-//! Turns locations into documents. A location is a file path relative to
-//! the working directory, like `pages/hello.sx`, or a browser page like
-//! `browser:view-source`, which lives in this project's `ui/` folder. Either
-//! can end in a query: `browser:view-source?page=pages/hello.sx`.
+//! Turns locations into documents. A location is one of:
+//!
+//! - a file path relative to the working directory, like `pages/hello.sx`;
+//! - a browser page like `browser:view-source`, which lives in this
+//!   project's `ui/` folder;
+//! - a web address, like `http://localhost:8000/hello.sx`.
+//!
+//! Any of them can end in a query: `browser:view-source?page=pages/hello.sx`.
 
 use std::{
     cell::{Cell, RefCell},
@@ -9,7 +13,10 @@ use std::{
     fs,
     path::Path,
     rc::Rc,
+    time::Duration,
 };
+
+use ureq::ResponseExt;
 
 use crate::{
     dom::{Element, Node, build_element},
@@ -21,6 +28,8 @@ use crate::{
 const MAX_FRAME_DEPTH: u32 = 8;
 /// Frames drawn smaller than this are left empty too; nobody can see them.
 const MIN_FRAME_SCALE: f32 = 0.04;
+/// Pages bigger than this aren't downloaded.
+const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// What a running page knows about where it was loaded from.
 pub struct PageContext {
@@ -63,9 +72,28 @@ pub struct Host {
     /// A navigation requested with `go`, as an href and the location of the
     /// page that asked, for the browser to carry out.
     navigation: RefCell<Option<(String, String)>>,
+    /// Web pages downloaded since the browser last navigated. A page runs
+    /// again on every click and keystroke, and shouldn't download itself
+    /// again each time.
+    downloads: RefCell<HashMap<String, Result<Source, String>>>,
 }
 
 impl Host {
+    /// Downloads a web page, or returns the copy from earlier.
+    fn download(&self, url: &str) -> Result<Source, String> {
+        if let Some(download) = self.downloads.borrow().get(url) {
+            return download.clone();
+        }
+        let download = download(url);
+        self.downloads.borrow_mut().insert(url.into(), download.clone());
+        download
+    }
+
+    /// Forgets downloaded pages, so they're downloaded afresh next time.
+    pub fn forget_downloads(&self) {
+        self.downloads.borrow_mut().clear();
+    }
+
     pub fn request_navigation(&self, href: &str, from: &str) {
         *self.navigation.borrow_mut() = Some((href.into(), from.into()));
     }
@@ -93,7 +121,7 @@ pub fn test_context() -> Rc<PageContext> {
 /// runs of the page is taken from, and kept in, `store`.
 pub fn open(location: &str, store: &Rc<StateStore>, host: &Rc<Host>) -> Rc<Element> {
     let top = Frame { depth: 0, scale: 1.0, state_key: String::new(), store: store.clone(), host: host.clone() };
-    open_nested(location, top)
+    open_nested(location, top).0
 }
 
 /// Where a page is being loaded: at the top, or in a frame.
@@ -105,8 +133,15 @@ struct Frame {
     host: Rc<Host>,
 }
 
-fn open_nested(location: &str, frame: Frame) -> Rc<Element> {
+/// Loads and evaluates the page at `location`. Also returns where the page
+/// actually came from, which differs if a web server redirected.
+fn open_nested(location: &str, frame: Frame) -> (Rc<Element>, String) {
     let Frame { depth, scale, state_key, store, host } = frame;
+    let source = match read_source(location, &host) {
+        Ok(source) => source,
+        Err(e) => return (error_page(&e), location.into()),
+    };
+    let location = source.location.as_str();
     let (_, query) = location.split_once('?').unwrap_or((location, ""));
     let params = query
         .split('&')
@@ -126,33 +161,78 @@ fn open_nested(location: &str, frame: Frame) -> Rc<Element> {
         host,
         frames_created: Cell::new(0),
     });
-    match read_source(location) {
-        Ok(source) => evaluate(&source, &ctx),
-        Err(e) => error_page(&e),
-    }
+    (evaluate(&source.text, &ctx), source.location)
 }
 
 /// The source code of the page at `location`.
-pub fn read_source(location: &str) -> Result<String, String> {
+/// A page's source code, and where it came from.
+#[derive(Clone, Debug)]
+pub struct Source {
+    pub text: String,
+    /// The page's location, after any redirects.
+    pub location: String,
+}
+
+/// The source code of the page at `location`.
+pub fn read_source(location: &str, host: &Host) -> Result<Source, String> {
+    // The part after `#` names a place in the page, not a different page.
+    let location = location.split_once('#').map_or(location, |(page, _)| page);
+    if is_remote(location) {
+        return host.download(location);
+    }
     let file = location.split_once('?').map_or(location, |(file, _)| file);
+    if file.contains("://") {
+        return Err(format!("this browser can open web pages over http and https, but not {file}"));
+    }
     let path = match file.strip_prefix(BROWSER) {
         Some(name) => Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(format!("{name}.sx")),
         None => file.into(),
     };
-    if file.contains("://") {
-        return Err(format!("only local pages work so far, so this browser can't open {file}"));
+    let text = fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))?;
+    Ok(Source { text, location: location.into() })
+}
+
+fn download(url: &str) -> Result<Source, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_global(Some(Duration::from_secs(10)))
+        .user_agent("toy-browser")
+        .build()
+        .into();
+    let failed = |e: ureq::Error| format!("couldn't load {url}: {e}");
+    let mut response = agent.get(url).call().map_err(failed)?;
+    let location = response.get_uri().to_string();
+    let text = response.body_mut().with_config().limit(MAX_PAGE_BYTES).read_to_string().map_err(failed)?;
+    if text.trim_start().starts_with('<') {
+        return Err(format!("{url} looks like HTML. This browser only reads pages written in its own Lisp."));
     }
-    fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))
+    Ok(Source { text, location })
+}
+
+pub fn is_remote(location: &str) -> bool {
+    location.starts_with("http://") || location.starts_with("https://")
+}
+
+/// Whether the page at `from` may load, frame, read or link to `to`. Web
+/// pages can only reach other web pages, not files or the browser's own pages.
+pub fn may_reach(from: &str, to: &str) -> Result<(), String> {
+    if is_remote(from) && !is_remote(to) {
+        return Err(format!("{from} is a web page, so it can't open {to}"));
+    }
+    Ok(())
 }
 
 const BROWSER: &str = "browser:";
 
-/// Resolves `href` against the location of the page it appears on. Links
-/// starting with `/`, and every link on a browser page, are relative to the
-/// working directory instead.
+/// Resolves `href` against the location of the page it appears on. On a web
+/// page, links resolve as URLs do. Otherwise, links starting with `/`, and
+/// every link on a browser page, are relative to the working directory.
 pub fn resolve(current: &str, href: &str) -> String {
     if href.starts_with(BROWSER) || href.contains("://") {
         return href.into();
+    }
+    if is_remote(current) {
+        return url::Url::parse(current).and_then(|base| base.join(href)).map_or_else(|_| href.into(), String::from);
     }
     if let Some(rooted) = href.strip_prefix('/') {
         return rooted.into();
@@ -217,7 +297,11 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     let state_key = format!("{}/{index}", parent.state_key);
     let location = resolve(&parent.location, &src);
     let inner = Frame { depth: parent.depth + 1, scale, state_key, store: parent.store.clone(), host: parent.host.clone() };
-    let page = open_nested(&location, inner);
+    let (page, location) = match may_reach(&parent.location, &location) {
+        Ok(()) => open_nested(&location, inner),
+        Err(e) => (error_page(&e), location),
+    };
+    // Links on the framed page resolve against where it came from.
     frame.attrs.push(("location".into(), Value::Str(location.into())));
     if let Err(e) = frame.set_children(vec![Node::Element(page)]) {
         // Too deep to show the page; show why instead, which is shallow.
@@ -251,7 +335,10 @@ mod tests {
         assert_eq!(resolve("hello.sx", "sub/a.sx"), "sub/a.sx");
         assert_eq!(resolve("pages/v.sx?page=sub/x.sx", "a.sx"), "pages/a.sx");
         assert_eq!(resolve("pages/hello.sx", "https://example.com"), "https://example.com");
-        assert!(read_source("https://example.com").unwrap_err().contains("only local pages"));
+        assert_eq!(resolve("http://h/a/b.sx?x=1", "c.sx"), "http://h/a/c.sx");
+        assert_eq!(resolve("http://h/a/b.sx", "/c.sx"), "http://h/c.sx");
+        assert_eq!(resolve("http://h/a/b.sx", "../c.sx?y=2"), "http://h/c.sx?y=2");
+        assert!(read_source("ftp://example.com", &Host::default()).unwrap_err().contains("http and https"));
         assert_eq!(resolve("pages/hello.sx", "/x.sx"), "x.sx");
         assert_eq!(resolve("pages/hello.sx", "browser:chrome"), "browser:chrome");
         assert_eq!(resolve("browser:view-source?page=a", "pages/hello.sx"), "pages/hello.sx");

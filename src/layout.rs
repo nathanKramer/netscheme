@@ -335,6 +335,10 @@ impl<'a> Layout<'a> {
         let outer = self.clip;
         self.clip = area.intersect(outer);
         self.items.push(DisplayItem::Clip(self.clip));
+        // The page's background fills the frame, even below its content.
+        let background = Style::compute(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
+        let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
+        self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background });
         self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
         self.items.push(DisplayItem::Clip(outer));
         self.scrollers.push(Scroller { id, area: self.clip, scroll });

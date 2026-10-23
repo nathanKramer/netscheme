@@ -148,8 +148,10 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     let c = ctx.clone();
     def(&env, "source", move |args| {
         let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
-        let text = loader::read_source(&loader::resolve(&c.location, href)).map_err(|e| format!("source: {e}"))?;
-        Ok(Value::list(reader::read_all(&text)?))
+        let location = loader::resolve(&c.location, href);
+        let reach = loader::may_reach(&c.location, &location);
+        let source = reach.and_then(|()| loader::read_source(&location, &c.host)).map_err(|e| format!("source: {e}"))?;
+        Ok(Value::list(reader::read_all(&source.text)?))
     });
     // Asks the browser to go to a location, as if a link to it were clicked,
     // once the current event handler finishes.
