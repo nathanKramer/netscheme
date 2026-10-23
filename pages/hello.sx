@@ -17,6 +17,7 @@
      ". Press Alt+← to come back.")
   (p "Pages can respond to clicks and typing: try " (a :href "counter.sx" "the counter")
      " and " (a :href "inputs.sx" "some text inputs") ".")
+  (p "There are no stylesheets: " (a :href "styles.sx" "styles are values") " too.")
   (p "Pages can embed pages, even themselves: see " (a :href "fractal.sx" "the fractal")
      ". The toolbar above, and the View source page it links to, are pages"
      " too, written in the same language."))

@@ -51,33 +51,30 @@ impl fmt::Display for Element {
 }
 
 /// `(tag :attr value ... child ...)`: keyword/value pairs become attributes,
-/// everything else becomes children. Lists are spliced in, nil is skipped.
+/// everything else becomes children. Lists are spliced in, attributes and
+/// all, so a style is just a list of attributes. Nil is skipped. When an
+/// attribute is given twice, the later one wins.
 pub fn build_element(tag: &str, args: &[Value]) -> Result<Element, String> {
     let mut el = Element { tag: tag.into(), attrs: Vec::new(), children: Vec::new() };
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if let Value::Keyword(name) = arg {
-            let value = args.next().ok_or_else(|| format!("({tag} ...): attribute :{name} has no value"))?;
-            el.attrs.push((name.clone(), value.clone()));
-        } else {
-            push_child(arg, &mut el.children)?;
-        }
-    }
+    add_args(&mut el, args)?;
     Ok(el)
 }
 
-fn push_child(value: &Value, children: &mut Vec<Node>) -> Result<(), String> {
-    match value {
-        Value::Nil => {}
-        Value::Str(s) => children.push(Node::Text(s.clone())),
-        Value::Num(_) | Value::Bool(_) => children.push(Node::Text(value.to_string().into())),
-        Value::Element(el) => children.push(Node::Element(el.clone())),
-        Value::List(items) => {
-            for item in items.iter() {
-                push_child(item, children)?;
+fn add_args(el: &mut Element, args: &[Value]) -> Result<(), String> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg {
+            Value::Keyword(name) => {
+                let value = args.next().ok_or_else(|| format!("({} ...): attribute :{name} has no value", el.tag))?;
+                el.attrs.push((name.clone(), value.clone()));
             }
+            Value::List(items) => add_args(el, items)?,
+            Value::Nil => {}
+            Value::Str(s) => el.children.push(Node::Text(s.clone())),
+            Value::Num(_) | Value::Bool(_) => el.children.push(Node::Text(arg.to_string().into())),
+            Value::Element(child) => el.children.push(Node::Element(child.clone())),
+            other => return Err(format!("can't use {other} as page content")),
         }
-        other => return Err(format!("can't use {other} as page content")),
     }
     Ok(())
 }

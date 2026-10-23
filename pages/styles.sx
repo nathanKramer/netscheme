@@ -1,0 +1,46 @@
+; Styles are values: lists of attributes that an element splices in. Define
+; them with variables, combine them with append, compute them from state,
+; and wrap them in components.
+
+(define-state dark false)
+
+; The palette depends on state, so switching theme is just a click.
+(define ink (if dark "#e8e4ee" "#1a1a1a"))
+(define paper (if dark "#1d1a22" "#ffffff"))
+(define faint (if dark "#9a94a3" "#6b6475"))
+(define accent (if dark "#c8a8ff" "#5b3ab8"))
+(define panel (if dark "#2a2631" "#f3eef7"))
+
+; Styles built from the palette.
+(define body (style :color ink :background paper))
+(define muted (style :color faint :size 14))
+(define heading (style :color accent))
+(define card (style :background panel :padding 14 :margin 12))
+(define control (style :background panel :color ink :bold true))
+
+; Combining styles is appending lists. Later attributes win, so this is a
+; card with a different background.
+(define warning (append card (style :background (if dark "#3d2f1c" "#fff1d6"))))
+
+; Components pass their arguments through with `&`, so callers can add
+; children and override attributes.
+(define (title & body) (h1 heading body))
+(define (note & body) (p muted body))
+(define (card-box & body) (div card body))
+
+(page :title "Styles" body
+  (title "Styles are values")
+  (p "Everything on this page gets its look from ordinary variables and"
+     " functions. There's no stylesheet and no selectors.")
+  (card-box
+    (p :margin 0 "This is a " (b "card-box") ": a div with the " (b "card")
+       " style spliced in."))
+  (div warning
+    (p :margin 0 "This one uses " (b "warning") ", which is the card style with"
+       " another background appended."))
+  (note "This is a " (b "note") ": a p with the muted style.")
+  (note :color accent
+        "This note passes its own :color. It comes after the muted style's, so it wins.")
+  (p (button control :on-click (fn () (set! dark (not dark)))
+             (if dark "Switch to light" "Switch to dark"))
+     " The palette is computed from state, so the whole page follows it."))

@@ -60,14 +60,16 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - Atoms: numbers, `"strings"`, `true`, `false`, `nil`, `symbols`, `:keywords`
 - Special forms: `define`, `define-state`, `set!`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
-- Builtins: `+ - * / mod = < > not str repr url-encode`, the list functions
+- Functions take a rest parameter after `&`: `(fn (first & more) ...)`.
+- Builtins: `+ - * / mod = < > not str repr url-encode style`, the list functions
   `list first rest nth cons append length empty? map filter`, the predicates
   `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
   `children` for looking inside elements
 - Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a button input`.
   All of them are ordinary functions:
-  `(tag :attr value ... children ...)`. Lists of children are spliced in,
-  and `nil` is skipped, so `if` and functions that return lists compose naturally.
+  `(tag :attr value ... children ...)`. Lists are spliced in, attributes and
+  all, and `nil` is skipped, so `if` and functions that return lists compose
+  naturally. When an attribute is given twice, the later one wins.
 - Style attributes: `:color`, `:background`, `:size`, `:bold`, `:underline`, `:padding`,
   `:padding-left`, `:margin`.
   Margin applies only to block elements; padding on an inline element pads its
@@ -79,6 +81,28 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 Scroll with a trackpad, mouse wheel, arrow keys, Page Up/Down, Space and
 Shift+Space, or Home/End. This scrolls the frame under the cursor, if it has a
 fixed height, and otherwise the page. Going back restores where you'd scrolled to.
+
+## Styles are values
+
+There are no stylesheets or selectors. A style is a list of attributes,
+which an element splices in like any other list:
+
+```lisp
+(define muted (style :color "#888" :size 14))   ; the list (:color "#888" :size 14)
+(p muted "fine print")                          ; (p :color "#888" :size 14 "fine print")
+```
+
+- **Precedence is order.** Later attributes win, so `(p muted :color "red" ...)`
+  is muted but red.
+- **Combining styles is appending:** `(append card (style :background "#fff1d6"))`.
+- **Components replace classes.** A function that passes its arguments through
+  lets callers add children and override attributes:
+  `(define (note & body) (p muted body))`, then `(note :color "red" "hi")`.
+- **Variables and themes are just code.** Styles are computed when the page
+  runs, so a palette can depend on `define-state`, as the dark mode toggle in
+  `pages/styles.sx` does.
+
+`style` is `list` plus a check that its arguments are keyword/value pairs.
 
 ## State and clicks
 
@@ -180,7 +204,6 @@ The chrome can frame itself, too:
 
 ## Roadmap
 
-1. **Reusable styles**: `(style ...)` rules, where selectors are just predicates on elements.
-2. **The clipboard**, and selecting text on pages, not just in inputs.
-3. **Networking**: load `http://` pages, and add forward history.
-4. More of the language: macros, tail calls.
+1. **The clipboard**, and selecting text on pages, not just in inputs.
+2. **Networking**: load `http://` pages, and add forward history.
+3. More of the language: macros, tail calls.

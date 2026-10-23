@@ -81,4 +81,24 @@ mod tests {
         assert_eq!(eval("(define-state x 1) (define (f x) (set! x 5) x) (list (f 0) x)"), "(5 1)", "a parameter shadows state");
         assert!(eval("(set! nope 1)").starts_with("error: set!: undefined"));
     }
+
+    #[test]
+    fn rest_parameters() {
+        assert_eq!(eval("(define (f a & more) (list a more)) (list (f 1) (f 1 2 3))"), "((1 ()) (1 (2 3)))");
+        assert_eq!(eval("((fn (& all) all) 1 2)"), "(1 2)");
+        assert!(eval("(define (f a & more) a) (f)").contains("at least 1"));
+        assert!(eval("(fn (a &) a)").contains("exactly one"));
+    }
+
+    #[test]
+    fn styles_are_lists_of_attributes() {
+        let muted = r##"(define muted (style :color "#888" :size 14))"##;
+        assert_eq!(eval(&format!("{muted} muted")), r##"(:color "#888" :size 14)"##);
+        assert_eq!(eval(&format!(r#"{muted} (p muted "hi")"#)), r##"(p :color "#888" :size 14 "hi")"##);
+        // Later attributes win, so what comes last takes precedence.
+        let page = eval(&format!(r#"{muted} (define (note & body) (p muted body)) (note :color "red" "hi")"#));
+        assert_eq!(page, r##"(p :color "#888" :size 14 :color "red" "hi")"##);
+        assert!(eval("(style :color)").contains(":color has no value"));
+        assert!(eval(r#"(style "color" 1)"#).contains("expected an attribute name"));
+    }
 }

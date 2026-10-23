@@ -35,6 +35,19 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         _ => Err("repr: expected one argument".into()),
     });
 
+    // A style: attributes to give an element, as a list it splices in.
+    def(&env, "style", |args| {
+        for pair in args.chunks(2) {
+            match pair {
+                [Value::Keyword(_), _] => {}
+                [Value::Keyword(name)] => return Err(format!("style: :{name} has no value")),
+                [other, ..] => return Err(format!("style: expected an attribute name like :color, got {other}")),
+                [] => unreachable!(),
+            }
+        }
+        Ok(Value::list(args.to_vec()))
+    });
+
     // Lists. `nil` counts as the empty list.
     def(&env, "list", |args| Ok(Value::list(args.to_vec())));
     def(&env, "first", |args| Ok(list_arg("first", args)?.first().cloned().unwrap_or(Value::Nil)));

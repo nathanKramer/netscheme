@@ -24,11 +24,17 @@
       xs
       (cons (first xs) (cons " " (spaced (rest xs))))))
 
+(define string-style (style :color "#2a7a3a"))
+(define keyword-style (style :color "#8a3ab8"))
+(define number-style (style :color "#b85a1a"))
+(define symbol-style (style :color "#1a5fb4"))
+
 (define (token x)
-  (cond ((string? x) (span :color "#2a7a3a" (repr x)))
-        ((keyword? x) (span :color "#8a3ab8" (repr x)))
-        ((number? x) (span :color "#b85a1a" (repr x)))
-        (else (span :color "#1a5fb4" (repr x)))))
+  (span (cond ((string? x) string-style)
+              ((keyword? x) keyword-style)
+              ((number? x) number-style)
+              (else symbol-style))
+        (repr x)))
 
 ; A form on a single line.
 (define (inline x)

@@ -59,6 +59,8 @@ impl Env {
 
 pub struct Lambda {
     params: Vec<Rc<str>>,
+    /// Takes any further arguments as a list: `(fn (a & more) ...)`.
+    rest: Option<Rc<str>>,
     body: Rc<[Value]>,
     env: Rc<Env>,
 }
@@ -144,12 +146,18 @@ pub fn apply(f: &Value, args: &[Value]) -> Result<Value, String> {
     match f {
         Value::Native(_, func) => func(args),
         Value::Lambda(lambda) => {
-            if lambda.params.len() != args.len() {
-                return Err(format!("expected {} arguments, got {}", lambda.params.len(), args.len()));
+            let n = lambda.params.len();
+            match lambda.rest {
+                None if args.len() != n => return Err(format!("expected {n} arguments, got {}", args.len())),
+                Some(_) if args.len() < n => return Err(format!("expected at least {n} arguments, got {}", args.len())),
+                _ => {}
             }
             let env = Env::new(Some(lambda.env.clone()));
             for (param, value) in lambda.params.iter().zip(args) {
                 env.define(param.clone(), value.clone());
+            }
+            if let Some(rest) = &lambda.rest {
+                env.define(rest.clone(), Value::list(args[n..].to_vec()));
             }
             eval_body(&lambda.body, &env)
         }
@@ -267,14 +275,21 @@ fn make_lambda(params: &Value, body: &[Value], env: &Rc<Env>) -> Result<Value, S
     let Value::List(params) = params else {
         return Err("fn: expected a parameter list".into());
     };
-    let params = params
+    let names = params
         .iter()
         .map(|p| match p {
             Value::Sym(name) => Ok(name.clone()),
             other => Err(format!("fn: parameter must be a symbol, got {other}")),
         })
-        .collect::<Result<_, _>>()?;
-    Ok(Value::Lambda(Rc::new(Lambda { params, body: body.into(), env: env.clone() })))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (params, rest) = match names.iter().position(|name| &**name == "&") {
+        None => (names, None),
+        Some(i) => match &names[i + 1..] {
+            [rest] => (names[..i].to_vec(), Some(rest.clone())),
+            _ => return Err("fn: `&` must be followed by exactly one parameter".into()),
+        },
+    };
+    Ok(Value::Lambda(Rc::new(Lambda { params, rest, body: body.into(), env: env.clone() })))
 }
 
 fn arg<'a>(items: &'a [Value], i: usize, form: &str) -> Result<&'a Value, String> {
