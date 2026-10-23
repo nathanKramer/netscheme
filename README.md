@@ -216,8 +216,11 @@ images from the web. The site's pages show `assets/images/logo.png`.
 The window identifies itself as `netscheme`: that's its app ID on Wayland and
 its class on X11, so window manager rules (Hyprland's `class:netscheme`) and
 desktop entries can match it. On X11 and Windows the window also carries the
-logo as its icon. Wayland compositors take icons from a desktop entry instead,
-which this project doesn't install yet.
+logo as its icon. Wayland compositors take icons from a desktop entry instead:
+put the logo at `~/.local/share/icons/hicolor/256x256/apps/netscheme.png`, and
+a `~/.local/share/applications/netscheme.desktop` with `Icon=netscheme`,
+`StartupWMClass=netscheme`, `Exec=` the release binary, and `Path=` this folder,
+so that pages and the logo are found when it's started from a launcher.
 
 ### Finding text
 
