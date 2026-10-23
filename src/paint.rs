@@ -6,7 +6,7 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     dom::Element,
-    layout::{DisplayItem, Layout, Link},
+    layout::{Clip, DisplayItem, Layout, Link, Scroller},
     style::{Color, Style},
 };
 
@@ -34,11 +34,21 @@ impl Fonts {
     }
 }
 
+/// How far the page, and each fixed-height frame in it, is scrolled.
+#[derive(Clone, Default)]
+pub struct Scroll {
+    pub page: f32,
+    /// By `Scroller::id`.
+    pub frames: HashMap<usize, f32>,
+}
+
 pub struct Rendered {
     /// Link hit boxes, in window coordinates.
     pub links: Vec<Link>,
-    /// The scroll offset actually used, after clamping.
-    pub scroll: f32,
+    /// Scrollable frames, in window coordinates.
+    pub scrollers: Vec<Scroller>,
+    /// The offsets actually used, after clamping.
+    pub scroll: Scroll,
 }
 
 pub struct Renderer {
@@ -52,36 +62,46 @@ impl Renderer {
     }
 
     /// Lays out `page` and paints it into `buf` (`w` × `h` physical pixels),
-    /// scrolled down by `scroll` pixels, which is first clamped so the page
-    /// can't scroll past its end.
-    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32, scroll: f32) -> Rendered {
+    /// scrolled by `scroll`. Offsets are first clamped so nothing scrolls
+    /// past its end.
+    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32, scroll: &Scroll) -> Rendered {
         let root = Style::root();
         let page_background = Style::compute(page, &root).background.unwrap_or(Color::WHITE);
-        let mut layout = Layout::new(&self.fonts, scale);
+        let mut layout = Layout::new(&self.fonts, scale, h as f32, &scroll.frames);
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
-        let scroll = scroll.clamp(0.0, (content_height - h as f32).max(0.0)).round();
-        let (items, mut links) = (layout.items, layout.links);
+        let dy = scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
+        let (items, mut links, mut scrollers) = (layout.items, layout.links, layout.scrollers);
 
         buf.fill(page_background.to_u32());
+        let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
+        let mut clip = screen;
         for item in &items {
             match item {
-                DisplayItem::Rect { x, y, w: rw, h: rh, color } => fill_rect(buf, w, h, *x, *y - scroll, *rw, *rh, *color),
+                DisplayItem::Rect { x, y, w: rw, h: rh, color } => {
+                    fill_rect(buf, w, Clip::rect(*x, *y - dy, *rw, *rh).intersect(clip), *color)
+                }
                 DisplayItem::Text { x, y, text, size, bold, color } => {
-                    let baseline = *y - scroll;
-                    if baseline + size >= 0.0 && baseline - size < h as f32 {
-                        self.draw_text(buf, w, h, *x, baseline, text, *size, *bold, *color)
+                    let baseline = *y - dy;
+                    if baseline + size >= clip.y0 && baseline - size < clip.y1 {
+                        self.draw_text(buf, w, clip, *x, baseline, text, *size, *bold, *color)
                     }
                 }
+                DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
             }
         }
         for link in &mut links {
-            link.y -= scroll;
+            link.y -= dy;
         }
-        Rendered { links, scroll }
+        for scroller in &mut scrollers {
+            scroller.area.y0 -= dy;
+            scroller.area.y1 -= dy;
+        }
+        let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
+        Rendered { links, scrollers, scroll: Scroll { page: dy, frames } }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_text(&mut self, buf: &mut [u32], w: usize, h: usize, x: f32, baseline: f32, text: &str, size: f32, bold: bool, color: Color) {
+    fn draw_text(&mut self, buf: &mut [u32], w: usize, clip: Clip, x: f32, baseline: f32, text: &str, size: f32, bold: bool, color: Color) {
         let mut pen = x;
         for c in text.chars() {
             let (m, bitmap) = self
@@ -94,7 +114,7 @@ impl Renderer {
                 for col in 0..m.width {
                     let alpha = bitmap[row * m.width + col];
                     let (px, py) = (gx + col as i32, gy + row as i32);
-                    if alpha > 0 && px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                    if alpha > 0 && clip.contains(px as f32, py as f32) {
                         let dst = &mut buf[py as usize * w + px as usize];
                         *dst = blend(*dst, color, alpha);
                     }
@@ -105,11 +125,13 @@ impl Renderer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fill_rect(buf: &mut [u32], w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, color: Color) {
-    let clamp = |v: f32, max: usize| (v.round().max(0.0) as usize).min(max);
-    let (x0, x1) = (clamp(x, w), clamp(x + rw, w));
-    let (y0, y1) = (clamp(y, h), clamp(y + rh, h));
+/// Fills `area`, which must already be clipped to the buffer.
+fn fill_rect(buf: &mut [u32], w: usize, area: Clip, color: Color) {
+    if area.is_empty() {
+        return;
+    }
+    let (x0, x1) = (area.x0.round() as usize, area.x1.round() as usize);
+    let (y0, y1) = (area.y0.round() as usize, area.y1.round() as usize);
     for row in y0..y1 {
         buf[row * w + x0..row * w + x1].fill(color.to_u32());
     }
@@ -129,17 +151,17 @@ mod tests {
     fn render(src: &str, h: usize, scroll: f32) -> Rendered {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
-        Renderer::new().render(&page, &mut buf, 200, h, 1.0, scroll)
+        Renderer::new().render(&page, &mut buf, 200, h, 1.0, &Scroll { page: scroll, frames: HashMap::new() })
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
 
     #[test]
     fn scroll_is_clamped_to_the_content() {
-        assert_eq!(render(TALL, 100, -50.0).scroll, 0.0);
-        let bottom = render(TALL, 100, 1e9).scroll;
+        assert_eq!(render(TALL, 100, -50.0).scroll.page, 0.0);
+        let bottom = render(TALL, 100, 1e9).scroll.page;
         assert!(bottom > 900.0 && bottom < 1100.0 - 100.0, "{bottom}");
-        assert_eq!(render(r#"(page "short")"#, 100, 50.0).scroll, 0.0, "nothing to scroll");
+        assert_eq!(render(r#"(page "short")"#, 100, 50.0).scroll.page, 0.0, "nothing to scroll");
     }
 
     #[test]
@@ -147,4 +169,37 @@ mod tests {
         let (top, scrolled) = (render(TALL, 100, 0.0), render(TALL, 100, 300.0));
         assert_eq!(scrolled.links[0].y, top.links[0].y - 300.0);
     }
+
+    #[test]
+    fn fill_frames_clip_their_page_and_scroll_by_themselves() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-frame-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("long.sx"), r#"(page (div :margin 400) (p (a :href "x.sx" "far down")) (div :margin 400))"#).unwrap();
+        let ctx = std::rc::Rc::new(crate::loader::PageContext {
+            location: dir.join("outer.sx").to_string_lossy().into(),
+            params: Vec::new(),
+            depth: 0,
+            scale: 1.0,
+        });
+        let src = r#"(page :padding 0 (p "toolbar") (frame :src "long.sx" :height "fill" :margin 0))"#;
+        let Ok(Value::Element(page)) = lisp::run(src, &ctx) else { panic!("not a page") };
+        let mut renderer = Renderer::new();
+        let mut buf = vec![0; 200 * 300];
+        let mut render = |frames: HashMap<usize, f32>| renderer.render(&page, &mut buf, 200, 300, 1.0, &Scroll { page: 0.0, frames });
+
+        let top = render(HashMap::new());
+        assert_eq!(top.scrollers.len(), 1);
+        assert!(top.links.is_empty(), "the link is below the frame's visible area");
+        assert_eq!(top.scroll.page, 0.0, "the outer page fits the window");
+
+        let bottom = render(HashMap::from([(0, 1e9)]));
+        assert!(bottom.scrollers[0].scroll > 0.0 && bottom.scrollers[0].scroll < 1e9, "clamped to the content");
+
+        let middle = render(HashMap::from([(0, 300.0)]));
+        let (frame, link) = (&middle.scrollers[0], &middle.links[0]);
+        assert_eq!(frame.scroll, 300.0);
+        assert!(frame.area.contains(link.x, link.y), "the link scrolled into view");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
+

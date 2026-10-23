@@ -1,7 +1,7 @@
 //! Block layout with inline formatting contexts. Produces a flat display
 //! list, plus link hit boxes, in physical pixels.
 
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     dom::{self, Element, Node},
@@ -14,6 +14,48 @@ pub enum DisplayItem {
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
     /// `y` is the text baseline.
     Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: Color },
+    /// Items after this are only drawn inside `Clip`, until the next `Clip`.
+    Clip(Clip),
+}
+
+/// A rectangle, as edges, that drawing is limited to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
+impl Clip {
+    pub const NONE: Clip = Clip { x0: f32::NEG_INFINITY, y0: f32::NEG_INFINITY, x1: f32::INFINITY, y1: f32::INFINITY };
+
+    pub fn rect(x: f32, y: f32, w: f32, h: f32) -> Clip {
+        Clip { x0: x, y0: y, x1: x + w, y1: y + h }
+    }
+
+    pub fn intersect(self, other: Clip) -> Clip {
+        Clip { x0: self.x0.max(other.x0), y0: self.y0.max(other.y0), x1: self.x1.min(other.x1), y1: self.y1.min(other.y1) }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x0 && x < self.x1 && y >= self.y0 && y < self.y1
+    }
+}
+
+/// A frame with a fixed height, which scrolls its page independently.
+pub struct Scroller {
+    /// Identifies the frame across renders of the same page: frames with a
+    /// fixed height are numbered in layout order.
+    pub id: usize,
+    /// The visible part of the frame.
+    pub area: Clip,
+    /// The scroll offset used, after clamping.
+    pub scroll: f32,
 }
 
 /// A clickable region produced by an `(a :href ...)` element.
@@ -60,15 +102,33 @@ struct Word {
 pub struct Layout<'a> {
     fonts: &'a Fonts,
     scale: f32,
+    /// Height of the window, for `(frame :height "fill")`.
+    viewport_height: f32,
+    /// Requested scroll offsets of fixed-height frames, by `Scroller::id`.
+    frame_scrolls: &'a HashMap<usize, f32>,
+    next_frame_id: usize,
+    clip: Clip,
     /// Location of the framed page being laid out, if any; see `Link::base`.
     base: Option<Rc<str>>,
     pub items: Vec<DisplayItem>,
     pub links: Vec<Link>,
+    pub scrollers: Vec<Scroller>,
 }
 
 impl<'a> Layout<'a> {
-    pub fn new(fonts: &'a Fonts, scale: f32) -> Self {
-        Layout { fonts, scale, base: None, items: Vec::new(), links: Vec::new() }
+    pub fn new(fonts: &'a Fonts, scale: f32, viewport_height: f32, frame_scrolls: &'a HashMap<usize, f32>) -> Self {
+        Layout {
+            fonts,
+            scale,
+            viewport_height,
+            frame_scrolls,
+            next_frame_id: 0,
+            clip: Clip::NONE,
+            base: None,
+            items: Vec::new(),
+            links: Vec::new(),
+            scrollers: Vec::new(),
+        }
     }
 
     /// Lays out `el` in a box of width `w` at (`x`, `y`); returns the y
@@ -124,33 +184,80 @@ impl<'a> Layout<'a> {
         bottom
     }
 
-    /// An embedded page, drawn at its `:scale` with a 1px border. Its styles
-    /// start fresh rather than inheriting from the surrounding page.
+    /// An embedded page, drawn at its `:scale` with a 1px border unless
+    /// `:border` is false. With a `:height` (a number, or "fill" to reach the
+    /// bottom of the window) the page is clipped to it and scrolls by itself.
+    /// The page's styles start fresh rather than inheriting from outside.
     fn frame(&mut self, el: &Element, x: f32, y: f32, w: f32) -> f32 {
         let Some(Node::Element(page)) = el.children.first() else { return y };
         let zoom = match el.attr("scale") {
             Some(Value::Num(n)) => *n as f32,
             _ => 1.0,
         };
+        let height = match el.attr("height") {
+            Some(Value::Str(fill)) if &**fill == "fill" => Some((self.viewport_height - y).max(40.0 * self.scale)),
+            Some(Value::Num(n)) => Some(*n as f32 * self.scale),
+            _ => None,
+        };
         let base = match el.attr("location") {
             Some(Value::Str(location)) => Some(location.clone()),
             _ => None,
         };
-        let border = self.scale.round().max(1.0);
+        let border = match el.attr("border") {
+            Some(v) if !v.truthy() => 0.0,
+            _ => self.scale.round().max(1.0),
+        };
+
         let saved = (self.scale, std::mem::replace(&mut self.base, base));
         self.scale *= zoom;
-        let bottom = self.block(page, &Style::root(), x + border, y + border, w - 2.0 * border) + border;
+        let (inner_x, inner_y, inner_w) = (x + border, y + border, w - 2.0 * border);
+        let bottom = match height {
+            None => self.block(page, &Style::root(), inner_x, inner_y, inner_w) + border,
+            Some(h) => {
+                let inner_h = (h - 2.0 * border).max(0.0);
+                self.scrolling_page(page, Clip::rect(inner_x, inner_y, inner_w, inner_h));
+                y + h
+            }
+        };
         (self.scale, self.base) = saved;
 
-        let color = Color(0xcc, 0xcc, 0xcc);
-        let h = bottom - y;
-        self.items.extend([
-            DisplayItem::Rect { x, y, w, h: border, color },
-            DisplayItem::Rect { x, y: bottom - border, w, h: border, color },
-            DisplayItem::Rect { x, y, w: border, h, color },
-            DisplayItem::Rect { x: x + w - border, y, w: border, h, color },
-        ]);
+        if border > 0.0 {
+            let color = Color(0xcc, 0xcc, 0xcc);
+            let h = bottom - y;
+            self.items.extend([
+                DisplayItem::Rect { x, y, w, h: border, color },
+                DisplayItem::Rect { x, y: bottom - border, w, h: border, color },
+                DisplayItem::Rect { x, y, w: border, h, color },
+                DisplayItem::Rect { x: x + w - border, y, w: border, h, color },
+            ]);
+        }
         bottom
+    }
+
+    /// Lays out `page` inside `area`, scrolled by its frame's offset and
+    /// clipped to the area.
+    fn scrolling_page(&mut self, page: &Element, area: Clip) {
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
+
+        // Measure the page first, to know how far it can scroll.
+        let marks = (self.items.len(), self.links.len(), self.scrollers.len());
+        let content_bottom = self.block(page, &Style::root(), area.x0, area.y0, area.x1 - area.x0);
+        self.items.truncate(marks.0);
+        self.links.truncate(marks.1);
+        self.scrollers.truncate(marks.2);
+        self.next_frame_id = id + 1;
+
+        let max_scroll = (content_bottom - area.y1).max(0.0);
+        let scroll = self.frame_scrolls.get(&id).copied().unwrap_or(0.0).clamp(0.0, max_scroll).round();
+
+        let outer = self.clip;
+        self.clip = area.intersect(outer);
+        self.items.push(DisplayItem::Clip(self.clip));
+        self.block(page, &Style::root(), area.x0, area.y0 - scroll, area.x1 - area.x0);
+        self.items.push(DisplayItem::Clip(outer));
+        self.scrollers.push(Scroller { id, area: self.clip, scroll });
+        self.clip = outer;
     }
 
     /// Greedy word wrap of `run`, which is consumed. Returns the y below the last line.
@@ -239,9 +346,12 @@ impl<'a> Layout<'a> {
             if let Some(color) = segment.style.background {
                 self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
             }
-            if let Some(href) = &segment.href {
-                let base = self.base.clone();
-                self.links.push(Link { x: px, y: py, w: piece.w, h: height, href: href.clone(), base });
+            let visible = Clip::rect(px, py, piece.w, height).intersect(self.clip);
+            if let Some(href) = &segment.href
+                && !visible.is_empty()
+            {
+                let (x, y, w, h) = (visible.x0, visible.y0, visible.x1 - visible.x0, visible.y1 - visible.y0);
+                self.links.push(Link { x, y, w, h, href: href.clone(), base: self.base.clone() });
             }
         }
         for piece in line {
@@ -300,7 +410,8 @@ mod tests {
     fn layout(src: &str, width: f32) -> (Vec<DisplayItem>, Vec<Link>) {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
-        let mut layout = Layout::new(&fonts, 1.0);
+        let scrolls = HashMap::new();
+        let mut layout = Layout::new(&fonts, 1.0, 600.0, &scrolls);
         layout.block(&page, &Style::root(), 0.0, 0.0, width);
         (layout.items, layout.links)
     }

@@ -18,6 +18,9 @@ produces, a `(page ...)` element, is the document.
 cargo run                                   # opens pages/hello.sx
 cargo run -- path/to/page.sx
 cargo run -- page.sx --screenshot out.png --width 800 --height 600 --scroll 200
+
+# Screenshots show the bare page. To include the toolbar, screenshot the chrome:
+cargo run -- 'browser:chrome?location=pages/hello.sx' --screenshot out.png
 ```
 
 ## Technology
@@ -49,16 +52,17 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
 | `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
 | `paint.rs` | Rectangles and glyphs into a pixel buffer | Painting and compositing |
-| `window.rs` | Event loop and re-render on resize | Browser chrome |
+| `window.rs` | Event loop, scrolling, and navigation; shows `browser:chrome` | The browser process |
 
 ## The language today
 
 - Atoms: numbers, `"strings"`, `true`, `false`, `nil`, `symbols`, `:keywords`
 - Special forms: `define`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
-- Builtins: `+ - * / mod = < > not str repr`, the list functions
-  `list first rest nth cons length empty? map filter`, and the predicates
-  `list? string? number? symbol? keyword? fn?`
+- Builtins: `+ - * / mod = < > not str repr url-encode`, the list functions
+  `list first rest nth cons length empty? map filter`, the predicates
+  `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
+  `children` for looking inside elements
 - Block elements: `page div row h1 h2 h3 p frame`. Inline elements: `span b a`.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists of children are spliced in,
@@ -67,11 +71,12 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
   `:padding-left`, `:margin`.
   Padding and margin apply only to block elements.
 - Links: `(a :href "other.sx" ...)` opens a local page, resolved relative to the
-  current page. Go back with Alt+← or the mouse's back button.
-  A link inside a frame navigates the whole window.
+  current page. An href starting with `/` is relative to the working directory.
+  Go back with Alt+←, the mouse's back button, or the toolbar.
 
 Scroll with a trackpad, mouse wheel, arrow keys, Page Up/Down, Space and
-Shift+Space, or Home/End. Going back restores where you'd scrolled to.
+Shift+Space, or Home/End. This scrolls the frame under the cursor, if it has a
+fixed height, and otherwise the page. Going back restores where you'd scrolled to.
 
 ## Code as data
 
@@ -85,10 +90,29 @@ gives `"(p :color \"red\" \"hi\")"`, and reading that back builds the same eleme
 - `(frame :src "page.sx" :scale 0.5)` embeds another page, which runs in its own
   environment and is drawn at the given scale. A page may frame itself: frames
   more than 8 deep, or drawn at under 4% of full size, are left empty.
+  With `:height` (pixels, or `"fill"` to reach the bottom of the window) the
+  frame clips its page and scrolls it independently. `:border false` hides the border.
 - `(row ...)` lays its children out side by side in equal columns.
 
-`pages/view-source.sx` is view source written as an ordinary page, and it can
-show its own source. `pages/fractal.sx` frames itself twice.
+`pages/fractal.sx` frames itself twice.
+
+## The browser is a page
+
+Locations starting with `browser:` are the browser's own pages, kept in `ui/`:
+
+- `browser:chrome?location=<site>` is the toolbar. The window always shows this
+  page, which puts the site in a `(frame :height "fill")` below the toolbar. It
+  reads the site's title out of the frame's document tree, and that becomes the
+  window title. Edit `ui/chrome.sx` to change the browser's interface.
+- `browser:view-source?page=<site>` shows a page's source, and can show its own.
+- `browser:back` isn't a page: following a link to it goes back.
+
+Links on browser pages are relative to the working directory, and any link,
+whether in the toolbar or the site, navigates the site. Values inside a query,
+like the site's own location, are percent-encoded.
+
+The chrome can frame itself, too:
+`cargo run -- 'browser:chrome?location=pages/hello.sx'` opens a browser inside a browser.
 
 ## Roadmap
 
@@ -96,6 +120,5 @@ show its own source. `pages/fractal.sx` frames itself twice.
 2. **Interactivity**: `:on-click` handlers. State changes re-evaluate the page and
    re-render it, React-style, so there is no mutable DOM API to design.
 3. **Networking**: load `http://` pages, and add forward history.
-4. **Chrome as a page**: the address bar, back button, and view source live in
-   `chrome.sx`, which shows the current site in a `frame`.
-5. More of the language: `let`, `map`, `filter`, macros, tail calls.
+4. **An editable address bar**, which needs text input.
+5. More of the language: macros, tail calls.

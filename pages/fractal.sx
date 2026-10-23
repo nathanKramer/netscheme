@@ -4,8 +4,7 @@
 (page :title "Fractal" :background "#fdf6ec"
   (h1 :color "#b8336a" "This page contains itself")
   (p "Both frames below load " (b "fractal.sx") ", the file that defines this page. "
-     (a :href "hello.sx" "Home") " · "
-     (a :href "view-source.sx?page=fractal.sx" "View source"))
+     (a :href "hello.sx" "Home"))
   (row
     (frame :src "fractal.sx" :scale 0.5)
     (frame :src "fractal.sx" :scale 0.5)))

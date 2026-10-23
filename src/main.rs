@@ -39,11 +39,12 @@ fn main() -> ExitCode {
         }
     }
 
-    let page = loader::open(&location);
     let mut renderer = Renderer::new();
 
+    // Screenshots show just the page at `location`; the window wraps it in
+    // the browser chrome.
     match screenshot {
-        Some(out) => match write_screenshot(&mut renderer, &page, width, height, scroll, &out) {
+        Some(out) => match write_screenshot(&mut renderer, &loader::open(&location), width, height, scroll, &out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("screenshot failed: {e}");
@@ -51,7 +52,7 @@ fn main() -> ExitCode {
             }
         },
         None => {
-            window::run(location, page, renderer);
+            window::run(location, renderer);
             ExitCode::SUCCESS
         }
     }
@@ -59,7 +60,7 @@ fn main() -> ExitCode {
 
 fn write_screenshot(renderer: &mut Renderer, page: &Element, w: usize, h: usize, scroll: f32, out: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u32; w * h];
-    renderer.render(page, &mut buf, w, h, 1.0, scroll);
+    renderer.render(page, &mut buf, w, h, 1.0, &paint::Scroll { page: scroll, ..Default::default() });
     let rgb: Vec<u8> = buf.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(fs::File::create(out)?), w as u32, h as u32);
     encoder.set_color(png::ColorType::Rgb);

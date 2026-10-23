@@ -1,4 +1,7 @@
-//! Turns locations like `pages/view-source.sx?page=hello.sx` into documents.
+//! Turns locations into documents. A location is a file path relative to
+//! the working directory, like `pages/hello.sx`, or a browser page like
+//! `browser:view-source`, which lives in this project's `ui/` folder. Either
+//! can end in a query: `browser:view-source?page=pages/hello.sx`.
 
 use std::{fs, path::Path, rc::Rc};
 
@@ -34,29 +37,89 @@ pub fn open(location: &str) -> Rc<Element> {
 }
 
 fn open_nested(location: &str, depth: u32, scale: f32) -> Rc<Element> {
-    let (file, query) = location.split_once('?').unwrap_or((location, ""));
+    let (_, query) = location.split_once('?').unwrap_or((location, ""));
     let params = query
         .split('&')
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (k.to_string(), v.to_string())
+            (decode(k), decode(v))
         })
         .collect();
     let ctx = Rc::new(PageContext { location: location.into(), params, depth, scale });
-    match fs::read_to_string(file) {
+    match read_source(location) {
         Ok(source) => evaluate(&source, &ctx),
-        Err(e) => error_page(&format!("couldn't read {file}: {e}")),
+        Err(e) => error_page(&e),
     }
 }
 
-/// Resolves `href` against the location of the page it appears on.
+/// The source code of the page at `location`.
+pub fn read_source(location: &str) -> Result<String, String> {
+    let file = location.split_once('?').map_or(location, |(file, _)| file);
+    let path = match file.strip_prefix(BROWSER) {
+        Some(name) => Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(format!("{name}.sx")),
+        None => file.into(),
+    };
+    fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))
+}
+
+const BROWSER: &str = "browser:";
+
+/// Resolves `href` against the location of the page it appears on. Links
+/// starting with `/`, and every link on a browser page, are relative to the
+/// working directory instead.
 pub fn resolve(current: &str, href: &str) -> Result<String, String> {
     if href.contains("://") {
         return Err(format!("only local links work so far: {href}"));
     }
+    if href.starts_with(BROWSER) {
+        return Ok(href.into());
+    }
+    if let Some(rooted) = href.strip_prefix('/') {
+        return Ok(rooted.into());
+    }
+    if current.starts_with(BROWSER) {
+        return Ok(href.into());
+    }
     let file = current.split_once('?').map_or(current, |(file, _)| file);
     Ok(Path::new(file).parent().unwrap_or(Path::new("")).join(href).to_string_lossy().into_owned())
+}
+
+/// Percent-encodes `s` so it can be a query parameter's value.
+pub fn encode(s: &str) -> String {
+    let mut out = String::new();
+    for byte in s.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~/:".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Loads the page named by a frame's `:src` as the frame's only child,
@@ -108,6 +171,16 @@ mod tests {
         assert_eq!(resolve("hello.sx", "sub/a.sx"), Ok("sub/a.sx".into()));
         assert_eq!(resolve("pages/v.sx?page=sub/x.sx", "a.sx"), Ok("pages/a.sx".into()));
         assert!(resolve("pages/hello.sx", "https://example.com").is_err());
+        assert_eq!(resolve("pages/hello.sx", "/x.sx"), Ok("x.sx".into()));
+        assert_eq!(resolve("pages/hello.sx", "browser:chrome"), Ok("browser:chrome".into()));
+        assert_eq!(resolve("browser:view-source?page=a", "pages/hello.sx"), Ok("pages/hello.sx".into()));
+    }
+
+    #[test]
+    fn query_values_round_trip_through_encoding() {
+        let location = "browser:view-source?page=pages/a b.sx&x=1";
+        assert_eq!(decode(&encode(location)), location);
+        assert!(!encode(location).contains(['?', '&', '=', ' ']));
     }
 
     #[test]

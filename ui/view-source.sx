@@ -2,9 +2,9 @@
 ; code as a list of forms without running it, and the functions below turn
 ; those forms into elements.
 ;
-; Usage: view-source.sx?page=hello.sx
+; Usage: browser:view-source?page=pages/hello.sx
 
-(define target (or (param "page") "view-source.sx"))
+(define target (or (param "page") "browser:view-source"))
 
 (define (atom? x) (not (list? x)))
 
@@ -53,5 +53,5 @@
 (page :title (str "Source of " target)
   (h1 :size 24 "Source of " (span :color "#1a5fb4" target))
   (p (a :href target "Open the page") " · "
-     (a :href "view-source.sx?page=view-source.sx" "View the source of this viewer"))
+     (a :href "browser:view-source?page=browser:view-source" "View the source of this viewer"))
   (map (fn (form) (block form 0)) (source target)))

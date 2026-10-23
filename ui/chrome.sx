@@ -1,0 +1,28 @@
+; The browser's toolbar, written as an ordinary page. The window always shows
+; browser:chrome?location=<site>, and this page puts the site in a frame
+; that fills the rest of the window and scrolls on its own.
+
+(define location (or (param "location") "pages/hello.sx"))
+(define can-go-back (param "back"))
+
+(define site (frame :src location :height "fill" :border false :margin 0))
+
+; The frame has already loaded the site, so its title can be read straight
+; out of the document tree.
+(define site-title (attr (first (children site)) :title))
+
+(define (toolbar-link href label)
+  (a :href href :underline false :color "#3a2f4a" (b label)))
+
+(page :title (or site-title location) :padding 0
+  (div :background "#ebe8ef" :padding 10 :margin 0
+    (p :margin 0
+      (if can-go-back
+          (toolbar-link "browser:back" "← Back")
+          (span :color "#a9a3b2" (b "← Back")))
+      (span :color "#c4bfcc" " | ")
+      (span :color "#6b6475" location)
+      (span :color "#c4bfcc" " | ")
+      (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")))
+  (div :background "#d3cfda" :padding 0.5 :margin 0)
+  site)

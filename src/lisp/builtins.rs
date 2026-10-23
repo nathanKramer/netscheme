@@ -1,4 +1,4 @@
-use std::{fs, rc::Rc};
+use std::rc::Rc;
 
 use super::{
     eval::{Env, apply},
@@ -79,6 +79,33 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     predicate(&env, "keyword?", |v| matches!(v, Value::Keyword(_)));
     predicate(&env, "fn?", |v| matches!(v, Value::Native(..) | Value::Lambda(_)));
 
+    // Looking inside elements: the document is data too.
+    def(&env, "tag", |args| match args {
+        [Value::Element(el)] => Ok(Value::Sym(el.tag.clone())),
+        _ => Err("tag: expected an element".into()),
+    });
+    def(&env, "attr", |args| match args {
+        [Value::Element(el), Value::Keyword(name) | Value::Str(name)] => Ok(el.attr(name).cloned().unwrap_or(Value::Nil)),
+        [Value::Nil, _] => Ok(Value::Nil),
+        _ => Err("attr: expected an element and an attribute name".into()),
+    });
+    def(&env, "children", |args| match args {
+        [Value::Element(el)] => Ok(Value::list(
+            el.children
+                .iter()
+                .map(|child| match child {
+                    dom::Node::Element(el) => Value::Element(el.clone()),
+                    dom::Node::Text(text) => Value::Str(text.clone()),
+                })
+                .collect(),
+        )),
+        _ => Err("children: expected an element".into()),
+    });
+    def(&env, "url-encode", |args| match args {
+        [Value::Str(s)] => Ok(Value::Str(loader::encode(s).into())),
+        _ => Err("url-encode: expected a string".into()),
+    });
+
     for &tag in dom::TAGS {
         def(&env, tag, move |args| dom::build_element(tag, args).map(|el| Value::Element(Rc::new(el))));
     }
@@ -94,9 +121,7 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     let c = ctx.clone();
     def(&env, "source", move |args| {
         let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
-        let location = loader::resolve(&c.location, href)?;
-        let file = location.split_once('?').map_or(&*location, |(file, _)| file);
-        let text = fs::read_to_string(file).map_err(|e| format!("source: couldn't read {file}: {e}"))?;
+        let text = loader::read_source(&loader::resolve(&c.location, href)?).map_err(|e| format!("source: {e}"))?;
         Ok(Value::list(reader::read_all(&text)?))
     });
     // A query parameter from the page's location: `page.sx?name=value`.
