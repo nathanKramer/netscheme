@@ -5,6 +5,7 @@ mod layout;
 mod loader;
 mod lisp;
 mod paint;
+mod settings;
 mod style;
 #[cfg(test)]
 mod test_server;
@@ -76,7 +77,12 @@ fn main() -> ExitCode {
             }
         }
         None => {
-            window::run(Browser::new(location, true));
+            let mut browser = Browser::new(location, true);
+            // Only the window keeps settings, so screenshots don't depend on them.
+            if let Some(settings) = settings::Settings::standard() {
+                browser.keep_settings(settings);
+            }
+            window::run(browser);
             ExitCode::SUCCESS
         }
     }

@@ -183,8 +183,10 @@ impl ApplicationHandler for App {
         let window = Rc::new(event_loop.create_window(attrs).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
-        // Start in the system's theme, if it says.
-        if let Some(theme) = window.theme() {
+        // Start in the system's theme, if it says, unless the user chose one.
+        if let Some(theme) = window.theme()
+            && !self.browser.dark_mode_chosen()
+        {
             self.browser.set_dark_mode(theme == Theme::Dark);
         }
         self.state = Some(WindowState { window, _context: context, surface });
@@ -256,7 +258,7 @@ impl ApplicationHandler for App {
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::ThemeChanged(theme) => {
+            WindowEvent::ThemeChanged(theme) if !self.browser.dark_mode_chosen() => {
                 self.browser.set_dark_mode(theme == Theme::Dark);
                 self.redraw();
             }

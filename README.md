@@ -134,7 +134,11 @@ which an element splices in like any other list:
 ### Dark mode
 
 Dark mode is a browser setting, toggled from the toolbar. It starts in the
-system's theme when the system reports one, and follows it when it changes.
+system's theme when the system reports one, and follows it when it changes,
+until the toolbar's switch is used. The window then remembers that choice
+in `~/.config/netscheme/settings` (under `$XDG_CONFIG_HOME` if that's set),
+starts in it, and stops following the system. Deleting the file goes back
+to following the system. Screenshots and tests don't read or write it.
 The browser's own colours (the page background, text, links, buttons and
 inputs) switch with it, so a page that doesn't choose its colours goes dark
 by itself. A page that does choose them can follow the setting:

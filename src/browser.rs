@@ -13,6 +13,7 @@ use crate::{
     lisp::{self, Value},
     loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
     paint::{Renderer, Scroll, View},
+    settings::Settings,
 };
 
 /// Logical pixels scrolled per arrow key press or mouse wheel line.
@@ -91,6 +92,8 @@ pub struct Browser {
     page_state: Rc<StateStore>,
     /// Settings, and requests from pages, that outlast navigation.
     host: Rc<Host>,
+    /// Where settings are kept between runs of the browser, if they are.
+    settings: Option<Settings>,
     /// Sites to return to with "back", with their scroll offsets and state, most recent last.
     history: Vec<(String, Scroll, Rc<StateStore>)>,
     scroll: Scroll,
@@ -134,6 +137,7 @@ impl Browser {
             page: loader::error_page("not loaded yet"),
             page_state: Rc::default(),
             host: Rc::new(Host::new(if chrome { "/0" } else { "" })),
+            settings: None,
             history: Vec::new(),
             scroll: Scroll::default(),
             focus: None,
@@ -164,6 +168,20 @@ impl Browser {
 
     pub fn dark_mode(&self) -> bool {
         self.host.dark_mode.get()
+    }
+
+    /// Keeps settings in `settings` between runs: starts in the mode saved
+    /// there, and saves the mode whenever a page's switch changes it.
+    pub fn keep_settings(&mut self, settings: Settings) {
+        if let Some(dark) = settings.dark_mode() {
+            self.set_dark_mode(dark);
+        }
+        self.settings = Some(settings);
+    }
+
+    /// Whether the user has chosen a mode, which then wins over the system's.
+    pub fn dark_mode_chosen(&self) -> bool {
+        self.settings.as_ref().is_some_and(|settings| settings.dark_mode().is_some())
     }
 
     /// Switches dark mode, and runs the page again so it can follow.
@@ -564,7 +582,11 @@ impl Browser {
     /// Calls a handler, then goes where it asked to with `go`, or else runs
     /// the page again so it shows any state the handler changed.
     fn run(&mut self, handler: &Value, args: &[Value]) {
+        let dark = self.dark_mode();
         let result = lisp::apply(handler, args);
+        if let Some(settings) = self.settings.as_mut().filter(|_| self.host.dark_mode.get() != dark) {
+            settings.set_dark_mode(!dark);
+        }
         if let Some(request) = self.host.take_find().filter(|_| result.is_ok()) {
             self.find_request(request);
         }
@@ -1008,6 +1030,23 @@ mod tests {
         press(&mut browser, [Key::FocusAddressBar, Key::Text("pages/tour.sx".into()), Key::Enter]);
         press(&mut browser, [Key::Back]);
         assert!(browser.dark_mode(), "it outlasts navigation");
+    }
+
+    #[test]
+    fn the_chosen_mode_outlasts_the_browser() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-settings-test-{}", std::process::id()));
+        let file = dir.join("netscheme").join("settings");
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        browser.keep_settings(Settings::at(file.clone()));
+        assert!(!browser.dark_mode_chosen(), "nothing saved yet, so it follows the system");
+        click_link(&mut browser, |action| matches!(action, Action::Run(_)));
+        assert!(browser.dark_mode());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "dark-mode true\n");
+
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        browser.keep_settings(Settings::at(file));
+        assert!(browser.dark_mode() && browser.dark_mode_chosen(), "the next run starts dark");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
