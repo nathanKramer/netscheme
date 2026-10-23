@@ -11,10 +11,14 @@
 (define finding (param "find"))
 (define found (parse-number (or (param "found") "0")))
 (define at (parse-number (or (param "at") "0")))
+; Set while the REPL is open. What's typed into it runs in the site, and
+; `repl-log` lists what has run so far.
+(define repl-open (param "repl"))
 
 ; What's in the address bar. Going somewhere starts this page with fresh
 ; state, so it resets to the new location.
 (define-state typed location)
+(define-state repl-typed "")
 
 (define site (frame :src location :height "fill" :border false :margin 0))
 
@@ -50,6 +54,29 @@
       " "
       (button toolbar-text :on-click (fn () (close-find)) "×"))))
 
+; The REPL shows the last few entries above its input. Each shows the code
+; that ran, then the value it printed, or its error in red.
+(define repl-shown 8)
+(define repl-muted (style :color (light-dark "#6f6979" "#a19bab")))
+(define repl-error (style :color (light-dark "#a3281c" "#ff9d92")))
+
+(define (repl-entry entry)
+  (list (p :margin 2 :mono true repl-muted "> " (get entry :input))
+        (p :margin 2 :mono true (if (get entry :error) repl-error) (get entry :output))))
+
+(define (repl)
+  (define log (repl-log))
+  (div toolbar
+    (map repl-entry (drop log (max 0 (- (length log) repl-shown))))
+    (p :margin 0
+      (span :mono true toolbar-text "> ")
+      (input :value repl-typed :width 600 :placeholder "Run code in this page" :autofocus true
+             :on-input (fn (text) (set! repl-typed text))
+             :on-submit (fn (text)
+                          (if (not (empty? (trim text)))
+                              (do (repl-eval text) (set! repl-typed ""))))
+             :on-escape (fn () (close-repl))))))
+
 (page :title (or site-title location) :padding 0
   (div toolbar
     (p :margin 0
@@ -72,6 +99,7 @@
            :on-click (fn () (set-dark-mode (not (dark-mode)))))))
   (div rule)
   (if finding (list (find-bar) (div rule)))
+  (if repl-open (list (repl) (div rule)))
   (if error
       (div :background (light-dark "#fde8e8" "#3d1f22") :padding 10 :margin 0
         (p :margin 0 :color (light-dark "#8a1c1c" "#ffb4b4") (b "Error ") error)))

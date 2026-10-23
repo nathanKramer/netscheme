@@ -239,6 +239,25 @@ The find bar is part of `ui/chrome.sx`. It asks the browser to search with
 out, and passes the query, the number of matches and the current one back to
 the chrome as `find`, `found` and `at` in its location.
 
+### The REPL
+
+Ctrl+Shift+J opens a REPL under the toolbar, and pressing it again closes
+it, as Escape in its input does. Code typed into it runs in the site, like a
+browser's JavaScript console: it can read the site's variables, call its
+functions, and `set!` its state, after which the site runs again and shows the
+change. The REPL shows the last eight entries, each with the value printed as
+code or the error in red, and its log lasts until the browser closes.
+
+The REPL runs code in the site's global environment from the site's latest
+run. The site runs again after every click and keystroke, starting from a fresh
+environment each time, so anything `define`d in the REPL is gone by the next
+entry; `define-state` variables are what last. A runaway entry stops with an
+error, as an event handler does.
+
+The REPL is part of `ui/chrome.sx` too. It hands code to the browser with
+`repl-eval`, closes with `close-repl`, and reads what has run with
+`repl-log`, which only `browser:` pages may call.
+
 ### Screenshots of interactions
 
 `--click X,Y` and `--type TEXT` act on the page before the screenshot, in
@@ -249,6 +268,7 @@ order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 cargo run -- pages/inputs.sx --screenshot out.png --click 250,332 --type $'Ada\tWrite docs\n'
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
 cargo run -- pages/library.sx --chrome --screenshot out.png --find $'dict\n\n'   # Ctrl+F, type, Enter twice
+cargo run -- pages/counter.sx --chrome --screenshot out.png --repl $'(set! count 41)\n'   # Ctrl+Shift+J, type, Enter
 ```
 
 ## Runaway code

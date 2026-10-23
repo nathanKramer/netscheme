@@ -124,6 +124,7 @@ impl App {
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("f") => Key::Find,
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("g") => Key::FindNext,
             WinitKey::Named(NamedKey::F3) => Key::FindNext,
+            WinitKey::Character(c) if m.control_key() && m.shift_key() && c.eq_ignore_ascii_case("j") => Key::Repl,
             // Other shortcuts aren't typing.
             _ if m.control_key() || m.alt_key() || m.super_key() => return None,
             _ => {

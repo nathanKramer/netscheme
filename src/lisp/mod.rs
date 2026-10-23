@@ -10,7 +10,7 @@ mod value;
 use std::rc::Rc;
 
 pub use budget::{check_length, grow_stack};
-pub use eval::PageState;
+pub use eval::{Env, PageState};
 pub use value::{Value, write_quoted};
 
 use crate::loader::PageContext;
@@ -20,9 +20,18 @@ use crate::loader::PageContext;
 pub fn run(src: &str, ctx: &Rc<PageContext>) -> Result<Value, String> {
     budget::metered(|| {
         let env = builtins::global_env(ctx)?;
+        ctx.host.keep_env(&ctx.state_key, &env);
+        eval_in(src, &env)
+    })
+}
+
+/// Reads and evaluates every form in an environment kept from an earlier
+/// run, as the REPL does, returning the last value.
+pub fn eval_in(src: &str, env: &Rc<Env>) -> Result<Value, String> {
+    budget::metered(|| {
         let mut result = Value::Nil;
         for form in reader::read_all(src)? {
-            result = eval::eval(&form, &env)?;
+            result = eval::eval(&form, env)?;
         }
         Ok(result)
     })
@@ -130,6 +139,8 @@ mod tests {
     fn only_browser_pages_search() {
         assert!(eval(r#"(set-find "x")"#).contains("only browser: pages"));
         assert!(eval("(find-next)").contains("only browser: pages"));
+        assert!(eval(r#"(repl-eval "1")"#).contains("only browser: pages"));
+        assert!(eval("(repl-log)").contains("only browser: pages"));
     }
 
     #[test]

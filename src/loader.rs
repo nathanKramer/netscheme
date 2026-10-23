@@ -21,7 +21,7 @@ use ureq::ResponseExt;
 use crate::{
     dom::{Element, Node, build_element},
     image::Image,
-    lisp::{self, PageState, Value},
+    lisp::{self, Env, PageState, Value},
 };
 
 /// Frames nested deeper than this are left empty, so a page that frames
@@ -87,6 +87,28 @@ pub struct Host {
     /// Images that pages have shown. Unlike downloaded pages, they're kept
     /// when the browser navigates, until a reload.
     pub images: RefCell<Images>,
+    /// The `state_key` of the site, whose environment the REPL runs code in:
+    /// the chrome's first frame, or the top-level page without the chrome.
+    pub site_key: String,
+    /// The site's global environment, from its latest run.
+    site_env: RefCell<Option<Rc<Env>>>,
+    /// A request from the chrome's REPL.
+    repl: RefCell<Option<ReplRequest>>,
+    /// What has been run in the REPL, oldest first.
+    pub repl_log: RefCell<Vec<ReplEntry>>,
+}
+
+/// What the REPL can ask of the browser.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReplRequest {
+    Eval(String),
+    Close,
+}
+
+/// Code run in the REPL, and the value it printed or the error it stopped with.
+pub struct ReplEntry {
+    pub input: String,
+    pub output: Result<String, String>,
 }
 
 /// What the find bar can ask of the browser.
@@ -99,6 +121,11 @@ pub enum FindRequest {
 }
 
 impl Host {
+    /// A host for a session whose site has the `state_key` given; see `site_key`.
+    pub fn new(site_key: &str) -> Host {
+        Host { site_key: site_key.into(), ..Host::default() }
+    }
+
     /// Downloads a web page, or returns the copy from earlier.
     fn download(&self, url: &str) -> Result<Source, String> {
         if let Some(download) = self.downloads.borrow().get(url) {
@@ -143,6 +170,25 @@ impl Host {
 
     pub fn take_find(&self) -> Option<FindRequest> {
         self.find.borrow_mut().take()
+    }
+
+    pub fn request_repl(&self, request: ReplRequest) {
+        *self.repl.borrow_mut() = Some(request);
+    }
+
+    pub fn take_repl(&self) -> Option<ReplRequest> {
+        self.repl.borrow_mut().take()
+    }
+
+    /// Keeps the global environment of the page at `state_key`, if it's the site.
+    pub fn keep_env(&self, state_key: &str, env: &Rc<Env>) {
+        if state_key == self.site_key {
+            *self.site_env.borrow_mut() = Some(env.clone());
+        }
+    }
+
+    pub fn site_env(&self) -> Option<Rc<Env>> {
+        self.site_env.borrow().clone()
     }
 }
 

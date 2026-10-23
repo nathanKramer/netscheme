@@ -1,10 +1,10 @@
-use std::{fmt, rc::Rc};
+use std::{collections::BTreeMap, fmt, rc::Rc};
 
 use super::{
     budget::{self, MAX_LENGTH},
     eval::{self, Env, apply},
     library, reader,
-    value::{NativeFn, Value},
+    value::{Key, NativeFn, Value},
 };
 use crate::{
     dom,
@@ -209,6 +209,40 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
             Ok(Value::Nil)
         });
     }
+    // The REPL's requests, and what it has run. Only browser pages may use it.
+    let repl_only = |c: &Rc<PageContext>, name: &str| {
+        if c.location.starts_with("browser:") { Ok(()) } else { Err(format!("{name}: only browser: pages can use the REPL")) }
+    };
+    let c = ctx.clone();
+    def(&env, "repl-eval", move |args| {
+        repl_only(&c, "repl-eval")?;
+        let [Value::Str(code)] = args else { return Err("repl-eval: expected the code to run".into()) };
+        c.host.request_repl(loader::ReplRequest::Eval(code.to_string()));
+        Ok(Value::Nil)
+    });
+    let c = ctx.clone();
+    def(&env, "close-repl", move |_| {
+        repl_only(&c, "close-repl")?;
+        c.host.request_repl(loader::ReplRequest::Close);
+        Ok(Value::Nil)
+    });
+    // Each entry is (dict :input code :output printed :error true-if-it-failed).
+    let c = ctx.clone();
+    def(&env, "repl-log", move |_| {
+        repl_only(&c, "repl-log")?;
+        let entry = |e: &loader::ReplEntry| {
+            let (output, error) = match &e.output {
+                Ok(printed) => (printed, false),
+                Err(message) => (message, true),
+            };
+            Value::Dict(Rc::new(BTreeMap::from([
+                (Key::Keyword("input".into()), Value::Str(e.input.as_str().into())),
+                (Key::Keyword("output".into()), Value::Str(output.as_str().into())),
+                (Key::Keyword("error".into()), Value::Bool(error)),
+            ])))
+        };
+        Ok(Value::list(c.host.repl_log.borrow().iter().map(entry).collect()))
+    });
     // A query parameter from the page's location: `page.sx?name=value`.
     let c = ctx.clone();
     def(&env, "param", move |args| {

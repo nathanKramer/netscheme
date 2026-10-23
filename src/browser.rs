@@ -11,7 +11,7 @@ use crate::{
     dom::Element,
     layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search},
     lisp::{self, Value},
-    loader::{self, FindRequest, Host, StateStore},
+    loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
     paint::{Renderer, Scroll, View},
 };
 
@@ -52,6 +52,8 @@ pub enum Key {
     Find,
     /// Go to the next match, or with shift the previous one.
     FindNext,
+    /// Open the REPL, or close it if it's open.
+    Repl,
 }
 
 /// The search in the find bar.
@@ -105,6 +107,8 @@ pub struct Browser {
     find: Option<Find>,
     /// Whether to scroll the current match into view after the next render.
     reveal: bool,
+    /// Whether the REPL is open.
+    repl: bool,
     /// Inputs with `:autofocus` in the last render, which are only focused
     /// when they first appear; and whether to focus one anyway.
     autofocused: Vec<usize>,
@@ -129,7 +133,7 @@ impl Browser {
             chrome,
             page: loader::error_page("not loaded yet"),
             page_state: Rc::default(),
-            host: Rc::default(),
+            host: Rc::new(Host::new(if chrome { "/0" } else { "" })),
             history: Vec::new(),
             scroll: Scroll::default(),
             focus: None,
@@ -138,6 +142,7 @@ impl Browser {
             scroll_drag: None,
             find: None,
             reveal: false,
+            repl: false,
             autofocused: Vec::new(),
             refocus: false,
             caret_moved: Instant::now(),
@@ -417,6 +422,11 @@ impl Browser {
                 self.find_request(if shift { FindRequest::Previous } else { FindRequest::Next });
                 return self.reload();
             }
+            // The REPL is part of the chrome too.
+            Key::Repl if self.chrome => {
+                self.repl = !self.repl;
+                return self.reload();
+            }
             Key::Escape if self.focus.is_none() && self.find.is_some() => {
                 self.find_request(FindRequest::Close);
                 return self.reload();
@@ -509,7 +519,8 @@ impl Browser {
         let find = self.find.as_ref().map_or(String::new(), |find| {
             format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1)
         });
-        format!("browser:chrome?location={}{back}{error}{find}", loader::encode(&self.site))
+        let repl = if self.repl { "&repl=1" } else { "" };
+        format!("browser:chrome?location={}{back}{error}{find}{repl}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -557,6 +568,10 @@ impl Browser {
         if let Some(request) = self.host.take_find().filter(|_| result.is_ok()) {
             self.find_request(request);
         }
+        // Before following `go`, so code run in the REPL can navigate.
+        if let Some(request) = self.host.take_repl().filter(|_| result.is_ok()) {
+            self.repl_request(request);
+        }
         match result {
             Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
@@ -582,6 +597,21 @@ impl Browser {
             FindRequest::Close => self.find = None,
         }
         self.reveal = self.find.is_some();
+    }
+
+    /// Runs code from the REPL in the site's environment from its latest
+    /// run, so it sees the site's variables and can `set!` its state.
+    fn repl_request(&mut self, request: ReplRequest) {
+        match request {
+            ReplRequest::Eval(input) => {
+                let output = match self.host.site_env() {
+                    Some(env) => lisp::eval_in(&input, &env).map(|value| format!("{value:#}")),
+                    None => Err("the page hasn't run yet".into()),
+                };
+                self.host.repl_log.borrow_mut().push(ReplEntry { input, output });
+            }
+            ReplRequest::Close => self.repl = false,
+        }
     }
 
     /// Reports an error from something the user did. The chrome shows it
@@ -944,6 +974,26 @@ mod tests {
         assert_eq!(browser.inputs.len(), 1, "Escape closes it");
         assert!(browser.matches.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_repl_runs_code_in_the_site() {
+        let mut browser = Browser::new("pages/counter.sx".into(), true);
+        press(&mut browser, [Key::Repl]);
+        assert_eq!(browser.inputs.len(), 2, "the REPL opened");
+        assert_eq!(browser.focus.map(|f| f.id), Some(browser.inputs[1].id), "with its input focused");
+
+        press(&mut browser, [Key::Text("(set! count 41)".into()), Key::Enter, Key::Text("(* count 2)".into()), Key::Enter]);
+        press(&mut browser, [Key::Text("(nope)".into()), Key::Enter]);
+        let log: Vec<_> = browser.host.repl_log.borrow().iter().map(|e| e.output.clone()).collect();
+        assert_eq!(log, [Ok("nil".into()), Ok("82".into()), Err("undefined symbol: nope".into())]);
+        assert!(browser.title().starts_with("Counter: 41"), "set! changed the site's state: {}", browser.title());
+        assert_eq!(browser.inputs[1].value, "", "and the input clears");
+
+        press(&mut browser, [Key::Escape]);
+        assert_eq!(browser.inputs.len(), 1, "Escape closes it");
+        press(&mut browser, [Key::Repl]);
+        assert!(browser.page.to_string().contains("undefined symbol: nope"), "the log outlasts closing");
     }
 
     #[test]
