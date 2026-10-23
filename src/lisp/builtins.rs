@@ -1,12 +1,16 @@
-use std::rc::Rc;
+use std::{fs, rc::Rc};
 
 use super::{
-    eval::Env,
+    eval::{Env, apply},
+    reader,
     value::{NativeFn, Value},
 };
-use crate::dom;
+use crate::{
+    dom,
+    loader::{self, PageContext},
+};
 
-pub fn global_env() -> Rc<Env> {
+pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     let env = Env::new(None);
 
     def(&env, "+", |args| fold_nums(args, |a, b| a + b));
@@ -16,15 +20,91 @@ pub fn global_env() -> Rc<Env> {
     });
     def(&env, "*", |args| fold_nums(args, |a, b| a * b));
     def(&env, "/", |args| fold_nums(args, |a, b| a / b));
+    def(&env, "mod", |args| fold_nums(args, f64::rem_euclid));
     def(&env, "=", |args| Ok(Value::Bool(args.windows(2).all(|w| w[0].equals(&w[1])))));
     def(&env, "<", |args| compare(args, |a, b| a < b));
     def(&env, ">", |args| compare(args, |a, b| a > b));
+    def(&env, "not", |args| match args {
+        [x] => Ok(Value::Bool(!x.truthy())),
+        _ => Err("not: expected one argument".into()),
+    });
     def(&env, "str", |args| Ok(Value::Str(args.iter().map(|v| v.to_string()).collect::<String>().into())));
+    // The printed form of a value, which reads back as the same value.
+    def(&env, "repr", |args| match args {
+        [x] => Ok(Value::Str(format!("{x:#}").into())),
+        _ => Err("repr: expected one argument".into()),
+    });
+
+    // Lists. `nil` counts as the empty list.
     def(&env, "list", |args| Ok(Value::list(args.to_vec())));
+    def(&env, "first", |args| Ok(list_arg("first", args)?.first().cloned().unwrap_or(Value::Nil)));
+    def(&env, "rest", |args| Ok(Value::list(list_arg("rest", args)?.iter().skip(1).cloned().collect())));
+    def(&env, "nth", |args| match args {
+        [Value::List(xs), Value::Num(n)] => Ok(xs.get(*n as usize).cloned().unwrap_or(Value::Nil)),
+        _ => Err("nth: expected a list and an index".into()),
+    });
+    def(&env, "cons", |args| match args {
+        [x, Value::List(xs)] => Ok(Value::list(std::iter::once(x).chain(xs.iter()).cloned().collect())),
+        [x, Value::Nil] => Ok(Value::list(vec![x.clone()])),
+        _ => Err("cons: expected a value and a list".into()),
+    });
+    def(&env, "length", |args| match args {
+        [Value::Str(s)] => Ok(Value::Num(s.chars().count() as f64)),
+        _ => Ok(Value::Num(list_arg("length", args)?.len() as f64)),
+    });
+    def(&env, "empty?", |args| Ok(Value::Bool(list_arg("empty?", args)?.is_empty())));
+    def(&env, "map", |args| match args {
+        [f, Value::List(xs)] => Ok(Value::list(xs.iter().map(|x| apply(f, std::slice::from_ref(x))).collect::<Result<_, _>>()?)),
+        [_, Value::Nil] => Ok(Value::list(vec![])),
+        _ => Err("map: expected a function and a list".into()),
+    });
+    def(&env, "filter", |args| match args {
+        [f, Value::List(xs)] => {
+            let mut kept = Vec::new();
+            for x in xs.iter() {
+                if apply(f, std::slice::from_ref(x))?.truthy() {
+                    kept.push(x.clone());
+                }
+            }
+            Ok(Value::list(kept))
+        }
+        [_, Value::Nil] => Ok(Value::list(vec![])),
+        _ => Err("filter: expected a function and a list".into()),
+    });
+
+    predicate(&env, "list?", |v| matches!(v, Value::List(_)));
+    predicate(&env, "string?", |v| matches!(v, Value::Str(_)));
+    predicate(&env, "number?", |v| matches!(v, Value::Num(_)));
+    predicate(&env, "symbol?", |v| matches!(v, Value::Sym(_)));
+    predicate(&env, "keyword?", |v| matches!(v, Value::Keyword(_)));
+    predicate(&env, "fn?", |v| matches!(v, Value::Native(..) | Value::Lambda(_)));
 
     for &tag in dom::TAGS {
         def(&env, tag, move |args| dom::build_element(tag, args).map(|el| Value::Element(Rc::new(el))));
     }
+
+    // Builtins that depend on where the page was loaded from.
+    let c = ctx.clone();
+    def(&env, "frame", move |args| {
+        let mut el = dom::build_element("frame", args)?;
+        loader::fill_frame(&c, &mut el);
+        Ok(Value::Element(Rc::new(el)))
+    });
+    // A page's code as data, without running it.
+    let c = ctx.clone();
+    def(&env, "source", move |args| {
+        let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
+        let location = loader::resolve(&c.location, href)?;
+        let file = location.split_once('?').map_or(&*location, |(file, _)| file);
+        let text = fs::read_to_string(file).map_err(|e| format!("source: couldn't read {file}: {e}"))?;
+        Ok(Value::list(reader::read_all(&text)?))
+    });
+    // A query parameter from the page's location: `page.sx?name=value`.
+    let c = ctx.clone();
+    def(&env, "param", move |args| {
+        let [Value::Str(name)] = args else { return Err("param: expected a name".into()) };
+        Ok(c.params.iter().find(|(k, _)| k == &**name).map_or(Value::Nil, |(_, v)| Value::Str(v.as_str().into())))
+    });
 
     env
 }
@@ -32,6 +112,21 @@ pub fn global_env() -> Rc<Env> {
 fn def(env: &Env, name: &str, f: impl Fn(&[Value]) -> Result<Value, String> + 'static) {
     let f: NativeFn = Rc::new(f);
     env.define(name.into(), Value::Native(name.into(), f));
+}
+
+fn predicate(env: &Env, name: &'static str, test: fn(&Value) -> bool) {
+    def(env, name, move |args| match args {
+        [x] => Ok(Value::Bool(test(x))),
+        _ => Err(format!("{name}: expected one argument")),
+    });
+}
+
+fn list_arg<'a>(name: &str, args: &'a [Value]) -> Result<&'a [Value], String> {
+    match args {
+        [Value::List(xs)] => Ok(xs),
+        [Value::Nil] => Ok(&[]),
+        _ => Err(format!("{name}: expected a list")),
+    }
 }
 
 fn nums(args: &[Value]) -> Result<Vec<f64>, String> {

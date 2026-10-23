@@ -1,11 +1,12 @@
 //! The document tree that a page program evaluates to.
 
-use std::rc::Rc;
+use std::{fmt, rc::Rc};
 
-use crate::lisp::Value;
+use crate::lisp::{Value, write_quoted};
 
 /// Element constructors available to pages as ordinary functions.
-pub const TAGS: &[&str] = &["page", "div", "h1", "h2", "h3", "p", "span", "b", "a"];
+/// `frame` is defined separately, as it loads a page when called.
+pub const TAGS: &[&str] = &["page", "div", "row", "h1", "h2", "h3", "p", "span", "b", "a"];
 
 /// Tags laid out within a line of text rather than as their own block.
 pub fn is_inline(tag: &str) -> bool {
@@ -26,6 +27,26 @@ pub enum Node {
 impl Element {
     pub fn attr(&self, name: &str) -> Option<&Value> {
         self.attrs.iter().rev().find(|(k, _)| &**k == name).map(|(_, v)| v)
+    }
+}
+
+/// Prints the element as the code that builds it.
+impl fmt::Display for Element {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}", self.tag)?;
+        for (name, value) in &self.attrs {
+            write!(f, " :{name} {value:#}")?;
+        }
+        for child in &self.children {
+            match child {
+                Node::Text(text) => {
+                    write!(f, " ")?;
+                    write_quoted(f, text)?;
+                }
+                Node::Element(el) => write!(f, " {el}")?,
+            }
+        }
+        write!(f, ")")
     }
 }
 

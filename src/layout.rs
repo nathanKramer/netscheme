@@ -23,6 +23,8 @@ pub struct Link {
     pub w: f32,
     pub h: f32,
     pub href: Rc<str>,
+    /// Location of the framed page the link is on, if it isn't the top-level page.
+    pub base: Option<Rc<str>>,
 }
 
 impl Link {
@@ -58,44 +60,97 @@ struct Word {
 pub struct Layout<'a> {
     fonts: &'a Fonts,
     scale: f32,
+    /// Location of the framed page being laid out, if any; see `Link::base`.
+    base: Option<Rc<str>>,
     pub items: Vec<DisplayItem>,
     pub links: Vec<Link>,
 }
 
 impl<'a> Layout<'a> {
     pub fn new(fonts: &'a Fonts, scale: f32) -> Self {
-        Layout { fonts, scale, items: Vec::new(), links: Vec::new() }
+        Layout { fonts, scale, base: None, items: Vec::new(), links: Vec::new() }
     }
 
     /// Lays out `el` in a box of width `w` at (`x`, `y`); returns the y
     /// just below it, including its bottom margin.
     pub fn block(&mut self, el: &Element, parent: &Style, x: f32, y: f32, w: f32) -> f32 {
         let style = Rc::new(Style::compute(el, parent));
-        let pad = style.padding * self.scale;
-        let (inner_x, inner_w) = (x + pad, (w - 2.0 * pad).max(0.0));
+        let (pad, pad_left) = (style.padding * self.scale, style.padding_left * self.scale);
+        let (inner_x, inner_w) = (x + pad_left, (w - pad - pad_left).max(0.0));
         let background_index = self.items.len();
 
-        // Consecutive text and inline elements form one inline run; block
-        // children end the run and stack below it.
-        let mut cy = y + pad;
-        let mut run = Vec::new();
-        for child in &el.children {
-            match child {
-                Node::Text(text) => run.push(Segment { text: text.clone(), style: style.clone(), href: None }),
-                Node::Element(child) if dom::is_inline(&child.tag) => collect_inline(child, &style, None, None, &mut run),
-                Node::Element(child) => {
-                    cy = self.inline_run(&mut run, inner_x, cy, inner_w);
-                    cy = self.block(child, &style, inner_x, cy, inner_w);
-                }
-            }
-        }
-        cy = self.inline_run(&mut run, inner_x, cy, inner_w);
+        let top = y + pad;
+        let bottom = match &*el.tag {
+            "row" => self.row(&el.children, &style, inner_x, top, inner_w),
+            "frame" => self.frame(el, inner_x, top, inner_w),
+            _ => self.flow(&el.children, &style, inner_x, top, inner_w),
+        };
 
-        let h = cy + pad - y;
+        let h = bottom + pad - y;
         if let Some(color) = style.background {
             self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color });
         }
         y + h + style.margin * self.scale
+    }
+
+    /// Normal flow: consecutive text and inline elements form one inline
+    /// run; block children end the run and stack below it.
+    fn flow(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
+        let mut cy = y;
+        let mut run = Vec::new();
+        for child in children {
+            match child {
+                Node::Text(text) => run.push(Segment { text: text.clone(), style: style.clone(), href: None }),
+                Node::Element(child) if dom::is_inline(&child.tag) => collect_inline(child, style, None, None, &mut run),
+                Node::Element(child) => {
+                    cy = self.inline_run(&mut run, x, cy, w);
+                    cy = self.block(child, style, x, cy, w);
+                }
+            }
+        }
+        self.inline_run(&mut run, x, cy, w)
+    }
+
+    /// Equal-width columns, one per child. Returns the bottom of the tallest.
+    fn row(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
+        let gap = 16.0 * self.scale;
+        let n = children.len().max(1) as f32;
+        let column_w = ((w - gap * (n - 1.0)) / n).max(0.0);
+        let mut bottom = y;
+        for (i, child) in children.iter().enumerate() {
+            let column_x = x + i as f32 * (column_w + gap);
+            bottom = bottom.max(self.flow(std::slice::from_ref(child), style, column_x, y, column_w));
+        }
+        bottom
+    }
+
+    /// An embedded page, drawn at its `:scale` with a 1px border. Its styles
+    /// start fresh rather than inheriting from the surrounding page.
+    fn frame(&mut self, el: &Element, x: f32, y: f32, w: f32) -> f32 {
+        let Some(Node::Element(page)) = el.children.first() else { return y };
+        let zoom = match el.attr("scale") {
+            Some(Value::Num(n)) => *n as f32,
+            _ => 1.0,
+        };
+        let base = match el.attr("location") {
+            Some(Value::Str(location)) => Some(location.clone()),
+            _ => None,
+        };
+        let border = self.scale.round().max(1.0);
+        let saved = (self.scale, std::mem::replace(&mut self.base, base));
+        self.scale *= zoom;
+        let bottom = self.block(page, &Style::root(), x + border, y + border, w - 2.0 * border) + border;
+        (self.scale, self.base) = saved;
+
+        let color = Color(0xcc, 0xcc, 0xcc);
+        let h = bottom - y;
+        self.items.extend([
+            DisplayItem::Rect { x, y, w, h: border, color },
+            DisplayItem::Rect { x, y: bottom - border, w, h: border, color },
+            DisplayItem::Rect { x, y, w: border, h, color },
+            DisplayItem::Rect { x: x + w - border, y, w: border, h, color },
+        ]);
+        bottom
     }
 
     /// Greedy word wrap of `run`, which is consumed. Returns the y below the last line.
@@ -185,7 +240,8 @@ impl<'a> Layout<'a> {
                 self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
             }
             if let Some(href) = &segment.href {
-                self.links.push(Link { x: px, y: py, w: piece.w, h: height, href: href.clone() });
+                let base = self.base.clone();
+                self.links.push(Link { x: px, y: py, w: piece.w, h: height, href: href.clone(), base });
             }
         }
         for piece in line {
@@ -242,7 +298,7 @@ mod tests {
     use super::*;
 
     fn layout(src: &str, width: f32) -> (Vec<DisplayItem>, Vec<Link>) {
-        let Ok(Value::Element(page)) = crate::lisp::run(src) else { panic!("not a page") };
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
         let mut layout = Layout::new(&fonts, 1.0);
         layout.block(&page, &Style::root(), 0.0, 0.0, width);

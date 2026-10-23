@@ -46,16 +46,18 @@ pub struct Style {
     // Not inherited
     pub background: Option<Color>,
     pub padding: f32,
+    pub padding_left: f32,
     pub margin: f32,
 }
 
 impl Style {
     pub fn root() -> Style {
-        Style { font_size: 16.0, bold: false, color: Color::TEXT, underline: false, background: None, padding: 0.0, margin: 0.0 }
+        Style { font_size: 16.0, bold: false, color: Color::TEXT, underline: false, background: None, padding: 0.0, padding_left: 0.0, margin: 0.0 }
     }
 
     pub fn compute(el: &Element, parent: &Style) -> Style {
-        let mut s = Style { background: None, padding: 0.0, margin: 0.0, ..parent.clone() };
+        let mut s = Style { background: None, padding: 0.0, padding_left: 0.0, margin: 0.0, ..parent.clone() };
+        let mut padding_left = None;
 
         // The "user-agent stylesheet".
         match &*el.tag {
@@ -69,6 +71,7 @@ impl Style {
             "p" => s.margin = 12.0,
             "b" => s.bold = true,
             "a" => (s.color, s.underline) = (Color::LINK, true),
+            "frame" => s.margin = 12.0,
             _ => {}
         }
 
@@ -80,10 +83,12 @@ impl Style {
                 ("bold", v) => s.bold = v.truthy(),
                 ("underline", v) => s.underline = v.truthy(),
                 ("padding", Value::Num(n)) => s.padding = *n as f32,
+                ("padding-left", Value::Num(n)) => padding_left = Some(*n as f32),
                 ("margin", Value::Num(n)) => s.margin = *n as f32,
                 _ => {}
             }
         }
+        s.padding_left = padding_left.unwrap_or(s.padding);
         s
     }
 }

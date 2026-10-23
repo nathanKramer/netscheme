@@ -1,27 +1,23 @@
 mod dom;
 mod layout;
+mod loader;
 mod lisp;
 mod paint;
 mod style;
 mod window;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::ExitCode,
-    rc::Rc,
-};
+use std::{fs, process::ExitCode};
 
-use dom::{Element, build_element};
-use lisp::Value;
+use dom::Element;
 use paint::Renderer;
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N]";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N]";
 
 fn main() -> ExitCode {
-    let mut path = "pages/hello.sx".to_string();
+    let mut location = "pages/hello.sx".to_string();
     let mut screenshot = None;
     let (mut width, mut height) = (900, 700);
+    let mut scroll = 0.0;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -30,8 +26,9 @@ fn main() -> ExitCode {
             "--screenshot" => value().map(|v| screenshot = Some(v)),
             "--width" => value().and_then(|v| v.parse().map(|n| width = n).map_err(|_| USAGE)),
             "--height" => value().and_then(|v| v.parse().map(|n| height = n).map_err(|_| USAGE)),
+            "--scroll" => value().and_then(|v| v.parse().map(|n| scroll = n).map_err(|_| USAGE)),
             _ if !arg.starts_with('-') => {
-                path = arg;
+                location = arg;
                 Ok(())
             }
             _ => Err(USAGE),
@@ -42,12 +39,11 @@ fn main() -> ExitCode {
         }
     }
 
-    let path = PathBuf::from(path);
-    let page = open(&path);
+    let page = loader::open(&location);
     let mut renderer = Renderer::new();
 
     match screenshot {
-        Some(out) => match write_screenshot(&mut renderer, &page, width, height, &out) {
+        Some(out) => match write_screenshot(&mut renderer, &page, width, height, scroll, &out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("screenshot failed: {e}");
@@ -55,63 +51,19 @@ fn main() -> ExitCode {
             }
         },
         None => {
-            window::run(path, page, renderer);
+            window::run(location, page, renderer);
             ExitCode::SUCCESS
         }
     }
 }
 
-/// Loads and evaluates the page at `path`.
-pub fn open(path: &Path) -> Rc<Element> {
-    match fs::read_to_string(path) {
-        Ok(source) => load_page(&source),
-        Err(e) => error_page(&format!("couldn't read {}: {e}", path.display())),
-    }
-}
-
-/// Resolves a link's `href` against the page it appears on.
-pub fn resolve(current: &Path, href: &str) -> Result<PathBuf, String> {
-    if href.contains("://") {
-        return Err(format!("only local links work so far: {href}"));
-    }
-    Ok(current.parent().unwrap_or(Path::new("")).join(href))
-}
-
-/// Evaluates a page program. Errors become an error page, like a browser would show.
-fn load_page(source: &str) -> Rc<Element> {
-    match lisp::run(source) {
-        Ok(Value::Element(el)) if &*el.tag == "page" => el,
-        Ok(other) => error_page(&format!("a page must evaluate to (page ...), got {other}")),
-        Err(e) => error_page(&e),
-    }
-}
-
-pub fn error_page(message: &str) -> Rc<Element> {
-    let heading = build_element("h1", &[Value::Keyword("color".into()), Value::Str("#c00".into()), Value::Str("Page error".into())]);
-    let body = build_element("p", &[Value::Str(message.into())]);
-    let page = build_element("page", &[Value::Element(Rc::new(heading.unwrap())), Value::Element(Rc::new(body.unwrap()))]);
-    Rc::new(page.unwrap())
-}
-
-fn write_screenshot(renderer: &mut Renderer, page: &Element, w: usize, h: usize, out: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_screenshot(renderer: &mut Renderer, page: &Element, w: usize, h: usize, scroll: f32, out: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u32; w * h];
-    renderer.render(page, &mut buf, w, h, 1.0);
+    renderer.render(page, &mut buf, w, h, 1.0, scroll);
     let rgb: Vec<u8> = buf.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(fs::File::create(out)?), w as u32, h as u32);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header()?.write_image_data(&rgb)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn links_resolve_relative_to_the_current_page() {
-        assert_eq!(resolve(Path::new("pages/hello.sx"), "about.sx"), Ok(PathBuf::from("pages/about.sx")));
-        assert_eq!(resolve(Path::new("hello.sx"), "sub/a.sx"), Ok(PathBuf::from("sub/a.sx")));
-        assert!(resolve(Path::new("pages/hello.sx"), "https://example.com").is_err());
-    }
 }

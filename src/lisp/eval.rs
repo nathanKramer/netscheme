@@ -59,6 +59,31 @@ fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
                 };
             }
             "do" => return eval_body(&items[1..], env),
+            "and" => {
+                let mut result = Value::Bool(true);
+                for expr in &items[1..] {
+                    result = eval(expr, env)?;
+                    if !result.truthy() {
+                        break;
+                    }
+                }
+                return Ok(result);
+            }
+            "or" => {
+                let mut result = Value::Nil;
+                for expr in &items[1..] {
+                    result = eval(expr, env)?;
+                    if result.truthy() {
+                        break;
+                    }
+                }
+                return Ok(result);
+            }
+            "cond" => return eval_cond(&items[1..], env),
+            "let" => return eval_let(items, env),
+            "quasiquote" => return quasiquote(arg(items, 1, "quasiquote")?, env),
+            // Code is data: evaluate the argument, then evaluate the result as code.
+            "eval" => return eval(&eval(arg(items, 1, "eval")?, env)?, env),
             "define" => return eval_define(items, env),
             "fn" => return make_lambda(arg(items, 1, "fn")?, &items[2..], env),
             _ => {}
@@ -83,6 +108,72 @@ pub fn apply(f: &Value, args: &[Value]) -> Result<Value, String> {
             eval_body(&lambda.body, &env)
         }
         other => Err(format!("not a function: {other}")),
+    }
+}
+
+/// `(cond (test body...) ... (else body...))`
+fn eval_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+    for clause in clauses {
+        let Value::List(clause) = clause else {
+            return Err("cond: each clause must be a list".into());
+        };
+        let (test, body) = clause.split_first().ok_or("cond: empty clause")?;
+        let is_else = matches!(test, Value::Sym(s) if &**s == "else");
+        if is_else || eval(test, env)?.truthy() {
+            return eval_body(body, env);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+/// `(let ((name value) ...) body...)`. Each value can see the names before it.
+fn eval_let(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+    let Value::List(bindings) = arg(items, 1, "let")? else {
+        return Err("let: expected a list of bindings".into());
+    };
+    let inner = Env::new(Some(env.clone()));
+    for binding in bindings.iter() {
+        let Value::List(pair) = binding else {
+            return Err("let: each binding must be (name value)".into());
+        };
+        let [Value::Sym(name), expr] = &pair[..] else {
+            return Err("let: each binding must be (name value)".into());
+        };
+        let value = eval(expr, &inner)?;
+        inner.define(name.clone(), value);
+    }
+    eval_body(&items[2..], &inner)
+}
+
+/// Builds `form` as data, except that `,x` is evaluated and `,@xs` is
+/// evaluated and spliced into the surrounding list.
+fn quasiquote(form: &Value, env: &Rc<Env>) -> Result<Value, String> {
+    let Value::List(items) = form else { return Ok(form.clone()) };
+    if let Some(x) = unquoted(form, "unquote") {
+        return eval(x, env);
+    }
+    let mut out = Vec::new();
+    for item in items.iter() {
+        match unquoted(item, "unquote-splicing") {
+            Some(x) => match eval(x, env)? {
+                Value::List(xs) => out.extend(xs.iter().cloned()),
+                Value::Nil => {}
+                other => return Err(format!("unquote-splicing: expected a list, got {other}")),
+            },
+            None => out.push(quasiquote(item, env)?),
+        }
+    }
+    Ok(Value::list(out))
+}
+
+/// If `form` is `(marker x)`, returns `x`.
+fn unquoted<'a>(form: &'a Value, marker: &str) -> Option<&'a Value> {
+    match form {
+        Value::List(items) => match &items[..] {
+            [Value::Sym(head), x] if &**head == marker => Some(x),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

@@ -70,13 +70,22 @@ impl Reader {
                 }
             }
             Some(')') => Err(self.err("unexpected ')'")),
-            Some('\'') => {
+            Some('\'') => self.read_prefixed("quote"),
+            Some('`') => self.read_prefixed("quasiquote"),
+            Some(',') if self.chars.get(self.pos + 1) == Some(&'@') => {
                 self.next();
-                Ok(Value::list(vec![Value::sym("quote"), self.read()?]))
+                self.read_prefixed("unquote-splicing")
             }
+            Some(',') => self.read_prefixed("unquote"),
             Some('"') => self.read_string(),
             Some(_) => Ok(self.read_atom()),
         }
+    }
+
+    /// `'x` is `(quote x)`, `` `x `` is `(quasiquote x)`, and so on.
+    fn read_prefixed(&mut self, form: &str) -> Result<Value, String> {
+        self.next();
+        Ok(Value::list(vec![Value::sym(form), self.read()?]))
     }
 
     fn read_string(&mut self) -> Result<Value, String> {
@@ -100,7 +109,7 @@ impl Reader {
     fn read_atom(&mut self) -> Value {
         let mut s = String::new();
         while let Some(c) = self.peek() {
-            if c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';') {
+            if c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';' | '`' | ',') {
                 break;
             }
             s.push(c);

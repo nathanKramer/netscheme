@@ -1,0 +1,57 @@
+; View source, written as an ordinary page. `source` reads another page's
+; code as a list of forms without running it, and the functions below turn
+; those forms into elements.
+;
+; Usage: view-source.sx?page=hello.sx
+
+(define target (or (param "page") "view-source.sx"))
+
+(define (atom? x) (not (list? x)))
+
+(define (take-while ok? xs)
+  (if (and (not (empty? xs)) (ok? (first xs)))
+      (cons (first xs) (take-while ok? (rest xs)))
+      (list)))
+
+(define (drop-while ok? xs)
+  (if (and (not (empty? xs)) (ok? (first xs)))
+      (drop-while ok? (rest xs))
+      xs))
+
+; Puts a space between items, so they don't run together on a line.
+(define (spaced xs)
+  (if (empty? (rest xs))
+      xs
+      (cons (first xs) (cons " " (spaced (rest xs))))))
+
+(define (token x)
+  (cond ((string? x) (span :color "#2a7a3a" (repr x)))
+        ((keyword? x) (span :color "#8a3ab8" (repr x)))
+        ((number? x) (span :color "#b85a1a" (repr x)))
+        (else (span :color "#1a5fb4" (repr x)))))
+
+; A form on a single line.
+(define (inline x)
+  (if (atom? x)
+      (token x)
+      (list "(" (spaced (map inline x)) ")")))
+
+(define tints (list "#f6f3fa" "#eef4fa" "#f2f7ef" "#fbf3ec"))
+
+; A form as a block: its leading atoms on the first line, then each nested
+; form indented below, on a tint that shows how deep it is. Forms that are
+; short when printed stay on one line.
+(define (block x depth)
+  (if (or (atom? x) (empty? (filter list? x)) (< (length (repr x)) 48))
+      (p :margin 2 (inline x))
+      (div :background (nth tints (mod depth 4)) :padding 4 :margin 4
+        (p :margin 0 "(" (spaced (map inline (take-while atom? x))))
+        (div :padding-left 18
+          (map (fn (child) (block child (+ depth 1))) (drop-while atom? x)))
+        (p :margin 0 ")"))))
+
+(page :title (str "Source of " target)
+  (h1 :size 24 "Source of " (span :color "#1a5fb4" target))
+  (p (a :href target "Open the page") " · "
+     (a :href "view-source.sx?page=view-source.sx" "View the source of this viewer"))
+  (map (fn (form) (block form 0)) (source target)))

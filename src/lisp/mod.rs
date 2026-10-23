@@ -5,14 +5,59 @@ mod eval;
 mod reader;
 mod value;
 
-pub use value::Value;
+use std::rc::Rc;
+
+pub use value::{Value, write_quoted};
+
+use crate::loader::PageContext;
 
 /// Read and evaluate every top-level form, returning the last value.
-pub fn run(src: &str) -> Result<Value, String> {
-    let env = builtins::global_env();
+pub fn run(src: &str, ctx: &Rc<PageContext>) -> Result<Value, String> {
+    let env = builtins::global_env(ctx);
     let mut result = Value::Nil;
     for form in reader::read_all(src)? {
         result = eval::eval(&form, &env)?;
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(src: &str) -> String {
+        match run(src, &crate::loader::test_context()) {
+            Ok(v) => format!("{v:#}"),
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    #[test]
+    fn elements_print_as_the_code_that_builds_them() {
+        let printed = eval(r##"(p :color "#c33" "say \"hi\"" (b "x") 42)"##);
+        assert_eq!(printed, r##"(p :color "#c33" "say \"hi\"" (b "x") "42")"##);
+        assert_eq!(eval(&printed), printed, "printing round-trips");
+    }
+
+    #[test]
+    fn quasiquote_builds_code_that_eval_runs() {
+        assert_eq!(eval("(define n 2) `(+ 1 ,n ,@(list 3 4))"), "(+ 1 2 3 4)");
+        assert_eq!(eval("(define n 2) (eval `(+ 1 ,n ,@(list 3 4)))"), "10");
+        assert_eq!(eval(r#"(define tag 'b) (eval `(,tag "hi"))"#), r#"(b "hi")"#);
+    }
+
+    #[test]
+    fn special_forms() {
+        assert_eq!(eval("(let ((x 2) (y (* x 3))) (+ x y))"), "8");
+        assert_eq!(eval("(cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))"), "b");
+        assert_eq!(eval("(cond (false 'a) (else 'c))"), "c");
+        assert_eq!(eval("(list (and 1 nil 2) (and 1 2) (or nil 3) (or nil false))"), "(nil 2 3 false)");
+    }
+
+    #[test]
+    fn list_builtins() {
+        assert_eq!(eval("(map (fn (x) (* x x)) (filter (fn (x) (> x 1)) '(1 2 3)))"), "(4 9)");
+        assert_eq!(eval("(list (first '(1 2)) (rest '(1 2)) (cons 0 '(1)) (nth '(a b) 1) (empty? '()))"), "(1 (2) (0 1) b true)");
+        assert_eq!(eval(r#"(repr '(a "b" :c 1))"#), r#""(a \"b\" :c 1)""#);
+    }
 }

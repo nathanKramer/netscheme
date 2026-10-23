@@ -14,4 +14,7 @@
      (span :color "#2a7a3a" "coloured") ", "
      (span :size 22 "bigger") ", and "
      (a :href "about.sx" (b "a link") " to another page")
-     ". Press Alt+← to come back."))
+     ". Press Alt+← to come back.")
+  (p "Pages can embed pages, even themselves: see " (a :href "fractal.sx" "the fractal")
+     ". And " (a :href "view-source.sx?page=hello.sx" "view source")
+     " is itself a page, written in the same language."))

@@ -46,9 +46,13 @@ impl Value {
     }
 }
 
+/// `{}` shows strings raw, for `str`. `{:#}` quotes them, so the output
+/// reads back as the same value. Elements always print as the code that
+/// builds them.
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::Str(s) if f.alternate() => write_quoted(f, s),
             Value::Nil => write!(f, "nil"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Num(n) if n.fract() == 0.0 && n.abs() < 1e15 => write!(f, "{}", *n as i64),
@@ -61,13 +65,31 @@ impl fmt::Display for Value {
                     if i > 0 {
                         write!(f, " ")?;
                     }
-                    write!(f, "{item}")?;
+                    if f.alternate() {
+                        write!(f, "{item:#}")?;
+                    } else {
+                        write!(f, "{item}")?;
+                    }
                 }
                 write!(f, ")")
             }
             Value::Native(name, _) => write!(f, "#<builtin {name}>"),
             Value::Lambda(_) => write!(f, "#<fn>"),
-            Value::Element(el) => write!(f, "#<{}>", el.tag),
+            Value::Element(el) => write!(f, "{el}"),
         }
     }
+}
+
+pub fn write_quoted(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+    write!(f, "\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => write!(f, "\\\"")?,
+            '\\' => write!(f, "\\\\")?,
+            '\n' => write!(f, "\\n")?,
+            '\t' => write!(f, "\\t")?,
+            c => write!(f, "{c}")?,
+        }
+    }
+    write!(f, "\"")
 }

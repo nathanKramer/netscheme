@@ -34,6 +34,13 @@ impl Fonts {
     }
 }
 
+pub struct Rendered {
+    /// Link hit boxes, in window coordinates.
+    pub links: Vec<Link>,
+    /// The scroll offset actually used, after clamping.
+    pub scroll: f32,
+}
+
 pub struct Renderer {
     pub fonts: Fonts,
     glyphs: HashMap<(char, u32, bool), (Metrics, Vec<u8>)>,
@@ -44,25 +51,33 @@ impl Renderer {
         Renderer { fonts: Fonts::load(), glyphs: HashMap::new() }
     }
 
-    /// Lays out and paints `page` into `buf` (`w` × `h` physical pixels),
-    /// returning where its links ended up.
-    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32) -> Vec<Link> {
+    /// Lays out `page` and paints it into `buf` (`w` × `h` physical pixels),
+    /// scrolled down by `scroll` pixels, which is first clamped so the page
+    /// can't scroll past its end.
+    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, scale: f32, scroll: f32) -> Rendered {
         let root = Style::root();
         let page_background = Style::compute(page, &root).background.unwrap_or(Color::WHITE);
         let mut layout = Layout::new(&self.fonts, scale);
-        layout.block(page, &root, 0.0, 0.0, w as f32);
-        let (items, links) = (layout.items, layout.links);
+        let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
+        let scroll = scroll.clamp(0.0, (content_height - h as f32).max(0.0)).round();
+        let (items, mut links) = (layout.items, layout.links);
 
         buf.fill(page_background.to_u32());
         for item in &items {
             match item {
-                DisplayItem::Rect { x, y, w: rw, h: rh, color } => fill_rect(buf, w, h, *x, *y, *rw, *rh, *color),
+                DisplayItem::Rect { x, y, w: rw, h: rh, color } => fill_rect(buf, w, h, *x, *y - scroll, *rw, *rh, *color),
                 DisplayItem::Text { x, y, text, size, bold, color } => {
-                    self.draw_text(buf, w, h, *x, *y, text, *size, *bold, *color)
+                    let baseline = *y - scroll;
+                    if baseline + size >= 0.0 && baseline - size < h as f32 {
+                        self.draw_text(buf, w, h, *x, baseline, text, *size, *bold, *color)
+                    }
                 }
             }
         }
-        links
+        for link in &mut links {
+            link.y -= scroll;
+        }
+        Rendered { links, scroll }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -104,4 +119,32 @@ fn blend(dst: u32, src: Color, alpha: u8) -> u32 {
     let a = alpha as u32;
     let mix = |s: u8, shift: u32| (s as u32 * a + ((dst >> shift) & 0xff) * (255 - a)) / 255;
     mix(src.0, 16) << 16 | mix(src.1, 8) << 8 | mix(src.2, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::{self, Value};
+
+    fn render(src: &str, h: usize, scroll: f32) -> Rendered {
+        let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let mut buf = vec![0; 200 * h];
+        Renderer::new().render(&page, &mut buf, 200, h, 1.0, scroll)
+    }
+
+    const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
+
+    #[test]
+    fn scroll_is_clamped_to_the_content() {
+        assert_eq!(render(TALL, 100, -50.0).scroll, 0.0);
+        let bottom = render(TALL, 100, 1e9).scroll;
+        assert!(bottom > 900.0 && bottom < 1100.0 - 100.0, "{bottom}");
+        assert_eq!(render(r#"(page "short")"#, 100, 50.0).scroll, 0.0, "nothing to scroll");
+    }
+
+    #[test]
+    fn links_move_with_the_page() {
+        let (top, scrolled) = (render(TALL, 100, 0.0), render(TALL, 100, 300.0));
+        assert_eq!(scrolled.links[0].y, top.links[0].y - 300.0);
+    }
 }

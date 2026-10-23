@@ -1,0 +1,11 @@
+; A page that embeds itself, twice. Each copy is half the size of the one
+; around it, and the browser stops once the copies are too small to see.
+
+(page :title "Fractal" :background "#fdf6ec"
+  (h1 :color "#b8336a" "This page contains itself")
+  (p "Both frames below load " (b "fractal.sx") ", the file that defines this page. "
+     (a :href "hello.sx" "Home") " · "
+     (a :href "view-source.sx?page=fractal.sx" "View source"))
+  (row
+    (frame :src "fractal.sx" :scale 0.5)
+    (frame :src "fractal.sx" :scale 0.5)))
