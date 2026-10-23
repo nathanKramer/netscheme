@@ -37,6 +37,8 @@
          " puts its children side by side, in columns of equal width.")
   (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
   (entry "span, b, code, a, button, input, img" "Inline elements, which flow along a line of text and wrap with it.")
+  (entry "spacer" "Takes up whatever room is left on its line, pushing what follows"
+         " to the end. The toolbar uses one to put the mode switch at its right-hand end.")
   (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
 
   (section "Children can be anything")

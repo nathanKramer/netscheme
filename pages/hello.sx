@@ -8,8 +8,8 @@
   (p :margin 6 eyebrow "A TOY WEB BROWSER")
   (h1 :size 48 :margin 14 :color accent "Netscheme")
   (p :margin 14 lede
-     "The web, rebuilt on a single language. A Netscheme page is a Lisp program,"
-     " and the same code describes its structure, its style and its behaviour.")
+     "Netscheme pages are Lisp programs."
+     " A single language governs structure, style, and behaviour.")
   (p "There's no HTML, no CSS and no JavaScript. Elements are functions,"
      " styles are values, and a page that responds to clicks is just a page"
      " whose code reads some state. Here's a small one, and what it makes:")

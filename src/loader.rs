@@ -265,9 +265,15 @@ fn read_bytes(location: &str, limit: u64) -> Result<Vec<u8>, String> {
     if is_remote(location) {
         return fetch(location, limit).map(|(bytes, _)| bytes);
     }
-    if location.contains("://") || location.starts_with(BROWSER) {
+    if location.contains("://") {
         return Err("only files and web resources can be loaded".into());
     }
+    // The browser's own files, like the toolbar's icons, live in its `ui` folder.
+    let path = match location.strip_prefix(BROWSER) {
+        Some(name) => Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(name),
+        None => location.into(),
+    };
+    let location = path.as_path();
     let size = fs::metadata(location).map_err(|e| format!("couldn't read it: {e}"))?.len();
     if size > limit {
         return Err(format!("it's {size} bytes, which is more than the limit of {limit}"));

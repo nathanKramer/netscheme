@@ -62,9 +62,14 @@
              :on-submit (fn (text) (go text)))
       " "
       (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")
-      " "
-      (button toolbar-text :on-click (fn () (set-dark-mode (not (dark-mode))))
-              (if (dark-mode) "Light mode" "Dark mode"))))
+      ; The spacer pushes the mode switch to the right-hand end.
+      (spacer)
+      ; A moon to switch to dark mode, and a sun to switch back. Each is
+      ; drawn in the toolbar's ink for the mode it's shown in.
+      (img :src (if (dark-mode) "browser:icons/sun.png" "browser:icons/moon.png")
+           :width 20 :align "middle"
+           :alt (if (dark-mode) "Switch to light mode" "Switch to dark mode")
+           :on-click (fn () (set-dark-mode (not (dark-mode)))))))
   (div rule)
   (if finding (list (find-bar) (div rule)))
   (if error

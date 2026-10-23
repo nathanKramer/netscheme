@@ -201,6 +201,27 @@ enum Embed {
     Input(Rc<Element>),
     /// An image, or `None` for one that couldn't be loaded, at this size.
     Image(Option<Rc<Image>>, f32, f32, Align),
+    /// Takes up whatever room is left on its line.
+    Spacer,
+}
+
+/// Shares `extra` width between the spacers in a line, moving everything
+/// after each one along.
+fn stretch(line: &mut [Piece], run: &[Segment], extra: f32) {
+    let is_spacer = |piece: &Piece| matches!(run[piece.segment].embed, Some(Embed::Spacer));
+    let spacers = line.iter().filter(|piece| is_spacer(piece)).count();
+    if spacers == 0 || extra <= 0.0 {
+        return;
+    }
+    let share = extra / spacers as f32;
+    let mut shift = 0.0;
+    for piece in line {
+        piece.x += shift;
+        if is_spacer(piece) {
+            piece.w = share;
+            shift += share;
+        }
+    }
 }
 
 /// Where an image sits on its line.
@@ -523,6 +544,7 @@ impl<'a> Layout<'a> {
             let space_segment = word.space_segment.unwrap_or(word.pieces[0].segment);
             let mut space_w = self.measure(" ", &run[space_segment].style);
             if !line.is_empty() && line_w + space_w + word.width > w {
+                stretch(&mut line, run, w - line_w);
                 cy = self.line(&line, run, x, cy);
                 line.clear();
                 line_w = 0.0;
@@ -539,6 +561,7 @@ impl<'a> Layout<'a> {
             line_w += word.width;
         }
         if !line.is_empty() {
+            stretch(&mut line, run, w - line_w);
             cy = self.line(&line, run, x, cy);
         }
         run.clear();
@@ -604,6 +627,7 @@ impl<'a> Layout<'a> {
                 piece.w = match &segment.embed {
                     Some(Embed::Input(input)) => self.input_width(input),
                     Some(Embed::Image(_, w, ..)) => *w,
+                    Some(Embed::Spacer) => 0.0,
                     None => self.measure(&piece.text, &segment.style) + 2.0 * piece.padding,
                 };
                 word.width += piece.w;
@@ -639,6 +663,7 @@ impl<'a> Layout<'a> {
                     }
                     continue;
                 }
+                Some(Embed::Spacer) => continue,
                 None => {}
             }
             if let Some(color) = segment.style.background {
@@ -728,6 +753,10 @@ impl<'a> Layout<'a> {
             (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
             _ => action,
         };
+        if &*el.tag == "spacer" {
+            out.push(Segment { text: "".into(), style: Rc::new(style), action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Spacer) });
+            return;
+        }
         if &*el.tag == "img" {
             let image = self.image_box(el);
             out.push(Segment { text: "".into(), style: Rc::new(style), action, padding: 0.0, nowrap: true, embed: Some(image) });
@@ -783,6 +812,7 @@ impl<'a> Layout<'a> {
             Some(Embed::Image(_, _, h, Align::Baseline)) => (h, h),
             // Lowercase letters are about half the font size tall.
             Some(Embed::Image(_, _, h, Align::Middle)) => (h, h / 2.0 + segment.style.font_size * self.scale * 0.25),
+            Some(Embed::Spacer) => (0.0, 0.0),
             None => (height, baseline),
         }
     }
@@ -937,6 +967,21 @@ mod tests {
         assert_eq!(texts(&items)[0].1, 100.0);
         let (items, _) = layout(r#"(page :padding 0 :max-width 500 (p "x"))"#, 300.0);
         assert_eq!(texts(&items)[0].1, 0.0, "no effect when there's room");
+    }
+
+    #[test]
+    fn a_spacer_pushes_the_rest_of_its_line_to_the_end() {
+        let fonts = Fonts::load();
+        let width = |text| fonts.measure(text, 16.0, Face::default());
+        let (items, _) = layout(r#"(page :padding 0 (p "left" (spacer) "right"))"#, 300.0);
+        let one = texts(&items);
+        assert_eq!(one[0].1, 0.0);
+        assert!((one[1].1 + width("right") - 300.0).abs() < 0.01, "right ends at the edge: {one:?}");
+
+        let (items, _) = layout(r#"(page :padding 0 (p (spacer) "a" (spacer) "b"))"#, 300.0);
+        let two = texts(&items);
+        let gap = (300.0 - width("a") - width("b")) / 2.0;
+        assert!((two[0].1 - gap).abs() < 0.01 && (two[1].1 + width("b") - 300.0).abs() < 0.01, "two share the room: {two:?}");
     }
 
     #[test]

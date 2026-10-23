@@ -1048,6 +1048,11 @@ mod tests {
         let logo = browser.host.images.borrow().get("pages/../assets/images/logo.png").cloned();
         assert_eq!(logo.expect("the home page shows the logo").map(|image| image.width), Ok(1254));
 
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        render(&mut browser);
+        let moon = browser.host.images.borrow().get("browser:icons/moon.png").cloned();
+        assert!(moon.expect("the toolbar shows the mode switch").is_ok(), "from the browser's own folder");
+
         let server = crate::test_server::TestServer::start(&[("index.sx", r#"(page (img :src "logo.png" :width 40) (img :src "missing.png"))"#)]);
         server.add("logo.png", &std::fs::read("assets/images/logo.png").unwrap());
         let mut browser = Browser::new(server.url("index.sx"), false);

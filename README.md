@@ -89,8 +89,10 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - A builtin costs one evaluation step however much work it does, so
   `(sort (range 100000))` fits easily in a page's budget, where the same sort
   written in the page wouldn't.
-- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input img`.
+- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input img spacer`.
   `pre` keeps its spaces and line breaks, and `code` and `pre` use a monospaced font.
+  `(spacer)` takes up whatever room is left on its line, pushing what follows to
+  the end, like `margin-left: auto` in a flexbox; several share the room.
   All of them are ordinary functions:
   `(tag :attr value ... children ...)`. Lists are spliced in, attributes and
   all, and `nil` is skipped, so `if` and functions that return lists compose
@@ -211,7 +213,8 @@ Images are decoded once and kept, as premultiplied RGBA, until a reload (F5).
 The painter scales each to the size it's drawn at, averaging pixels to shrink
 it or blending them to enlarge it, and keeps the scaled copies too. Files can
 be up to 16 MB, and 4096 × 4096 pixels once decoded. Web pages can only load
-images from the web. The site's pages show `assets/images/logo.png`.
+images from the web. The site's pages show `assets/images/logo.png`. Images at `browser:` locations,
+like the toolbar's `browser:icons/moon.png`, come from the browser's `ui` folder.
 
 The window identifies itself as `netscheme`: that's its app ID on Wayland and
 its class on X11, so window manager rules (Hyprland's `class:netscheme`) and
