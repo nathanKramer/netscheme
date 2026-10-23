@@ -219,7 +219,10 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     let inner = Frame { depth: parent.depth + 1, scale, state_key, store: parent.store.clone(), host: parent.host.clone() };
     let page = open_nested(&location, inner);
     frame.attrs.push(("location".into(), Value::Str(location.into())));
-    frame.children = vec![Node::Element(page)];
+    if let Err(e) = frame.set_children(vec![Node::Element(page)]) {
+        // Too deep to show the page; show why instead, which is shallow.
+        frame.set_children(vec![Node::Element(error_page(&e))]).expect("an error page fits");
+    }
 }
 
 /// Evaluates a page program. Errors become an error page, like a browser would show.

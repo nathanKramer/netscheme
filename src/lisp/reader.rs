@@ -3,7 +3,7 @@
 use super::value::Value;
 
 pub fn read_all(src: &str) -> Result<Vec<Value>, String> {
-    let mut reader = Reader { chars: src.chars().collect(), pos: 0, line: 1 };
+    let mut reader = Reader { chars: src.chars().collect(), pos: 0, line: 1, depth: 0 };
     let mut forms = Vec::new();
     loop {
         reader.skip_whitespace();
@@ -18,7 +18,12 @@ struct Reader {
     chars: Vec<char>,
     pos: usize,
     line: usize,
+    /// How many lists we're inside, as reading them is recursive.
+    depth: u32,
 }
+
+/// Deeper nesting than this is refused, rather than overflowing the stack.
+const MAX_NESTING: u32 = 1_000;
 
 impl Reader {
     fn peek(&self) -> Option<char> {
@@ -56,18 +61,13 @@ impl Reader {
             None => Err(self.err("unexpected end of input")),
             Some('(') => {
                 self.next();
-                let mut items = Vec::new();
-                loop {
-                    self.skip_whitespace();
-                    match self.peek() {
-                        None => return Err(self.err("unclosed '('")),
-                        Some(')') => {
-                            self.next();
-                            return Ok(Value::list(items));
-                        }
-                        Some(_) => items.push(self.read()?),
-                    }
+                if self.depth >= MAX_NESTING {
+                    return Err(self.err(&format!("lists are nested more than {MAX_NESTING} deep")));
                 }
+                self.depth += 1;
+                let list = self.read_list();
+                self.depth -= 1;
+                list
             }
             Some(')') => Err(self.err("unexpected ')'")),
             Some('\'') => self.read_prefixed("quote"),
@@ -82,10 +82,32 @@ impl Reader {
         }
     }
 
+    /// The rest of a list, after its `(`.
+    fn read_list(&mut self) -> Result<Value, String> {
+        let mut items = Vec::new();
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                None => return Err(self.err("unclosed '('")),
+                Some(')') => {
+                    self.next();
+                    return Ok(Value::list(items));
+                }
+                Some(_) => items.push(self.read()?),
+            }
+        }
+    }
+
     /// `'x` is `(quote x)`, `` `x `` is `(quasiquote x)`, and so on.
     fn read_prefixed(&mut self, form: &str) -> Result<Value, String> {
         self.next();
-        Ok(Value::list(vec![Value::sym(form), self.read()?]))
+        if self.depth >= MAX_NESTING {
+            return Err(self.err(&format!("quotes are nested more than {MAX_NESTING} deep")));
+        }
+        self.depth += 1;
+        let quoted = self.read();
+        self.depth -= 1;
+        Ok(Value::list(vec![Value::sym(form), quoted?]))
     }
 
     fn read_string(&mut self) -> Result<Value, String> {

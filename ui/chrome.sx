@@ -4,6 +4,8 @@
 
 (define location (or (param "location") "pages/hello.sx"))
 (define can-go-back (param "back"))
+; Set when one of the site's event handlers failed.
+(define error (param "error"))
 
 ; What's in the address bar. Going somewhere starts this page with fresh
 ; state, so it resets to the new location.
@@ -39,4 +41,7 @@
       (button toolbar-text :on-click (fn () (set-dark-mode (not (dark-mode))))
               (if (dark-mode) "Light mode" "Dark mode"))))
   (div rule)
+  (if error
+      (div :background (light-dark "#fde8e8" "#3d1f22") :padding 10 :margin 0
+        (p :margin 0 :color (light-dark "#8a1c1c" "#ffb4b4") (b "Error ") error)))
   site)

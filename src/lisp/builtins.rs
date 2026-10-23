@@ -1,6 +1,7 @@
-use std::rc::Rc;
+use std::{fmt, rc::Rc};
 
 use super::{
+    budget::{self, MAX_LENGTH},
     eval::{Env, apply},
     reader,
     value::{NativeFn, Value},
@@ -28,10 +29,12 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         [x] => Ok(Value::Bool(!x.truthy())),
         _ => Err("not: expected one argument".into()),
     });
-    def(&env, "str", |args| Ok(Value::Str(args.iter().map(|v| v.to_string()).collect::<String>().into())));
+    def(&env, "str", |args| {
+        bounded_string("str", |out| args.iter().try_for_each(|v| fmt::Write::write_fmt(out, format_args!("{v}"))))
+    });
     // The printed form of a value, which reads back as the same value.
     def(&env, "repr", |args| match args {
-        [x] => Ok(Value::Str(format!("{x:#}").into())),
+        [x] => bounded_string("repr", |out| fmt::Write::write_fmt(out, format_args!("{x:#}"))),
         _ => Err("repr: expected one argument".into()),
     });
 
@@ -70,11 +73,9 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         _ => Ok(Value::Bool(list_arg("empty?", args)?.is_empty())),
     });
     def(&env, "append", |args| {
-        let mut out = Vec::new();
-        for arg in args {
-            out.extend(list_arg("append", std::slice::from_ref(arg))?.iter().cloned());
-        }
-        Ok(Value::list(out))
+        let lists = args.iter().map(|arg| list_arg("append", std::slice::from_ref(arg))).collect::<Result<Vec<_>, _>>()?;
+        budget::check_length("append", lists.iter().map(|list| list.len()).sum())?;
+        Ok(Value::list(lists.concat()))
     });
     def(&env, "map", |args| match args {
         [f, Value::List(xs)] => Ok(Value::list(xs.iter().map(|x| apply(f, std::slice::from_ref(x))).collect::<Result<_, _>>()?)),
@@ -125,7 +126,10 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
         _ => Err("children: expected an element".into()),
     });
     def(&env, "url-encode", |args| match args {
-        [Value::Str(s)] => Ok(Value::Str(loader::encode(s).into())),
+        [Value::Str(s)] => {
+            budget::check_length("url-encode", s.len() * 3)?;
+            Ok(Value::Str(loader::encode(s).into()))
+        }
         _ => Err("url-encode: expected a string".into()),
     });
 
@@ -182,6 +186,28 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     });
 
     env
+}
+
+/// Builds a string with `write`, stopping once it's longer than `MAX_LENGTH`
+/// rather than after building something enormous.
+fn bounded_string(what: &str, write: impl FnOnce(&mut Bounded) -> fmt::Result) -> Result<Value, String> {
+    let mut out = Bounded(String::new());
+    match write(&mut out) {
+        Ok(()) => Ok(Value::Str(out.0.into())),
+        Err(_) => Err(format!("{what}: the result would be longer than {MAX_LENGTH}")),
+    }
+}
+
+struct Bounded(String);
+
+impl fmt::Write for Bounded {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.0.len() + s.len() > MAX_LENGTH {
+            return Err(fmt::Error);
+        }
+        self.0.push_str(s);
+        Ok(())
+    }
 }
 
 fn def(env: &Env, name: &str, f: impl Fn(&[Value]) -> Result<Value, String> + 'static) {

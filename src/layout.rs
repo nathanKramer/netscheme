@@ -5,7 +5,7 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     dom::{self, Element, Node},
-    lisp::Value,
+    lisp::{self, Value},
     paint::Fonts,
     style::{Color, Palette, Style},
 };
@@ -205,6 +205,10 @@ impl<'a> Layout<'a> {
     /// Lays out `el` in a box of width `w` at (`x`, `y`); returns the y
     /// just below it, including its bottom margin.
     pub fn block(&mut self, el: &Element, parent: &Style, x: f32, y: f32, w: f32) -> f32 {
+        lisp::grow_stack(|| self.block_on_stack(el, parent, x, y, w))
+    }
+
+    fn block_on_stack(&mut self, el: &Element, parent: &Style, x: f32, y: f32, w: f32) -> f32 {
         let style = Rc::new(Style::compute(el, parent));
         let (pad, pad_left) = (style.padding * self.scale, style.padding_left * self.scale);
         let (inner_x, inner_w) = (x + pad_left, (w - pad - pad_left).max(0.0));

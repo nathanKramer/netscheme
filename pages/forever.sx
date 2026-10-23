@@ -1,0 +1,7 @@
+; This page never finishes loading: it recurses forever before it gets as far
+; as describing the page. The browser stops it and shows an error instead.
+
+(define (forever) (forever))
+(forever)
+
+(page "You won't see this.")

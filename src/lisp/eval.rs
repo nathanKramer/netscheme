@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::value::Value;
+use super::{budget, value::Value};
 
 /// A page's `define-state` variables, kept between runs of the page.
 #[derive(Default)]
@@ -66,7 +66,8 @@ pub struct Lambda {
 }
 
 pub fn eval(expr: &Value, env: &Rc<Env>) -> Result<Value, String> {
-    match expr {
+    let _depth = budget::enter()?;
+    budget::grow_stack(|| match expr {
         Value::Sym(name) => match env.get(name) {
             Some(Value::State(cell)) => Ok(cell.borrow().clone()),
             Some(value) => Ok(value),
@@ -74,7 +75,7 @@ pub fn eval(expr: &Value, env: &Rc<Env>) -> Result<Value, String> {
         },
         Value::List(items) if !items.is_empty() => eval_list(items, env),
         _ => Ok(expr.clone()),
-    }
+    })
 }
 
 pub fn eval_body(body: &[Value], env: &Rc<Env>) -> Result<Value, String> {

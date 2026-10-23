@@ -1,5 +1,6 @@
 //! The page language: a small Lisp whose programs evaluate to a document.
 
+mod budget;
 mod builtins;
 mod eval;
 mod reader;
@@ -7,19 +8,28 @@ mod value;
 
 use std::rc::Rc;
 
-pub use eval::{PageState, apply};
+pub use budget::{check_length, grow_stack};
+pub use eval::PageState;
 pub use value::{Value, write_quoted};
 
 use crate::loader::PageContext;
 
 /// Read and evaluate every top-level form, returning the last value.
+/// Evaluation stops with an error if it exceeds its budget.
 pub fn run(src: &str, ctx: &Rc<PageContext>) -> Result<Value, String> {
-    let env = builtins::global_env(ctx);
-    let mut result = Value::Nil;
-    for form in reader::read_all(src)? {
-        result = eval::eval(&form, &env)?;
-    }
-    Ok(result)
+    budget::metered(|| {
+        let env = builtins::global_env(ctx);
+        let mut result = Value::Nil;
+        for form in reader::read_all(src)? {
+            result = eval::eval(&form, &env)?;
+        }
+        Ok(result)
+    })
+}
+
+/// Calls a function, such as an event handler, with a budget of its own.
+pub fn apply(f: &Value, args: &[Value]) -> Result<Value, String> {
+    budget::metered(|| eval::apply(f, args))
 }
 
 #[cfg(test)]
@@ -100,5 +110,45 @@ mod tests {
         assert_eq!(page, r##"(p :color "#888" :size 14 :color "red" "hi")"##);
         assert!(eval("(style :color)").contains(":color has no value"));
         assert!(eval(r#"(style "color" 1)"#).contains("expected an attribute name"));
+    }
+
+    #[test]
+    fn runaway_pages_stop_with_an_error() {
+        assert!(eval("(define (f) (f)) (f)").contains("levels of nesting"), "infinite recursion");
+        let fib = "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 40)";
+        assert!(eval(fib).contains("evaluation steps"), "too much work, without deep recursion");
+        let doubling = r#"(define (grow s n) (if (= n 0) s (grow (str s s) (- n 1)))) (grow "ab" 40)"#;
+        assert!(eval(doubling).contains("longer than"), "a string that doubles");
+        let doubling = "(define (grow l n) (if (= n 0) l (grow (append l l) (- n 1)))) (grow '(1) 40)";
+        assert!(eval(doubling).contains("longer than"), "a list that doubles");
+        let splicing = r#"(define big (str (repr (list 1 2 3)) "x")) (define (grow l n) (if (= n 0) l (grow (append l l) (- n 1)))) (p (grow (list big) 19) (grow (list big) 19) (grow (list big) 19))"#;
+        assert!(eval(splicing).contains("longer than"), "an element that splices big lists");
+        let nesting = r#"(define (nest n) (if (= n 0) "x" (div (nest (- n 1))))) (nest 600)"#;
+        assert!(eval(nesting).contains("nested more than 512"), "deeply nested elements");
+    }
+
+    #[test]
+    fn deep_but_finite_recursion_is_fine() {
+        // Over a thousand calls deep: more than fits on a test thread's stack
+        // without growing it.
+        let count = "(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 3000)";
+        assert_eq!(eval(count), "3000");
+    }
+
+    #[test]
+    fn the_reader_refuses_deep_nesting() {
+        assert!(eval(&"(".repeat(100_000)).contains("nested more than"));
+        assert!(eval(&format!("{}x", "'".repeat(100_000))).contains("nested more than"));
+    }
+
+    #[test]
+    fn each_run_gets_its_own_budget() {
+        let ctx = crate::loader::test_context();
+        let src = "(define (spin n) (if (= n 0) 0 (spin (- n 1)))) (define (handler) (spin 2000)) handler";
+        let handler = run(src, &ctx).unwrap();
+        // Together these take more steps than one budget allows.
+        for _ in 0..100 {
+            apply(&handler, &[]).unwrap();
+        }
     }
 }

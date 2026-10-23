@@ -47,6 +47,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 |---|---|---|
 | `lisp/reader.rs` | Text to `Value`s | HTML tokenizer and parser |
 | `lisp/eval.rs`, `builtins.rs` | Runs the page program | JS engine, plus building the DOM |
+| `lisp/budget.rs` | Limits on steps, nesting and sizes | Script timeouts |
 | `loader.rs` | Locations, query parameters, and loading pages into frames | Networking and navigation |
 | `dom.rs` | `Element` / `Node` tree | DOM |
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
@@ -176,6 +177,23 @@ order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 cargo run -- pages/inputs.sx --screenshot out.png --click 200,98 --type $'Ada\tWrite docs\n'
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
 ```
+
+## Runaway code
+
+Pages can't freeze or crash the browser. Each run of a page, and each event
+handler, gets a budget; frames share the budget of the page they're on.
+
+- **One million evaluation steps.** The pages here use at most about 20,000.
+- **10,000 levels of nesting**, which is about 3,300 recursive calls.
+  Evaluation moves to a fresh stack segment as it needs one (with the
+  `stacker` crate), so deep recursion within the limit is fine.
+- **A million characters or items** for strings and lists that builtins build,
+  checked as they're built, so a string that doubles in a loop stops early.
+- **512 levels of element nesting**, and source nested at most 1,000 deep.
+
+Going over a limit stops the run with an error. A page that fails while it
+loads shows an error page in its frame; a failed event handler is reported in
+a banner under the toolbar, and the page stays usable. See `pages/runaway.sx`.
 
 ## Code as data
 

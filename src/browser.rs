@@ -70,6 +70,9 @@ pub struct Browser {
     history: Vec<(String, Scroll, Rc<StateStore>)>,
     scroll: Scroll,
     focus: Option<Focus>,
+    /// The error from the last event handler, which the chrome shows until
+    /// something else happens.
+    error: Option<String>,
     /// Whether the mouse button went down in the focused input and is still
     /// down, so moving the mouse selects text.
     dragging: bool,
@@ -95,6 +98,7 @@ impl Browser {
             history: Vec::new(),
             scroll: Scroll::default(),
             focus: None,
+            error: None,
             dragging: false,
             caret_moved: Instant::now(),
             renderer: Renderer::new(),
@@ -324,7 +328,8 @@ impl Browser {
             return self.site.clone();
         }
         let back = if self.history.is_empty() { "" } else { "&back=1" };
-        format!("browser:chrome?location={}{back}", loader::encode(&self.site))
+        let error = self.error.as_ref().map_or(String::new(), |e| format!("&error={}", loader::encode(e)));
+        format!("browser:chrome?location={}{back}{error}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -332,6 +337,7 @@ impl Browser {
         if href == BACK {
             return self.back();
         }
+        self.error = None;
         let site = loader::resolve(base.unwrap_or(&self.location()), href);
         let previous = (
             std::mem::replace(&mut self.site, site),
@@ -346,6 +352,7 @@ impl Browser {
 
     pub fn back(&mut self) {
         if let Some((site, scroll, page_state)) = self.history.pop() {
+            self.error = None;
             // The site's state comes back, but the toolbar's describes the
             // current site, so the toolbar (the top-level page) starts afresh.
             if self.chrome {
@@ -359,13 +366,22 @@ impl Browser {
 
     /// Calls a handler, then goes where it asked to with `go`, or else runs
     /// the page again so it shows any state the handler changed.
+    ///
+    /// If the handler fails, the chrome reports it above the page, which
+    /// stays usable; without the chrome, an error page replaces the page.
     fn run(&mut self, handler: &Value, args: &[Value]) {
-        match lisp::apply(handler, args) {
-            Ok(_) => match self.host.take_navigation() {
+        let result = lisp::apply(handler, args);
+        self.error = result.as_ref().err().map(|e| format!("in an event handler: {e}"));
+        match (result, &self.error) {
+            (Ok(_), _) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
                 None => self.reload(),
             },
-            Err(e) => self.page = loader::error_page(&format!("in an event handler: {e}")),
+            (Err(_), Some(error)) if !self.chrome => self.page = loader::error_page(error),
+            (Err(_), _) => {
+                self.host.take_navigation();
+                self.reload();
+            }
         }
     }
 
@@ -646,5 +662,30 @@ mod tests {
         assert!(!browser.dark_mode());
         assert!(browser.page.to_string().contains("only browser: pages"), "{}", browser.page);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn handler_errors_leave_the_page_usable() {
+        // The toolbar's dark mode button comes first, then the page's three.
+        let button = |browser: &Browser, i: usize| {
+            let link = browser.links.iter().filter(|l| matches!(l.action, Action::Run(_))).nth(i).unwrap();
+            (link.x + 1.0, link.y + 1.0)
+        };
+        let mut browser = Browser::new("pages/runaway.sx".into(), true);
+        render(&mut browser);
+        let forever = button(&browser, 1);
+
+        browser.click(forever.0, forever.1);
+        render(&mut browser);
+        assert!(browser.error.as_deref().is_some_and(|e| e.contains("levels of nesting")));
+        assert!(browser.page.to_string().contains("levels of nesting"), "the chrome shows it");
+        assert_eq!(browser.site, "pages/runaway.sx", "and the page is still there");
+
+        // The banner moved the page down.
+        let deep = button(&browser, 3);
+        browser.click(deep.0, deep.1);
+        render(&mut browser);
+        assert_eq!(browser.error, None, "the next thing that works clears it");
+        assert!(browser.page.to_string().contains(r#"(b "done")"#));
     }
 }

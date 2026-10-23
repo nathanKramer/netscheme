@@ -1,0 +1,26 @@
+; Pages can't freeze or crash the browser. Each run of a page, and each
+; event handler, gets a budget of evaluation steps and a limit on how deeply
+; evaluation nests. Going over either stops it with an error instead.
+
+(define (forever) (forever))
+
+(define (fib n)
+  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
+(define (count-down n)
+  (if (= n 0) "done" (count-down (- n 1))))
+
+(define-state result "nothing yet")
+
+(page :title "Runaway code"
+  (h1 "Runaway code")
+  (p "Each button runs some code when clicked. The first two never finish in"
+     " reasonable time, so the browser stops them and reports why.")
+  (p (button :on-click (fn () (forever)) "Recurse forever")
+     " "
+     (button :on-click (fn () (set! result (fib 40))) "Compute fib 40")
+     " "
+     (button :on-click (fn () (set! result (count-down 3000))) "Recurse 3000 deep"))
+  (p "Last result: " (b result))
+  (p "A page that loops while it loads gets the same treatment: "
+     (a :href "forever.sx" "try one") "."))
