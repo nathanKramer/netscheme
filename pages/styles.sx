@@ -2,7 +2,8 @@
 ; them with variables, combine them with append, compute them from state,
 ; and wrap them in components.
 
-(define-state dark false)
+; Starts in the browser's mode, but this page has its own switch too.
+(define-state dark (dark-mode))
 
 ; The palette depends on state, so switching theme is just a click.
 (define ink (if dark "#e8e4ee" "#1a1a1a"))

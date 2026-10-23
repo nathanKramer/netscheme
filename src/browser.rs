@@ -11,7 +11,7 @@ use crate::{
     dom::Element,
     layout::{Action, Focus, InputBox, Link, Scroller},
     lisp::{self, Value},
-    loader::{self, StateStore},
+    loader::{self, Host, StateStore},
     paint::{Renderer, Scroll, View},
 };
 
@@ -64,6 +64,8 @@ pub struct Browser {
     page: Rc<Element>,
     /// `define-state` variables of the page and its frames.
     page_state: Rc<StateStore>,
+    /// Settings, and requests from pages, that outlast navigation.
+    host: Rc<Host>,
     /// Sites to return to with "back", with their scroll offsets and state, most recent last.
     history: Vec<(String, Scroll, Rc<StateStore>)>,
     scroll: Scroll,
@@ -89,6 +91,7 @@ impl Browser {
             chrome,
             page: loader::error_page("not loaded yet"),
             page_state: Rc::default(),
+            host: Rc::default(),
             history: Vec::new(),
             scroll: Scroll::default(),
             focus: None,
@@ -108,6 +111,17 @@ impl Browser {
         self.scroll.page = page;
     }
 
+    pub fn dark_mode(&self) -> bool {
+        self.host.dark_mode.get()
+    }
+
+    /// Switches dark mode, and runs the page again so it can follow.
+    pub fn set_dark_mode(&mut self, dark: bool) {
+        if self.host.dark_mode.replace(dark) != dark {
+            self.reload();
+        }
+    }
+
     pub fn title(&self) -> String {
         match self.page.attr("title") {
             Some(Value::Str(t)) => format!("{t} — Toy Browser"),
@@ -118,7 +132,7 @@ impl Browser {
     /// Draws the page into `buf`, which is `w` × `h` physical pixels.
     pub fn render(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
         let caret_visible = (self.caret_moved.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible };
+        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark: self.host.dark_mode.get() };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
         self.viewport = (h as f32, scale);
@@ -347,7 +361,7 @@ impl Browser {
     /// the page again so it shows any state the handler changed.
     fn run(&mut self, handler: &Value, args: &[Value]) {
         match lisp::apply(handler, args) {
-            Ok(_) => match self.page_state.take_navigation() {
+            Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
                 None => self.reload(),
             },
@@ -357,9 +371,9 @@ impl Browser {
 
     /// Runs the page, keeping its state, scroll offsets and focus.
     fn reload(&mut self) {
-        self.page = loader::open(&self.location(), &self.page_state);
+        self.page = loader::open(&self.location(), &self.page_state, &self.host);
         // `go` only means something in an event handler, not while the page runs.
-        self.page_state.take_navigation();
+        self.host.take_navigation();
     }
 }
 
@@ -604,5 +618,33 @@ mod tests {
 
         browser.press(xs[6], y, 3);
         assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((0, 12)), "triple-click selects everything");
+    }
+
+    #[test]
+    fn dark_mode_is_a_browser_setting() {
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        render(&mut browser);
+        let toggle = browser.links.iter().find(|link| matches!(link.action, Action::Run(_))).unwrap();
+        let (x, y) = (toggle.x + 1.0, toggle.y + 1.0);
+        assert!(browser.click(x, y));
+        assert!(browser.dark_mode(), "the toolbar's button turns it on");
+
+        press(&mut browser, [Key::FocusAddressBar, Key::Text("pages/about.sx".into()), Key::Enter]);
+        press(&mut browser, [Key::Back]);
+        assert!(browser.dark_mode(), "it outlasts navigation");
+    }
+
+    #[test]
+    fn only_browser_pages_change_settings() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-dark-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sneaky.sx");
+        std::fs::write(&file, r#"(page :padding 0 (button :on-click (fn () (set-dark-mode true)) "Go dark"))"#).unwrap();
+        let mut browser = Browser::new(file.to_string_lossy().into(), false);
+        render(&mut browser);
+        browser.click(5.0, 5.0);
+        assert!(!browser.dark_mode());
+        assert!(browser.page.to_string().contains("only browser: pages"), "{}", browser.page);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

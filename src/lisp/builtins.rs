@@ -152,7 +152,26 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Rc<Env> {
     let c = ctx.clone();
     def(&env, "go", move |args| {
         let [Value::Str(href)] = args else { return Err("go: expected a location".into()) };
-        c.store.request_navigation(href, &c.location);
+        c.host.request_navigation(href, &c.location);
+        Ok(Value::Nil)
+    });
+    // Whether the browser is in dark mode, which pages can follow as they like.
+    let c = ctx.clone();
+    def(&env, "dark-mode", move |_| Ok(Value::Bool(c.host.dark_mode.get())));
+    // `light` in light mode and `dark` in dark mode, like CSS's light-dark().
+    let c = ctx.clone();
+    def(&env, "light-dark", move |args| match args {
+        [light, dark] => Ok(if c.host.dark_mode.get() { dark.clone() } else { light.clone() }),
+        _ => Err("light-dark: expected a light value and a dark one".into()),
+    });
+    // Changes the setting. Only the browser's own pages may.
+    let c = ctx.clone();
+    def(&env, "set-dark-mode", move |args| {
+        if !c.location.starts_with("browser:") {
+            return Err("set-dark-mode: only browser: pages can change the browser's settings".into());
+        }
+        let [on] = args else { return Err("set-dark-mode: expected true or false".into()) };
+        c.host.dark_mode.set(on.truthy());
         Ok(Value::Nil)
     });
     // A query parameter from the page's location: `page.sx?name=value`.

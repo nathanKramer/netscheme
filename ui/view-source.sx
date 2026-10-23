@@ -24,10 +24,10 @@
       xs
       (cons (first xs) (cons " " (spaced (rest xs))))))
 
-(define string-style (style :color "#2a7a3a"))
-(define keyword-style (style :color "#8a3ab8"))
-(define number-style (style :color "#b85a1a"))
-(define symbol-style (style :color "#1a5fb4"))
+(define string-style (style :color (light-dark "#2a7a3a" "#7fd38c")))
+(define keyword-style (style :color (light-dark "#8a3ab8" "#d29bff")))
+(define number-style (style :color (light-dark "#b85a1a" "#f0a66a")))
+(define symbol-style (style :color (light-dark "#1a5fb4" "#8ab4f8")))
 
 (define (token x)
   (span (cond ((string? x) string-style)
@@ -42,7 +42,9 @@
       (token x)
       (list "(" (spaced (map inline x)) ")")))
 
-(define tints (list "#f6f3fa" "#eef4fa" "#f2f7ef" "#fbf3ec"))
+(define tints
+  (light-dark (list "#f6f3fa" "#eef4fa" "#f2f7ef" "#fbf3ec")
+              (list "#26222d" "#1f2530" "#212a22" "#2d2620")))
 
 ; A form as a block: its leading atoms on the first line, then each nested
 ; form indented below, on a tint that shows how deep it is. Forms that are
@@ -57,7 +59,7 @@
         (p :margin 0 ")"))))
 
 (page :title (str "Source of " target)
-  (h1 :size 24 "Source of " (span :color "#1a5fb4" target))
+  (h1 :size 24 "Source of " (span symbol-style target))
   (p (a :href target "Open the page") " · "
      (a :href "browser:view-source?page=browser:view-source" "View the source of this viewer"))
   (map (fn (form) (block form 0)) (source target)))

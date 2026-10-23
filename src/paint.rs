@@ -7,7 +7,7 @@ use fontdue::{Font, FontSettings, Metrics};
 use crate::{
     dom::Element,
     layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Scroller},
-    style::{Color, Style},
+    style::{Color, Palette, Style},
 };
 
 pub struct Fonts {
@@ -49,6 +49,8 @@ pub struct View<'a> {
     pub focus: Option<Focus>,
     /// Whether a blinking caret is in its visible phase.
     pub caret_visible: bool,
+    /// Whether to use the browser's dark colours.
+    pub dark: bool,
 }
 
 pub struct Rendered {
@@ -76,9 +78,10 @@ impl Renderer {
     /// scrolled by `view.scroll`. Offsets are first clamped so nothing
     /// scrolls past its end.
     pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, view: &View) -> Rendered {
-        let root = Style::root();
-        let page_background = Style::compute(page, &root).background.unwrap_or(Color::WHITE);
-        let mut layout = Layout::new(&self.fonts, view.scale, h as f32, &view.scroll.frames, view.focus, view.caret_visible);
+        let palette = Palette::new(view.dark);
+        let root = Style::root(palette);
+        let page_background = Style::compute(page, &root).background.unwrap_or(palette.page);
+        let mut layout = Layout::new(&self.fonts, palette, view.scale, h as f32, &view.scroll.frames, view.focus, view.caret_visible);
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs) = (layout.items, layout.links, layout.scrollers, layout.inputs);
@@ -163,7 +166,7 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true })
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false })
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
@@ -194,6 +197,7 @@ mod tests {
             scale: 1.0,
             state_key: String::new(),
             store: Default::default(),
+            host: Default::default(),
             frames_created: Default::default(),
         });
         let src = r#"(page :padding 0 (p "toolbar") (frame :src "long.sx" :height "fill" :margin 0))"#;
@@ -202,7 +206,7 @@ mod tests {
         let mut buf = vec![0; 200 * 300];
         let mut render = |frames: HashMap<usize, f32>| {
             let scroll = Scroll { page: 0.0, frames };
-            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true })
+            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false })
         };
 
         let top = render(HashMap::new());

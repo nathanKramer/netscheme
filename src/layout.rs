@@ -7,7 +7,7 @@ use crate::{
     dom::{self, Element, Node},
     lisp::Value,
     paint::Fonts,
-    style::{Color, Style},
+    style::{Color, Palette, Style},
 };
 
 pub enum DisplayItem {
@@ -154,6 +154,7 @@ struct Word {
 
 pub struct Layout<'a> {
     fonts: &'a Fonts,
+    palette: &'static Palette,
     scale: f32,
     /// Height of the window, for `(frame :height "fill")`.
     viewport_height: f32,
@@ -175,6 +176,7 @@ pub struct Layout<'a> {
 impl<'a> Layout<'a> {
     pub fn new(
         fonts: &'a Fonts,
+        palette: &'static Palette,
         scale: f32,
         viewport_height: f32,
         frame_scrolls: &'a HashMap<usize, f32>,
@@ -183,6 +185,7 @@ impl<'a> Layout<'a> {
     ) -> Self {
         Layout {
             fonts,
+            palette,
             scale,
             viewport_height,
             frame_scrolls,
@@ -284,7 +287,7 @@ impl<'a> Layout<'a> {
         self.scale *= zoom;
         let (inner_x, inner_y, inner_w) = (x + border, y + border, w - 2.0 * border);
         let bottom = match height {
-            None => self.block(page, &Style::root(), inner_x, inner_y, inner_w) + border,
+            None => self.block(page, &Style::root(self.palette), inner_x, inner_y, inner_w) + border,
             Some(h) => {
                 let inner_h = (h - 2.0 * border).max(0.0);
                 self.scrolling_page(page, Clip::rect(inner_x, inner_y, inner_w, inner_h));
@@ -294,7 +297,7 @@ impl<'a> Layout<'a> {
         (self.scale, self.base) = saved;
 
         if border > 0.0 {
-            let color = Color(0xcc, 0xcc, 0xcc);
+            let color = self.palette.border;
             let h = bottom - y;
             self.items.extend([
                 DisplayItem::Rect { x, y, w, h: border, color },
@@ -314,7 +317,7 @@ impl<'a> Layout<'a> {
 
         // Measure the page first, to know how far it can scroll.
         let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id);
-        let content_bottom = self.block(page, &Style::root(), area.x0, area.y0, area.x1 - area.x0);
+        let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
         self.items.truncate(marks.0);
         self.links.truncate(marks.1);
         self.scrollers.truncate(marks.2);
@@ -328,7 +331,7 @@ impl<'a> Layout<'a> {
         let outer = self.clip;
         self.clip = area.intersect(outer);
         self.items.push(DisplayItem::Clip(self.clip));
-        self.block(page, &Style::root(), area.x0, area.y0 - scroll, area.x1 - area.x0);
+        self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
         self.items.push(DisplayItem::Clip(outer));
         self.scrollers.push(Scroller { id, area: self.clip, scroll });
         self.clip = outer;
@@ -547,10 +550,10 @@ impl<'a> Layout<'a> {
         let (x, y, w, h) = (area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
         let thin = self.scale.round().max(1.0);
         let (border, border_color) = match focus {
-            Some(_) => (2.0 * thin, Color(0x5b, 0x3a, 0xb8)),
-            None => (thin, Color(0xb9, 0xb2, 0xc3)),
+            Some(_) => (2.0 * thin, style.palette.focus),
+            None => (thin, style.palette.border),
         };
-        let background = style.background.unwrap_or(Color::WHITE);
+        let background = style.background.unwrap_or(style.palette.input);
         self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color });
         self.items.push(DisplayItem::Rect { x: x + border, y: y + border, w: w - 2.0 * border, h: h - 2.0 * border, color: background });
 
@@ -578,11 +581,11 @@ impl<'a> Layout<'a> {
         self.items.push(DisplayItem::Clip(Clip { x0: inner_x, x1: inner_x + inner_w, ..visible }));
         if let Some((a, c)) = selection {
             let (start, end) = (offsets[a.min(c)], offsets[a.max(c)]);
-            let highlight = Color(0xd8, 0xcc, 0xf2);
+            let highlight = style.palette.selection;
             self.items.push(DisplayItem::Rect { x: text_x + start, y: y + inset, w: end - start, h: line_height, color: highlight });
         }
         let (text, color) = match el.attr("placeholder") {
-            Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), Color(0x9a, 0x94, 0xa3)),
+            Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
             _ => (value.clone(), style.color),
         };
         self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, bold, color });
@@ -623,8 +626,8 @@ mod tests {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
         let scrolls = HashMap::new();
-        let mut layout = Layout::new(&fonts, 1.0, 600.0, &scrolls, None, true);
-        layout.block(&page, &Style::root(), 0.0, 0.0, width);
+        let mut layout = Layout::new(&fonts, &Palette::LIGHT, 1.0, 600.0, &scrolls, None, true);
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, width);
         (layout.items, layout.links)
     }
 

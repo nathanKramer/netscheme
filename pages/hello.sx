@@ -3,15 +3,15 @@
 (define who "world")
 
 (page :title "Hello, world"
-  (h1 :color "#b8336a" "Hello, " (span :color "#5b3ab8" who) "!")
+  (h1 :color (light-dark "#b8336a" "#f07aa8") "Hello, " (span :color (light-dark "#5b3ab8" "#b39bff") who) "!")
   (p "This page is written in a " (b "Lisp") ". The same language describes "
      "the structure, the style, and the behavior of the page.")
-  (div :background "#f3eef7" :padding 16
+  (div :background (light-dark "#f3eef7" "#2a2631") :padding 16
     (p :margin 0
        "Styles are attributes, and logic is just code: 6 × 7 = "
-       (span :background "#ffe08a" :bold true (* 6 7))))
+       (span :background "#ffe08a" :color "#1a1a1a" :bold true (* 6 7))))
   (p "Inline elements share a line: " (b "bold") ", "
-     (span :color "#2a7a3a" "coloured") ", "
+     (span :color (light-dark "#2a7a3a" "#7fd38c") "coloured") ", "
      (span :size 22 "bigger") ", and "
      (a :href "about.sx" (b "a link") " to another page")
      ". Press Alt+← to come back.")

@@ -12,7 +12,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key as WinitKey, ModifiersState, NamedKey},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, Theme, Window, WindowId},
 };
 
 use crate::browser::{Browser, Hover, Key, LINE_HEIGHT};
@@ -53,6 +53,11 @@ impl App {
     fn redraw(&self) {
         if let Some(state) = &self.state {
             state.window.set_title(&self.browser.title());
+            // Keep the title bar in step with the browser's setting.
+            let theme = if self.browser.dark_mode() { Theme::Dark } else { Theme::Light };
+            if state.window.theme() != Some(theme) {
+                state.window.set_theme(Some(theme));
+            }
             state.window.request_redraw();
         }
     }
@@ -129,7 +134,12 @@ impl ApplicationHandler for App {
         let window = Rc::new(event_loop.create_window(attrs).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
+        // Start in the system's theme, if it says.
+        if let Some(theme) = window.theme() {
+            self.browser.set_dark_mode(theme == Theme::Dark);
+        }
         self.state = Some(WindowState { window, _context: context, surface });
+        self.redraw();
     }
 
     /// Wakes up when the caret should blink.
@@ -197,6 +207,10 @@ impl ApplicationHandler for App {
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ThemeChanged(theme) => {
+                self.browser.set_dark_mode(theme == Theme::Dark);
+                self.redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let Some(key) = self.key(&event) {
                     self.browser.key(key, self.modifiers.shift_key(), self.pointer);

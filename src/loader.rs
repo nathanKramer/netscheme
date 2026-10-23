@@ -34,6 +34,7 @@ pub struct PageContext {
     /// of frames, so two frames of the same page have separate state.
     pub state_key: String,
     pub store: Rc<StateStore>,
+    pub host: Rc<Host>,
     /// How many frames this page has created so far, to key their state.
     pub frames_created: Cell<usize>,
 }
@@ -42,9 +43,6 @@ pub struct PageContext {
 #[derive(Default)]
 pub struct StateStore {
     pages: RefCell<HashMap<String, Rc<PageState>>>,
-    /// A navigation requested with `go`, as an href and the location of the
-    /// page that asked, for the browser to carry out.
-    navigation: RefCell<Option<(String, String)>>,
 }
 
 impl StateStore {
@@ -56,7 +54,18 @@ impl StateStore {
     pub fn forget(&self, key: &str) {
         self.pages.borrow_mut().remove(key);
     }
+}
 
+/// What pages can know about, and ask of, the browser showing them.
+#[derive(Default)]
+pub struct Host {
+    pub dark_mode: Cell<bool>,
+    /// A navigation requested with `go`, as an href and the location of the
+    /// page that asked, for the browser to carry out.
+    navigation: RefCell<Option<(String, String)>>,
+}
+
+impl Host {
     pub fn request_navigation(&self, href: &str, from: &str) {
         *self.navigation.borrow_mut() = Some((href.into(), from.into()));
     }
@@ -75,17 +84,29 @@ pub fn test_context() -> Rc<PageContext> {
         scale: 1.0,
         state_key: String::new(),
         store: Rc::default(),
+        host: Rc::default(),
         frames_created: Cell::new(0),
     })
 }
 
 /// Loads and evaluates the top-level page at `location`. State from earlier
 /// runs of the page is taken from, and kept in, `store`.
-pub fn open(location: &str, store: &Rc<StateStore>) -> Rc<Element> {
-    open_nested(location, 0, 1.0, String::new(), store)
+pub fn open(location: &str, store: &Rc<StateStore>, host: &Rc<Host>) -> Rc<Element> {
+    let top = Frame { depth: 0, scale: 1.0, state_key: String::new(), store: store.clone(), host: host.clone() };
+    open_nested(location, top)
 }
 
-fn open_nested(location: &str, depth: u32, scale: f32, state_key: String, store: &Rc<StateStore>) -> Rc<Element> {
+/// Where a page is being loaded: at the top, or in a frame.
+struct Frame {
+    depth: u32,
+    scale: f32,
+    state_key: String,
+    store: Rc<StateStore>,
+    host: Rc<Host>,
+}
+
+fn open_nested(location: &str, frame: Frame) -> Rc<Element> {
+    let Frame { depth, scale, state_key, store, host } = frame;
     let (_, query) = location.split_once('?').unwrap_or((location, ""));
     let params = query
         .split('&')
@@ -101,7 +122,8 @@ fn open_nested(location: &str, depth: u32, scale: f32, state_key: String, store:
         depth,
         scale,
         state_key,
-        store: store.clone(),
+        store,
+        host,
         frames_created: Cell::new(0),
     });
     match read_source(location) {
@@ -194,7 +216,8 @@ pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     let index = parent.frames_created.replace(parent.frames_created.get() + 1);
     let state_key = format!("{}/{index}", parent.state_key);
     let location = resolve(&parent.location, &src);
-    let page = open_nested(&location, parent.depth + 1, scale, state_key, &parent.store);
+    let inner = Frame { depth: parent.depth + 1, scale, state_key, store: parent.store.clone(), host: parent.host.clone() };
+    let page = open_nested(&location, inner);
     frame.attrs.push(("location".into(), Value::Str(location.into())));
     frame.children = vec![Node::Element(page)];
 }
@@ -259,11 +282,11 @@ mod tests {
                 })
                 .collect()
         };
-        let page = open(&two, &store);
+        let page = open(&two, &store, &Rc::default());
         let second = counters(&page)[1].clone();
         lisp::apply(second.attr("on-click").unwrap(), &[]).unwrap();
 
-        let page = open(&two, &store);
+        let page = open(&two, &store, &Rc::default());
         let shown: Vec<String> = counters(&page).iter().map(|c| c.to_string()).collect();
         assert!(shown[0].ends_with(r#""0")"#) && shown[1].ends_with(r#""1")"#), "{shown:?}");
         fs::remove_dir_all(dir).unwrap();
@@ -283,7 +306,7 @@ mod tests {
             });
             deepest.max().unwrap_or(0) + (&*el.tag == "frame") as u32
         }
-        let page = open(file.to_str().unwrap(), &Rc::default());
+        let page = open(file.to_str().unwrap(), &Rc::default(), &Rc::default());
         // 0.5^4 is above MIN_FRAME_SCALE; 0.5^5 is below it.
         assert_eq!(depth(&page), 5, "4 frames with pages, then an empty one");
         fs::remove_dir_all(dir).unwrap();

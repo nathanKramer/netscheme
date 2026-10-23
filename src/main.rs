@@ -11,7 +11,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--click X,Y | --type TEXT]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --type TEXT]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -20,6 +20,7 @@ fn main() -> ExitCode {
     let mut scroll = 0.0;
     let mut steps = Vec::new();
     let mut chrome = false;
+    let mut dark = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -39,6 +40,10 @@ fn main() -> ExitCode {
                 chrome = true;
                 Ok(())
             }
+            "--dark" => {
+                dark = true;
+                Ok(())
+            }
             _ if !arg.starts_with('-') => {
                 location = arg;
                 Ok(())
@@ -54,13 +59,17 @@ fn main() -> ExitCode {
     // Screenshots show just the page at `location` unless asked for the
     // chrome; the window always shows it.
     match screenshot {
-        Some(out) => match write_screenshot(Browser::new(location, chrome), width, height, scroll, &steps, &out) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("screenshot failed: {e}");
-                ExitCode::FAILURE
+        Some(out) => {
+            let mut browser = Browser::new(location, chrome);
+            browser.set_dark_mode(dark);
+            match write_screenshot(browser, width, height, scroll, &steps, &out) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("screenshot failed: {e}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         None => {
             window::run(Browser::new(location, true));
             ExitCode::SUCCESS

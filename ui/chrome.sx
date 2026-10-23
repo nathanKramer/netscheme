@@ -15,14 +15,16 @@
 ; out of the document tree.
 (define site-title (attr (first (children site)) :title))
 
-(define toolbar-text (style :underline false :bold true :color "#3a2f4a"))
-(define disabled (style :color "#a9a3b2"))
+(define toolbar-text (style :underline false :bold true :color (light-dark "#3a2f4a" "#ded8e8")))
+(define disabled (style :color (light-dark "#a9a3b2" "#6c6578")))
+(define toolbar (style :background (light-dark "#ebe8ef" "#2a2631") :padding 10 :margin 0))
+(define rule (style :background (light-dark "#d3cfda" "#14121a") :padding 0.5 :margin 0))
 
 (define (toolbar-link href label)
   (a :href href toolbar-text label))
 
 (page :title (or site-title location) :padding 0
-  (div :background "#ebe8ef" :padding 10 :margin 0
+  (div toolbar
     (p :margin 0
       (if can-go-back
           (toolbar-link "browser:back" "← Back")
@@ -32,6 +34,9 @@
              :on-input (fn (text) (set! typed text))
              :on-submit (fn (text) (go text)))
       " "
-      (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")))
-  (div :background "#d3cfda" :padding 0.5 :margin 0)
+      (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")
+      " "
+      (button toolbar-text :on-click (fn () (set-dark-mode (not (dark-mode))))
+              (if (dark-mode) "Light mode" "Dark mode"))))
+  (div rule)
   site)

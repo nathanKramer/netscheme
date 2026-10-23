@@ -61,7 +61,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 - Special forms: `define`, `define-state`, `set!`, `fn`, `if`, `cond`, `let`, `and`, `or`, `do`,
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
 - Functions take a rest parameter after `&`: `(fn (first & more) ...)`.
-- Builtins: `+ - * / mod = < > not str repr url-encode style`, the list functions
+- Builtins: `+ - * / mod = < > not str repr url-encode style dark-mode light-dark`, the list functions
   `list first rest nth cons append length empty? map filter`, the predicates
   `list? string? number? symbol? keyword? fn?`, and `tag`, `attr` and
   `children` for looking inside elements
@@ -101,6 +101,22 @@ which an element splices in like any other list:
 - **Variables and themes are just code.** Styles are computed when the page
   runs, so a palette can depend on `define-state`, as the dark mode toggle in
   `pages/styles.sx` does.
+
+### Dark mode
+
+Dark mode is a browser setting, toggled from the toolbar. It starts in the
+system's theme when the system reports one, and follows it when it changes.
+The browser's own colours (the page background, text, links, buttons and
+inputs) switch with it, so a page that doesn't choose its colours goes dark
+by itself. A page that does choose them can follow the setting:
+
+- `(dark-mode)` is true in dark mode.
+- `(light-dark "#f3eef7" "#2a2631")` picks the first value in light mode and
+  the second in dark mode, like CSS's `light-dark()`. Any values work, such as
+  whole lists of colours.
+
+Changing the setting runs the page again. Only `browser:` pages can change it,
+with `(set-dark-mode true)`.
 
 `style` is `list` plus a check that its arguments are keyword/value pairs.
 
@@ -154,7 +170,7 @@ does; Tab and Ctrl+L select everything in the input they move to.
 
 `--click X,Y` and `--type TEXT` act on the page before the screenshot, in
 order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
-`--chrome` includes the toolbar, as the window shows it:
+`--chrome` includes the toolbar, as the window shows it, and `--dark` turns on dark mode:
 
 ```sh
 cargo run -- pages/inputs.sx --screenshot out.png --click 200,98 --type $'Ada\tWrite docs\n'
