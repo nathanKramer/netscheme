@@ -387,6 +387,22 @@ impl Browser {
         Some(text)
     }
 
+    /// Types `text`, from the clipboard, into the focused input, replacing
+    /// its selection. Inputs hold one line, so line breaks and tabs become spaces.
+    pub fn paste(&mut self, text: &str) {
+        let Some(focus) = self.focus else { return };
+        let text: String = text
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", " ")
+            .chars()
+            .map(|c| if c.is_whitespace() { ' ' } else { c })
+            .filter(|c| !c.is_control())
+            .collect();
+        if !text.is_empty() {
+            self.edit(focus, &Key::Text(text), false);
+        }
+    }
+
     /// The innermost scrollable frame at a point.
     fn scroller_at(&self, x: f32, y: f32) -> Option<&Scroller> {
         let area = |s: &&Scroller| (s.area.x1 - s.area.x0) * (s.area.y1 - s.area.y0);
@@ -1149,6 +1165,18 @@ mod tests {
         assert_eq!(browser.selected_text().as_deref(), Some("pages/hello.sx"));
         press(&mut browser, [Key::End]);
         assert_eq!(browser.selected_text(), None, "nothing's selected");
+    }
+
+    #[test]
+    fn pasting_into_an_input() {
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        browser.paste("ignored");
+        assert_eq!(browser.inputs.len(), 0, "nothing's focused, so nothing happens");
+        press(&mut browser, [Key::FocusAddressBar]);
+        browser.paste("pages/\tcounter\r\n.sx\n");
+        render(&mut browser);
+        assert_eq!(browser.inputs[0].value, "pages/ counter .sx", "replacing the selection, on one line");
+        assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((18, 18)), "with the caret after it");
     }
 
     #[test]

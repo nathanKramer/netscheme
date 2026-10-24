@@ -230,11 +230,13 @@ a `~/.local/share/applications/netscheme.desktop` with `Icon=netscheme`,
 `StartupWMClass=netscheme`, `Exec=` the release binary, and `Path=` this folder,
 so that pages and the logo are found when it's started from a launcher.
 
-### Selecting and copying text
+### Selecting, copying and pasting
 
 Text on pages can be selected as in inputs: drag across it, double-click a
 word, or triple-click a paragraph. Ctrl+C copies the selection, or the
-selection in the focused input if it has one. Lines that wrapped from one
+selection in the focused input if it has one. Ctrl+V pastes into the focused
+input, replacing its selection; inputs hold one line, so line breaks and tabs
+in the pasted text become spaces. Lines that wrapped from one
 paragraph are copied joined by spaces, and separate paragraphs and lines of
 `pre` text by line breaks. Clicking without dragging still follows links;
 dragging across one selects its text instead. A selection stays inside the
@@ -382,7 +384,6 @@ The chrome can frame itself, too:
 
 ## Roadmap
 
-1. **Pasting** into inputs, now that copying works.
-2. **Loading in the background**, so a slow server doesn't freeze the window,
+1. **Loading in the background**, so a slow server doesn't freeze the window,
    with a loading indicator in the toolbar. Forward history too.
-3. More of the language: macros, tail calls.
+2. More of the language: macros, tail calls.

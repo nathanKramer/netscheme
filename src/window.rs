@@ -110,6 +110,25 @@ impl App {
         }
     }
 
+    /// Types the clipboard's text into the focused input.
+    fn paste(&mut self) {
+        let Some(clipboard) = &mut self.clipboard else { return };
+        match clipboard.get_text() {
+            Ok(text) => {
+                self.browser.paste(&text);
+                self.redraw();
+            }
+            Err(e) => eprintln!("couldn't paste: {e}"),
+        }
+    }
+
+    /// Whether `event` is Ctrl and `letter` going down.
+    fn is_ctrl(&self, event: &KeyEvent, letter: &str) -> bool {
+        event.state == ElementState::Pressed
+            && self.modifiers.control_key()
+            && matches!(&event.logical_key, WinitKey::Character(c) if c.eq_ignore_ascii_case(letter))
+    }
+
     fn key(&self, event: &KeyEvent) -> Option<Key> {
         let m = self.modifiers;
         if m.alt_key() && event.logical_key == WinitKey::Named(NamedKey::ArrowLeft) {
@@ -274,13 +293,8 @@ impl ApplicationHandler for App {
                 self.browser.set_dark_mode(theme == Theme::Dark);
                 self.redraw();
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && self.modifiers.control_key()
-                    && matches!(&event.logical_key, WinitKey::Character(c) if c.eq_ignore_ascii_case("c")) =>
-            {
-                self.copy()
-            }
+            WindowEvent::KeyboardInput { event, .. } if self.is_ctrl(&event, "c") => self.copy(),
+            WindowEvent::KeyboardInput { event, .. } if self.is_ctrl(&event, "v") => self.paste(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let Some(key) = self.key(&event) {
                     self.browser.key(key, self.modifiers.shift_key(), self.pointer);
