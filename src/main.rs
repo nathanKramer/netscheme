@@ -15,7 +15,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --type TEXT | --find TEXT | --repl TEXT]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -37,6 +37,12 @@ fn main() -> ExitCode {
             "--click" => value().and_then(|v| {
                 let (x, y) = v.split_once(',').ok_or(USAGE)?;
                 steps.push(Step::Click(x.parse().map_err(|_| USAGE)?, y.parse().map_err(|_| USAGE)?));
+                Ok(())
+            }),
+            "--drag" => value().and_then(|v| {
+                let n: Vec<f32> = v.split(',').map(str::parse).collect::<Result<_, _>>().map_err(|_| USAGE)?;
+                let [x0, y0, x1, y1] = n[..] else { return Err(USAGE) };
+                steps.push(Step::Drag((x0, y0), (x1, y1)));
                 Ok(())
             }),
             "--type" => value().map(|v| steps.push(Step::Type(v))),
@@ -91,6 +97,8 @@ fn main() -> ExitCode {
 /// Something to do to the page before taking a screenshot.
 enum Step {
     Click(f32, f32),
+    /// Press at one point, move to the other and release, as in selecting text.
+    Drag((f32, f32), (f32, f32)),
     /// Each character is a key press; `\n` is Enter, `\t` is Tab and `\x08`
     /// (`\b` in a shell's `$'...'`) is Backspace.
     Type(String),
@@ -121,6 +129,12 @@ fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps
                 if !browser.click(*x, *y) {
                     return Err(format!("nothing to click at {x},{y}").into());
                 }
+            }
+            Step::Drag((x0, y0), (x1, y1)) => {
+                browser.render(&mut buf, w, h, 1.0);
+                browser.press(*x0, *y0, 1);
+                browser.drag_to(*x1, *y1);
+                browser.release(*x1, *y1);
             }
             Step::Type(text) | Step::Find(text) | Step::Repl(text) => {
                 let opening = match step {

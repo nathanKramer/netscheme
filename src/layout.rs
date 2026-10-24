@@ -81,6 +81,37 @@ impl InputBox {
     }
 }
 
+/// A line of text, as laid out, for selecting text in. Every character on
+/// the page has a position, counting in layout order, so a selection is a
+/// range of positions.
+pub struct TextLine {
+    /// The line's box, and the part of it that's visible.
+    pub area: Clip,
+    pub visible: Clip,
+    /// The innermost fixed-height frame the line is in, by `Scroller::id`.
+    pub frame: Option<usize>,
+    /// The position of the line's first character.
+    pub start: usize,
+    pub text: Vec<char>,
+    /// Window x of each caret position: before each character, and after the last.
+    pub caret_xs: Vec<f32>,
+    /// Lines that wrapped from one paragraph share a number, so copying
+    /// can join them with a space rather than a line break.
+    pub paragraph: usize,
+}
+
+impl TextLine {
+    /// The position closest to window x.
+    pub fn position_at(&self, x: f32) -> usize {
+        let distance = |i: usize| (self.caret_xs[i] - x).abs();
+        self.start + (0..self.caret_xs.len()).min_by(|&a, &b| distance(a).total_cmp(&distance(b))).unwrap_or(0)
+    }
+
+    pub fn end(&self) -> usize {
+        self.start + self.text.len()
+    }
+}
+
 /// A scrollbar, for the page or a frame whose content is taller than the
 /// area it's shown in. It's drawn over the right edge of that area.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -286,6 +317,12 @@ pub struct Layout<'a> {
     /// Images that pages have loaded, by location.
     images: Option<&'a Images>,
     pub matches: Vec<Match>,
+    /// The selected range of text positions, start first, and every line of text.
+    selection: Option<(usize, usize)>,
+    pub lines: Vec<TextLine>,
+    /// The position of the next character laid out, and the current paragraph.
+    next_char: usize,
+    paragraph: usize,
     /// How many frames deep layout is, and the fixed-height frame it's in.
     frame_depth: usize,
     scroller: Option<usize>,
@@ -320,6 +357,10 @@ impl<'a> Layout<'a> {
             search: None,
             images: None,
             matches: Vec::new(),
+            selection: None,
+            lines: Vec::new(),
+            next_char: 0,
+            paragraph: 0,
             frame_depth: 0,
             scroller: None,
         }
@@ -327,6 +368,11 @@ impl<'a> Layout<'a> {
 
     pub fn images(&mut self, images: &'a Images) {
         self.images = Some(images);
+    }
+
+    /// Highlights the text from position `start` up to `end`.
+    pub fn select(&mut self, (start, end): (usize, usize)) {
+        self.selection = Some((start, end));
     }
 
     /// Finds and highlights `search` as the page is laid out.
@@ -412,6 +458,7 @@ impl<'a> Layout<'a> {
                         // A blank line still takes up a line's height.
                         line.push(Piece { x: 0.0, w: 0.0, text: String::new(), segment: i, padding: 0.0 });
                     }
+                    self.paragraph += 1;
                     cy = self.line(&line, &run, x, cy);
                     line.clear();
                     line_w = 0.0;
@@ -426,6 +473,7 @@ impl<'a> Layout<'a> {
             }
         }
         if !line.is_empty() {
+            self.paragraph += 1;
             cy = self.line(&line, &run, x, cy);
         }
         cy
@@ -504,6 +552,7 @@ impl<'a> Layout<'a> {
 
         // Measure the page first, to know how far it can scroll.
         let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id, self.matches.len());
+        let text_marks = (self.lines.len(), self.next_char, self.paragraph);
         let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
         self.items.truncate(marks.0);
         self.links.truncate(marks.1);
@@ -511,6 +560,8 @@ impl<'a> Layout<'a> {
         self.inputs.truncate(marks.3);
         self.next_input_id = marks.4;
         self.matches.truncate(marks.5);
+        self.lines.truncate(text_marks.0);
+        (self.next_char, self.paragraph) = (text_marks.1, text_marks.2);
         self.next_frame_id = id + 1;
 
         let max_scroll = (content_bottom - area.y1).max(0.0);
@@ -537,6 +588,7 @@ impl<'a> Layout<'a> {
 
     /// Greedy word wrap of `run`, which is consumed. Returns the y below the last line.
     fn inline_run(&mut self, run: &mut Vec<Segment>, x: f32, y: f32, w: f32) -> f32 {
+        self.paragraph += 1;
         let mut cy = y;
         let mut line: Vec<Piece> = Vec::new();
         let mut line_w = 0.0;
@@ -674,7 +726,9 @@ impl<'a> Layout<'a> {
             }
         }
         // Highlights go over backgrounds but under the text.
-        self.find_in_line(line, run, x, y, above + below);
+        let chars = self.line_chars(line, run, x);
+        self.select_in_line(&chars, x, y, above + below);
+        self.find_in_line(&chars, y, above + below);
         for piece in line.iter().filter(|piece| run[piece.segment].is_text()) {
             let style = &run[piece.segment].style;
             let size = style.font_size * self.scale;
@@ -692,31 +746,59 @@ impl<'a> Layout<'a> {
         y + above + below
     }
 
-    /// Highlights matches of the search in a line `h` high at (`x`, `y`),
-    /// and records where they are. A match can span pieces of the line, but
-    /// not continue onto the next.
-    fn find_in_line(&mut self, line: &[Piece], run: &[Segment], x: f32, y: f32, h: f32) {
+    /// Each character of a line's text, with its left and right edges.
+    fn line_chars(&self, line: &[Piece], run: &[Segment], x: f32) -> Vec<(char, f32, f32)> {
+        let mut chars = Vec::new();
+        for piece in line.iter().filter(|piece| run[piece.segment].is_text()) {
+            let style = &run[piece.segment].style;
+            let mut left = x + piece.x + piece.padding;
+            for c in piece.text.chars() {
+                let right = left + self.measure(c.encode_utf8(&mut [0; 4]), style);
+                chars.push((c, left, right));
+                left = right;
+            }
+        }
+        chars
+    }
+
+    /// Records a line of `chars`, `h` high at (`x`, `y`), for selecting
+    /// text in, and highlights the part of it that's selected.
+    fn select_in_line(&mut self, chars: &[(char, f32, f32)], x: f32, y: f32, h: f32) {
+        let start = self.next_char;
+        self.next_char += chars.len();
+        if let Some((from, to)) = self.selection.map(|(a, b)| (a.max(start), b.min(self.next_char)))
+            && from < to
+        {
+            let (x0, x1) = (chars[from - start].1, chars[to - start - 1].2);
+            self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color: self.palette.selection });
+        }
+        let caret_xs: Vec<f32> = chars.iter().map(|c| c.1).chain(chars.last().map(|c| c.2)).collect();
+        let (x0, x1) = (caret_xs.first().copied().unwrap_or(x), caret_xs.last().copied().unwrap_or(x));
+        let area = Clip::rect(x0, y, x1 - x0, h);
+        self.lines.push(TextLine {
+            area,
+            visible: area.intersect(self.clip),
+            frame: self.scroller,
+            start,
+            text: chars.iter().map(|c| c.0).collect(),
+            caret_xs,
+            paragraph: self.paragraph,
+        });
+    }
+
+    /// Highlights matches of the search in a line of `chars`, `h` high at
+    /// `y`, and records where they are. A match can span pieces of the line,
+    /// but not continue onto the next.
+    fn find_in_line(&mut self, chars: &[(char, f32, f32)], y: f32, h: f32) {
         let Some((search, query)) = &self.search else { return };
         if search.frames_only && self.frame_depth == 0 {
             return;
         }
-        // Each character of the line, lowercased, with its left and right edges.
-        let mut chars = Vec::new();
-        for piece in line.iter().filter(|piece| run[piece.segment].is_text()) {
-            let style = &run[piece.segment].style;
-            let left = x + piece.x + piece.padding;
-            let mut prefix = String::new();
-            for c in piece.text.chars() {
-                let start = self.measure(&prefix, style);
-                prefix.push(c);
-                let lower = c.to_lowercase().next().unwrap_or(c);
-                chars.push((lower, left + start, left + self.measure(&prefix, style)));
-            }
-        }
+        let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
         let n = query.len();
         let mut i = 0;
         while n > 0 && i + n <= chars.len() {
-            if chars[i..i + n].iter().zip(query).all(|((c, ..), q)| c == q) {
+            if chars[i..i + n].iter().zip(query).all(|((c, ..), q)| lower(*c) == *q) {
                 let (x0, x1) = (chars[i].1, chars[i + n - 1].2);
                 let color = if self.matches.len() == search.current { self.palette.current_match } else { self.palette.found };
                 self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color });

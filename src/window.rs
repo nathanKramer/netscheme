@@ -36,6 +36,8 @@ pub fn run(browser: Browser) {
         pointer: (0.0, 0.0),
         modifiers: ModifiersState::empty(),
         last_press: None,
+        // Kept for the whole session: on X11, copied text is only available while it lives.
+        clipboard: arboard::Clipboard::new().map_err(|e| eprintln!("no clipboard: {e}")).ok(),
         state: None,
     };
     event_loop.run_app(&mut app).expect("run event loop");
@@ -47,6 +49,7 @@ struct App {
     modifiers: ModifiersState,
     /// When and where the left button last went down, and how many quick presses that made.
     last_press: Option<(Instant, (f32, f32), u32)>,
+    clipboard: Option<arboard::Clipboard>,
     state: Option<WindowState>,
 }
 
@@ -96,6 +99,15 @@ impl App {
         };
         self.last_press = Some((now, self.pointer, clicks));
         clicks
+    }
+
+    /// Puts the selected text on the clipboard.
+    fn copy(&mut self) {
+        if let (Some(text), Some(clipboard)) = (self.browser.selected_text(), &mut self.clipboard)
+            && let Err(e) = clipboard.set_text(text)
+        {
+            eprintln!("couldn't copy: {e}");
+        }
     }
 
     fn key(&self, event: &KeyEvent) -> Option<Key> {
@@ -261,6 +273,13 @@ impl ApplicationHandler for App {
             WindowEvent::ThemeChanged(theme) if !self.browser.dark_mode_chosen() => {
                 self.browser.set_dark_mode(theme == Theme::Dark);
                 self.redraw();
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.modifiers.control_key()
+                    && matches!(&event.logical_key, WinitKey::Character(c) if c.eq_ignore_ascii_case("c")) =>
+            {
+                self.copy()
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let Some(key) = self.key(&event) {

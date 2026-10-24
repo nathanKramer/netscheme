@@ -37,6 +37,7 @@ cargo run -- pages/hello.sx --chrome --screenshot out.png
 | Pixels | `softbuffer` | A plain CPU framebuffer. We paint every pixel ourselves, the way a simple browser engine does. |
 | Text | `fontdue` + bundled Liberation Sans and Mono | Rasterizes glyphs. Shaping and kerning are left out for now. |
 | Screenshots | `png` | Headless rendering for checking pages and, later, golden-image tests. |
+| Clipboard | `arboard`, with `wayland-data-control` | Copying text. Uses Wayland's clipboard directly where the compositor supports it, and X11's otherwise. |
 
 No GUI toolkit is used on purpose. Parsing, styling, layout, and
 painting are the interesting parts of a browser, so we write them.
@@ -229,6 +230,22 @@ a `~/.local/share/applications/netscheme.desktop` with `Icon=netscheme`,
 `StartupWMClass=netscheme`, `Exec=` the release binary, and `Path=` this folder,
 so that pages and the logo are found when it's started from a launcher.
 
+### Selecting and copying text
+
+Text on pages can be selected as in inputs: drag across it, double-click a
+word, or triple-click a paragraph. Ctrl+C copies the selection, or the
+selection in the focused input if it has one. Lines that wrapped from one
+paragraph are copied joined by spaces, and separate paragraphs and lines of
+`pre` text by line breaks. Clicking without dragging still follows links;
+dragging across one selects its text instead. A selection stays inside the
+frame it started in, so dragging from the site into the toolbar doesn't
+select the toolbar too. Navigating clears it.
+
+Layout numbers every character it lays out, in order, so a selection is a
+range of those positions, highlighted as the page is laid out, like find's
+matches. Text inside inputs isn't part of a page selection, and dragging
+past the edge of the window doesn't scroll.
+
 ### Finding text
 
 Ctrl+F opens a find bar under the toolbar. Matches in the site are
@@ -264,12 +281,13 @@ The REPL is part of `ui/chrome.sx` too. It hands code to the browser with
 
 ### Screenshots of interactions
 
-`--click X,Y` and `--type TEXT` act on the page before the screenshot, in
-order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
+`--click X,Y`, `--drag X,Y,X,Y` and `--type TEXT` act on the page before
+the screenshot, in order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 `--chrome` includes the toolbar, as the window shows it, and `--dark` turns on dark mode:
 
 ```sh
 cargo run -- pages/inputs.sx --screenshot out.png --click 250,332 --type $'Ada\tWrite docs\n'
+cargo run -- pages/hello.sx --chrome --screenshot out.png --drag 200,330,300,420   # select text
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
 cargo run -- pages/library.sx --chrome --screenshot out.png --find $'dict\n\n'   # Ctrl+F, type, Enter twice
 cargo run -- pages/counter.sx --chrome --screenshot out.png --repl $'(set! count 41)\n'   # Ctrl+Shift+J, type, Enter
@@ -364,7 +382,7 @@ The chrome can frame itself, too:
 
 ## Roadmap
 
-1. **The clipboard**, and selecting text on pages, not just in inputs.
+1. **Pasting** into inputs, now that copying works.
 2. **Loading in the background**, so a slow server doesn't freeze the window,
    with a loading indicator in the toolbar. Forward history too.
 3. More of the language: macros, tail calls.

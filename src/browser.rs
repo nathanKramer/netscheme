@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     dom::Element,
-    layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search},
+    layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search, TextLine},
     lisp::{self, Value},
     loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
     paint::{Renderer, Scroll, View},
@@ -104,6 +104,13 @@ pub struct Browser {
     /// Whether the mouse button went down in the focused input and is still
     /// down, so moving the mouse selects text.
     dragging: bool,
+    /// The selected text on the page, as the position the selection started
+    /// from and the one it reaches; see `TextLine`.
+    selection: Option<(usize, usize)>,
+    /// The frame the selection is in, which dragging stays inside, and
+    /// whether the mouse button is down and selecting.
+    selection_frame: Option<usize>,
+    selecting: bool,
     /// A scrollbar being dragged, and how far below the top of its thumb it was grabbed.
     scroll_drag: Option<(Scrolling, f32)>,
     /// The search, while the find bar is open.
@@ -125,6 +132,7 @@ pub struct Browser {
     inputs: Vec<InputBox>,
     bar: Option<Scrollbar>,
     matches: Vec<Match>,
+    lines: Vec<TextLine>,
     /// Height and scale of the window.
     viewport: (f32, f32),
 }
@@ -143,6 +151,9 @@ impl Browser {
             focus: None,
             error: None,
             dragging: false,
+            selection: None,
+            selection_frame: None,
+            selecting: false,
             scroll_drag: None,
             find: None,
             reveal: false,
@@ -156,6 +167,7 @@ impl Browser {
             inputs: Vec::new(),
             bar: None,
             matches: Vec::new(),
+            lines: Vec::new(),
             viewport: (0.0, 1.0),
         };
         browser.reload();
@@ -214,11 +226,12 @@ impl Browser {
         let search = self.find.as_ref().map(|find| Search { query: &find.query, current: find.current, frames_only: self.chrome });
         let images = self.host.images.borrow();
         let dark = self.host.dark_mode.get();
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark, search, images: Some(&images) };
+        let selection = self.selection.map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b);
+        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark, search, selection, images: Some(&images) };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         drop(images);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
-        (self.bar, self.matches) = (rendered.bar, rendered.matches);
+        (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -289,6 +302,8 @@ impl Browser {
             Hover::Text
         } else if self.link_at(x, y).is_some() {
             Hover::Link
+        } else if self.lines.iter().any(|line| line.visible.contains(x, y)) {
+            Hover::Text
         } else {
             Hover::Nothing
         }
@@ -300,6 +315,76 @@ impl Browser {
 
     fn link_at(&self, x: f32, y: f32) -> Option<&Link> {
         self.links.iter().find(|link| link.contains(x, y))
+    }
+
+    /// The visible line of text nearest a point, among those in `frame`.
+    fn line_near(&self, x: f32, y: f32, frame: Option<usize>) -> Option<&TextLine> {
+        let distance = |line: &TextLine| {
+            let v = line.visible;
+            ((v.y0 - y).max(y - v.y1).max(0.0), (v.x0 - x).max(x - v.x1).max(0.0))
+        };
+        let lines = self.lines.iter().filter(|line| line.frame == frame && !line.visible.is_empty());
+        lines.min_by(|a, b| distance(a).partial_cmp(&distance(b)).expect("distances are numbers"))
+    }
+
+    /// The text position nearest a point in `frame`. Above or below the
+    /// nearest line, that's the line's start or end.
+    fn position_near(&self, x: f32, y: f32, frame: Option<usize>) -> Option<usize> {
+        let line = self.line_near(x, y, frame)?;
+        Some(match y {
+            _ if y < line.visible.y0 => line.start,
+            _ if y >= line.visible.y1 => line.end(),
+            _ => line.position_at(x),
+        })
+    }
+
+    /// Starts selecting the page's text at a point: from there for one
+    /// click, the word there for two, and its paragraph for three.
+    fn select_from(&mut self, x: f32, y: f32, clicks: u32) {
+        let frame = self.scroller_at(x, y).map(|s| s.id);
+        let selection = self.line_near(x, y, frame).map(|line| {
+            let at = line.position_at(x);
+            match clicks {
+                1 => (at, at),
+                2 => {
+                    let (start, end) = word_at(&line.text.iter().collect::<String>(), at - line.start);
+                    (line.start + start, line.start + end)
+                }
+                _ => {
+                    let paragraph = self.lines.iter().filter(|other| other.frame == frame && other.paragraph == line.paragraph);
+                    paragraph.fold((line.start, line.end()), |(start, end), other| (start.min(other.start), end.max(other.end())))
+                }
+            }
+        });
+        (self.selection, self.selection_frame, self.selecting) = (selection, frame, clicks == 1);
+    }
+
+    /// The selected text: in the focused input, or else on the page. Lines
+    /// that wrapped from one paragraph are joined with a space, and
+    /// paragraphs with a line break.
+    pub fn selected_text(&self) -> Option<String> {
+        if let Some(focus) = self.focus.filter(|focus| focus.cursor != focus.anchor) {
+            let input = self.inputs.iter().find(|input| input.id == focus.id)?;
+            let (start, end) = (focus.cursor.min(focus.anchor), focus.cursor.max(focus.anchor));
+            return Some(input.value.chars().skip(start).take(end - start).collect());
+        }
+        let (start, end) = self.selection.map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b)?;
+        let mut text = String::new();
+        let mut paragraph = None;
+        for line in &self.lines {
+            // A blank line, as in code, has no characters, but is inside a selection around it.
+            let inside = (line.start < end && line.end() > start) || (line.text.is_empty() && start < line.start && line.start < end);
+            if !inside {
+                continue;
+            }
+            if let Some(previous) = paragraph {
+                text.push(if previous == line.paragraph { ' ' } else { '\n' });
+            }
+            paragraph = Some(line.paragraph);
+            let (from, to) = (start.max(line.start) - line.start, end.min(line.end()) - line.start);
+            text.extend(&line.text[from..to]);
+        }
+        Some(text)
     }
 
     /// The innermost scrollable frame at a point.
@@ -357,6 +442,7 @@ impl Browser {
         }
         let Some(input) = self.input_at(x, y) else {
             self.focus = None;
+            self.select_from(x, y, clicks);
             return false;
         };
         let at = input.caret_at(x);
@@ -371,6 +457,7 @@ impl Browser {
         };
         let id = input.id;
         self.dragging = clicks == 1 && !select_all;
+        self.selection = None;
         self.set_focus(Focus { id, cursor, anchor });
         true
     }
@@ -379,6 +466,12 @@ impl Browser {
     pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
         if let Some(drag) = self.scroll_drag {
             self.drag_scrollbar(drag, y);
+            return true;
+        }
+        if self.selecting {
+            let Some((anchor, reach)) = self.selection else { return false };
+            let Some(to) = self.position_near(x, y, self.selection_frame).filter(|&to| to != reach) else { return false };
+            self.selection = Some((anchor, to));
             return true;
         }
         let Some(focus) = self.focus.filter(|_| self.dragging) else { return false };
@@ -400,6 +493,12 @@ impl Browser {
         if std::mem::take(&mut self.dragging) || self.input_at(x, y).is_some() {
             return true;
         }
+        // Selecting text, rather than clicking what it's on.
+        self.selecting = false;
+        if self.selection.is_some_and(|(a, b)| a != b) {
+            return true;
+        }
+        self.selection = None;
         match self.link_at(x, y).map(|link| link.action.clone()) {
             Some(Action::Go { href, base }) => self.follow(&href, base.as_deref()),
             Some(Action::Run(handler)) => self.run(&handler, &[]),
@@ -427,7 +526,7 @@ impl Browser {
                 self.host.forget_downloads();
                 self.host.images.borrow_mut().clear();
                 self.page_state = Rc::default();
-                (self.focus, self.error) = (None, None);
+                (self.focus, self.error, self.selection) = (None, None, None);
                 return self.reload();
             }
             // The find bar is part of the chrome, so there's none without it.
@@ -559,7 +658,7 @@ impl Browser {
             std::mem::take(&mut self.page_state),
         );
         self.history.push(previous);
-        self.focus = None;
+        (self.focus, self.selection) = (None, None);
         self.dragging = false;
         self.reload();
     }
@@ -574,7 +673,7 @@ impl Browser {
                 page_state.forget("");
             }
             (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
-            self.focus = None;
+            (self.focus, self.selection) = (None, None);
             self.reload();
         }
     }
@@ -996,6 +1095,60 @@ mod tests {
         assert_eq!(browser.inputs.len(), 1, "Escape closes it");
         assert!(browser.matches.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selecting_text_on_the_page() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-select-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.sx");
+        let long = "one two three four five six seven eight nine ten eleven twelve";
+        std::fs::write(&file, format!(r#"(page :padding 0 (p :margin 0 "Hello world") (p :margin 0 (a :href "x.sx" "a link")) (div :max-width 120 (p :margin 0 "{long}")))"#)).unwrap();
+        let mut browser = Browser::new(file.to_string_lossy().into(), false);
+        render(&mut browser);
+        let (hello, link) = (&browser.lines[0], &browser.lines[1]);
+        let y = (hello.area.y0 + hello.area.y1) / 2.0;
+        let (h, o, w) = (hello.caret_xs[0] + 1.0, hello.caret_xs[5], (hello.caret_xs[6] + hello.caret_xs[7]) / 2.0);
+        let link_y = (link.area.y0 + link.area.y1) / 2.0;
+        let link_x = link.caret_xs[1];
+
+        browser.press(h, y, 1);
+        assert!(browser.drag_to(o, y));
+        assert!(browser.release(o, y));
+        render(&mut browser);
+        assert_eq!(browser.selected_text().as_deref(), Some("Hello"));
+
+        browser.press(w, y, 1);
+        browser.press(w, y, 2);
+        assert_eq!(browser.selected_text().as_deref(), Some("world"), "double-click selects a word");
+
+        // Dragging from the link's line down past the end of the page takes
+        // everything from there, wrapped lines joined by spaces.
+        browser.press(link_x, link_y, 1);
+        assert!(browser.drag_to(link_x, 10_000.0));
+        assert!(browser.release(link_x, 10_000.0), "the link isn't followed");
+        assert!(browser.history.is_empty());
+        assert_eq!(browser.selected_text(), Some(format!(" link\n{long}")));
+        render(&mut browser);
+        let wrapped = browser.lines.iter().filter(|line| line.paragraph == browser.lines[2].paragraph).count();
+        assert!(wrapped > 1, "the long paragraph wrapped");
+
+        browser.press(link_x, link_y, 3);
+        assert_eq!(browser.selected_text().as_deref(), Some("a link"), "triple-click selects the paragraph");
+
+        assert!(browser.click(link_x, link_y), "a click without dragging still follows the link");
+        assert_eq!(browser.history.len(), 1);
+        assert_eq!(browser.selected_text(), None, "and navigating clears the selection");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn copying_from_an_input() {
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        press(&mut browser, [Key::FocusAddressBar]);
+        assert_eq!(browser.selected_text().as_deref(), Some("pages/hello.sx"));
+        press(&mut browser, [Key::End]);
+        assert_eq!(browser.selected_text(), None, "nothing's selected");
     }
 
     #[test]
