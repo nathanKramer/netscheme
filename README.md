@@ -195,8 +195,34 @@ times a second with the milliseconds since the last frame, then runs the
 page again, as after a click. Moving things by their speed times `dt`
 keeps them moving at the same speed when frames come late. After a long
 gap, such as a slow frame, `dt` is at most 100. `:on-frame nil` is no
-handler, so `(if running (fn (dt) ...))` pauses. Handlers run in the order
-their elements appear, before the page runs again.
+handler, so `(if running (fn (dt) ...))` pauses.
+
+#### What happens in a frame
+
+1. **Scheduling.** After every event, the window asks the browser when the
+   next frame is due (`Browser::next_frame`). If any element in the page, or
+   in a page framed in it, has an `:on-frame` handler, that's 16.7ms after the
+   last frame, and the window sleeps until then. Otherwise nothing is due and
+   the window sleeps until the next event.
+2. **Timing.** `dt` is the time since the last frame actually ran, in
+   milliseconds, as a fractional number, capped at 100. A late frame isn't
+   made up for with extra frames: one frame runs, with a larger `dt`. When
+   nothing has a handler, such as while paused, the clock stops, so the first
+   frame after resuming gets about 16.7, not the length of the pause.
+3. **Handlers.** The browser collects every `:on-frame` handler from the page
+   as it was last built, in the order their elements appear, framed pages
+   included, and calls each with the same `dt`. They run one after another
+   against the same state, so a later handler sees what an earlier one set.
+4. **After the handlers.** Only once all of them have run does the browser
+   decide what to redo, as it does after a click: run the page again, call
+   only the `:draw` functions, or nothing (see below). However many handlers
+   there are, the page runs at most once per frame. A handler that calls `go`
+   follows the link instead.
+5. **Painting.** The window then redraws.
+
+Since the handlers come from the page as last built, a handler that sets
+`running` to false still runs this frame; its element has `:on-frame nil`
+from the next frame on, once the page has run again.
 
 Running the whole page again after every frame would mostly rebuild what
 hasn't changed. So as the page runs, the evaluator notes which
@@ -211,10 +237,12 @@ applies after every handler, not just `:on-frame`, and what's shown is the
 same either way. Changing a page's global variable that isn't state, dark
 mode, the find bar or the REPL always runs the page again.
 
-The window doesn't animate while it's hidden. A handler or `:draw`
-function that fails stops the animation, so the error stays on screen, until the page is loaded
-again by following a link, going back or reloading. Each frame has the
-same step budget as any other event.
+The window doesn't animate while it's hidden. When it's shown again, the
+first frame's `dt` is the 100ms cap. A handler or `:draw` function that
+fails stops the animation, so the error stays on screen, until the page is
+loaded again by following a link, going back or reloading. Handlers after
+the failing one don't run that frame, and what earlier ones set is kept.
+Each frame has the same step budget as any other event.
 
 ### Keys
 
