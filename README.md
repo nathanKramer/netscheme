@@ -59,7 +59,8 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `dom.rs` | `Element` / `Node` tree | DOM |
 | `style.rs` | Tag defaults, then attributes, with inheritance | CSS cascade |
 | `layout.rs` | Block flow, inline runs, and word wrapping, producing a display list and link boxes | Layout engine |
-| `paint.rs` | Rectangles, glyphs and images into a pixel buffer | Painting and compositing |
+| `canvas.rs` | A canvas's shapes as polygons | SVG and `<canvas>` geometry |
+| `paint.rs` | Rectangles, glyphs, images and polygons into a pixel buffer | Painting and compositing |
 | `image.rs` | Decoding PNG files, and scaling images | Image decoders |
 | `browser.rs` | A browsing session: navigation, history, state, scrolling, focus, editing | The browser process |
 | `window.rs` | Turns window events into calls on a `Browser` | The browser's window |
@@ -71,7 +72,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
   `quote` / `'`, `quasiquote` / `` ` `` with `,` and `,@`, and `eval`
 - Functions take a rest parameter after `&`: `(fn (first & more) ...)`.
 - Builtins, written in Rust:
-  - Numbers: `+ - * / mod floor ceil round abs sqrt pow min max`
+  - Numbers: `+ - * / mod floor ceil round abs sqrt pow sin cos atan2 min max`
   - Comparisons: `= < > <= >= not`. `<` and friends compare two numbers or two strings.
   - Lists: `list first rest nth last cons append length empty? range repeat
     reverse take drop contains? index-of sort sort-by map filter reduce apply`
@@ -85,12 +86,13 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
   - Pages: `style dark-mode light-dark param go source frame`, and `tag`, `attr`
     and `children` for looking inside elements
 - The prelude, `ui/prelude.sx`, is written in the language itself and
-  runs before every page: `inc dec sum product concat without toggle any? all?
+  runs before every page: `pi inc dec sum product concat without toggle any? all?
   map-indexed update plural`. A page can define its own versions instead.
 - A builtin costs one evaluation step however much work it does, so
   `(sort (range 100000))` fits easily in a page's budget, where the same sort
   written in the page wouldn't.
-- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input img spacer`.
+- Block elements: `page div row h1 h2 h3 p pre frame`. Inline elements: `span b code a button input img spacer canvas`.
+  Shapes, for inside a `canvas`: `rect circle line polyline polygon text`.
   `pre` keeps its spaces and line breaks, and `code` and `pre` use a monospaced font.
   `(spacer)` takes up whatever room is left on its line, pushing what follows to
   the end, like `margin-left: auto` in a flexbox; several share the room.
@@ -229,6 +231,45 @@ put the logo at `~/.local/share/icons/hicolor/256x256/apps/netscheme.png`, and
 a `~/.local/share/applications/netscheme.desktop` with `Icon=netscheme`,
 `StartupWMClass=netscheme`, `Exec=` the release binary, and `Path=` this folder,
 so that pages and the logo are found when it's started from a launcher.
+
+### Canvas
+
+```lisp
+(canvas :width 300 :height 100 :background "#fff"
+  (rect :x 10 :y 10 :w 80 :h 80 :fill "#b8336a")
+  (circle :x 150 :y 50 :r 40 :stroke "#5b3ab8" :stroke-width 4)
+  (line :x1 200 :y1 90 :x2 290 :y2 10)
+  (polygon :points '((200 10) (240 10) (220 40)) :fill "#2a7a3a")
+  (text :x 200 :y 90 :size 14 "hello"))
+```
+
+A canvas is an inline box, 300 × 150 unless given a `:width` and `:height`,
+that draws the shapes inside it, measured from its top-left corner and cut
+off at its edges. Shapes are elements, so `map` can make them and lists of
+them are spliced in.
+
+| Shape | Attributes |
+|---|---|
+| `rect` | `:x :y :w :h` |
+| `circle` | `:x :y :r`, the centre and radius |
+| `line` | `:x1 :y1 :x2 :y2` |
+| `polyline`, `polygon` | `:points`, a list of `(x y)` lists. A polygon joins the last point to the first and fills. |
+| `text` | `:x :y`, with `:y` the baseline, and the usual text attributes |
+
+`:fill` and `:stroke` take colours, and `:stroke-width` (1 by default)
+is the outline's thickness, centred on the shape's edge. A shape given
+neither is filled in the text colour; lines and polylines are only
+stroked, in the text colour unless given a `:stroke`. Corners where a
+stroked line bends are rounded. `:on-click` works on each shape, over the
+box around it, and on the canvas; a shape drawn later is clicked first.
+Other children of a canvas are left out.
+
+Layout turns every shape into polygons, in `canvas.rs`: a circle has
+enough sides to look round at its size, a stroke is a rectangle for each
+segment and a circle at each joint, and an outline is a ring with a hole.
+The painter fills them by the nonzero rule, sampling four lines across
+each row of pixels and blending each pixel by how much of it is covered,
+which smooths the edges.
 
 ### Selecting, copying and pasting
 

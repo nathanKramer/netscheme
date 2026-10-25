@@ -177,7 +177,7 @@ impl Style {
     }
 }
 
-fn parse_color(s: &str, fallback: Color) -> Color {
+pub fn parse_color(s: &str, fallback: Color) -> Color {
     Color::parse(s).unwrap_or_else(|| {
         eprintln!("warning: unknown color {s:?}");
         fallback

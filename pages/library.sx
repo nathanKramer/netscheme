@@ -12,6 +12,8 @@
   (entry "(mod a b)" "The remainder of dividing a by b, which is never negative when b is positive.")
   (entry "(floor x), (ceil x), (round x), (abs x)" "Rounding down, up and to the nearest, and the absolute value.")
   (entry "(sqrt x), (pow x y)" "The square root of x, and x to the power y.")
+  (entry "(sin x), (cos x), (atan2 y x)" "Trigonometry, in radians. " (code "atan2")
+         " is the angle from the x axis to the point (x, y).")
   (entry "(min a b ...), (max a b ...)" "The smallest or largest argument. Given one"
          " list, the smallest or largest item in it.")
 
@@ -94,6 +96,7 @@
   (section "The prelude")
   (p "These are written in Netscheme, in " (code "ui/prelude.sx") ". A page can"
      " define its own function with the same name, and its version wins.")
+  (entry "pi" "The ratio of a circle's circumference to its diameter.")
   (entry "(inc n), (dec n)" "n plus or minus one.")
   (entry "(sum xs), (product xs)" "The items added or multiplied together.")
   (entry "(concat lists)" "A list of lists joined into one list.")

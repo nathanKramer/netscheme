@@ -28,6 +28,13 @@ fn numbers(env: &Env) {
         [Value::Num(a), Value::Num(b)] => Ok(Value::Num(a.powf(*b))),
         _ => Err("pow: expected two numbers".into()),
     });
+    // Angles are in radians.
+    unary(env, "sin", f64::sin);
+    unary(env, "cos", f64::cos);
+    def(env, "atan2", |args| match args {
+        [Value::Num(y), Value::Num(x)] => Ok(Value::Num(y.atan2(*x))),
+        _ => Err("atan2: expected two numbers".into()),
+    });
 
     // Comparisons work on numbers or on strings, which compare alphabetically.
     chain(env, "<", Ordering::is_lt);

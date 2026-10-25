@@ -36,9 +36,10 @@
   (entry "div, row" "Boxes that stack their children. A " (code "row")
          " puts its children side by side, in columns of equal width.")
   (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
-  (entry "span, b, code, a, button, input, img" "Inline elements, which flow along a line of text and wrap with it.")
+  (entry "span, b, code, a, button, input, img, canvas" "Inline elements, which flow along a line of text and wrap with it.")
   (entry "spacer" "Takes up whatever room is left on its line, pushing what follows"
          " to the end. The toolbar uses one to put the mode switch at its right-hand end.")
+  (entry "rect, circle, line, polyline, polygon, text" "Shapes, drawn inside a " (code "canvas") ".")
   (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
 
   (section "Children can be anything")
@@ -79,6 +80,26 @@
         (img :src logo :width 96 :align "middle") " large."))
   (p "An image inside an " (code "a") " is a link. One that can't be loaded"
      " keeps its space as an empty box, and the reason is printed to the terminal.")
+
+  (section "Drawing")
+  (p "A " (code "canvas") " is a box, " (code ":width") " by " (code ":height") ", that"
+     " draws the shapes inside it. They're elements like any other, so " (code "map")
+     " can make them and " (code ":on-click") " works on each one. Coordinates are"
+     " measured from the canvas's top-left corner, and shapes outside it are cut off:")
+  (example
+    '(canvas :width 300 :height 80 :background (light-dark "#f4f1f8" "#25222b")
+       (rect :x 10 :y 10 :w 60 :h 60 :fill "#b8336a")
+       (circle :x 120 :y 40 :r 30 :stroke "#5b3ab8" :stroke-width 4)
+       (line :x1 170 :y1 70 :x2 220 :y2 10 :stroke-width 3)
+       (map (fn (i) (circle :x (+ 240 (* i 14)) :y 40 :r (+ 2 i))) (range 4))))
+  (p "Shapes are filled with " (code ":fill") " and outlined with " (code ":stroke")
+     " and " (code ":stroke-width") ". Given neither, they're filled in the text colour,"
+     " and lines are drawn in it, so they follow dark mode. "
+     (code "(polygon :points '((0 0) (40 0) (20 30)))") " joins points and fills them,"
+     " and a " (code "polyline") " only draws the line through them. "
+     (code "(text :x 10 :y 20 \"hi\")") " puts text with its baseline at "
+     (code ":y") ", and takes the usual text attributes. See "
+     (a :href "canvas.sx" "the canvas demo") " for more.")
 
   (section "Links")
   (p "An " (code "a") " element with an " (code ":href") " goes to another page when"

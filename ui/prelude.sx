@@ -2,6 +2,8 @@
 ; Netscheme. It runs before every page, so a page can use these, or define
 ; its own instead. The other half is built into the browser.
 
+(define pi 3.141592653589793)
+
 (define (inc n) (+ n 1))
 (define (dec n) (- n 1))
 (define (sum xs) (reduce + 0 xs))

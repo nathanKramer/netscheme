@@ -1,0 +1,73 @@
+; Drawing with a canvas. Its shapes are elements, like everything else on
+; a page, so they're made with `map`, kept in variables, and changed by
+; state the same way.
+
+(eval `(do ,@(source "site.sx")))
+
+(define-state picked nil)
+(define-state turns 0)
+
+(define pink (light-dark "#b8336a" "#f07aa8"))
+(define green (light-dark "#2a7a3a" "#86d993"))
+(define orange (light-dark "#b85a1a" "#f2ab73"))
+(define palette (list accent pink green orange))
+
+(define board (style :background panel :margin 16))
+
+; ---------------------------------------------------------------------------
+; A bar chart, drawn from a list of numbers.
+
+(define sales (list 12 19 7 24 16 28 21))
+(define days (list "Mon" "Tue" "Wed" "Thu" "Fri" "Sat" "Sun"))
+
+(define (bar-chart values labels)
+  (let ((w 400) (h 200) (top (apply max values))
+        (step (/ w (length values))))
+    (canvas :width w :height (+ h 30)
+      (line :x1 0 :y1 h :x2 w :y2 h :stroke faint)
+      (map-indexed
+        (fn (i v)
+          (let ((bar-h (* h (/ v top)))
+                (x (+ (* i step) 8)))
+            (list
+              (rect :x x :y (- h bar-h) :w (- step 16) :h bar-h
+                    :fill (if (= picked i) pink accent)
+                    :on-click (fn () (set! picked (if (= picked i) nil i))))
+              (text :x (+ x 4) :y (+ h 20) :size 13 :color faint (nth labels i)))))
+        values))))
+
+; ---------------------------------------------------------------------------
+; Points on a circle, joined up.
+
+(define (star-points cx cy r n skip)
+  (map (fn (i)
+         (let ((angle (+ (* turns 0.2) (/ (* 2 pi i skip) n))))
+           (list (+ cx (* r (cos angle))) (+ cy (* r (sin angle))))))
+       (range n)))
+
+(demo "Canvas"
+  "Rectangles, circles, lines and polygons, drawn by the page and smoothed at their edges."
+
+  (div board :padding 16
+    (canvas :width 400 :height 140
+      (rect :x 10 :y 20 :w 100 :h 100 :fill accent)
+      (rect :x 130 :y 20 :w 100 :h 100 :stroke pink :stroke-width 6)
+      (circle :x 300 :y 70 :r 50 :fill green :stroke ink :stroke-width 3)
+      (line :x1 360 :y1 20 :x2 395 :y2 120 :stroke orange :stroke-width 4)))
+
+  (section "Charts from data")
+  (p "Each bar is a " (code "rect") " made by " (code "map-indexed") ". Click one to"
+     " pick it out.")
+  (div board :padding 16 (bar-chart sales days))
+  (p muted (if picked (str (nth days picked) ": " (nth sales picked) " sold.") "Nothing picked."))
+
+  (section "Polygons")
+  (p "A " (code "polygon") " joins its " (code ":points") " and fills them; a "
+     (code "polyline") " only draws the line between them.")
+  (div board :padding 16
+    (canvas :width 400 :height 160
+      (polygon :points (star-points 80 80 70 5 2) :fill orange)
+      (polygon :points (star-points 240 80 70 7 3) :fill accent :stroke ink :stroke-width 2)
+      (polyline :points (map (fn (x) (list (+ 330 x) (+ 80 (* 40 (sin (/ x 8)))))) (range 70))
+                :stroke pink :stroke-width 3)))
+  (p (button :on-click (fn () (set! turns (inc turns))) "Turn the stars")))

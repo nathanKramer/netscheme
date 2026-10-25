@@ -1,4 +1,5 @@
 mod browser;
+mod canvas;
 mod dom;
 mod image;
 mod layout;

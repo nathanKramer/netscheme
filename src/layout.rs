@@ -4,12 +4,13 @@
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
+    canvas::{self, Contour, Point},
     dom::{self, Element, Node},
     image::Image,
     lisp::{self, Value},
     loader::Images,
     paint::Fonts,
-    style::{Color, Face, Palette, Style},
+    style::{self, Color, Face, Palette, Style},
 };
 
 pub enum DisplayItem {
@@ -18,6 +19,8 @@ pub enum DisplayItem {
     Image { x: f32, y: f32, w: f32, h: f32, image: Option<Rc<Image>> },
     /// `y` is the text baseline.
     Text { x: f32, y: f32, text: String, size: f32, face: Face, color: Color },
+    /// The area inside `contours`, by the nonzero rule, with smoothed edges.
+    Polygon { contours: Vec<Contour>, color: Color },
     /// Items after this are only drawn inside `Clip`, until the next `Clip`.
     Clip(Clip),
 }
@@ -234,6 +237,8 @@ enum Embed {
     Image(Option<Rc<Image>>, f32, f32, Align),
     /// Takes up whatever room is left on its line.
     Spacer,
+    /// A canvas and its shapes, at this size.
+    Canvas(Rc<Element>, f32, f32),
 }
 
 /// Shares `extra` width between the spacers in a line, moving everything
@@ -678,7 +683,7 @@ impl<'a> Layout<'a> {
                 piece.x = word.width;
                 piece.w = match &segment.embed {
                     Some(Embed::Input(input)) => self.input_width(input),
-                    Some(Embed::Image(_, w, ..)) => *w,
+                    Some(Embed::Image(_, w, ..)) | Some(Embed::Canvas(_, w, _)) => *w,
                     Some(Embed::Spacer) => 0.0,
                     None => self.measure(&piece.text, &segment.style) + 2.0 * piece.padding,
                 };
@@ -710,6 +715,13 @@ impl<'a> Layout<'a> {
                 }
                 Some(Embed::Image(image, w, h, _)) => {
                     self.items.push(DisplayItem::Image { x: px, y: py, w: *w, h: *h, image: image.clone() });
+                    if let Some(action) = &segment.action {
+                        self.push_link(Clip::rect(px, py, *w, *h), action.clone());
+                    }
+                    continue;
+                }
+                Some(Embed::Canvas(el, w, h)) => {
+                    self.canvas(el, &segment.style, Clip::rect(px, py, *w, *h));
                     if let Some(action) = &segment.action {
                         self.push_link(Clip::rect(px, py, *w, *h), action.clone());
                     }
@@ -829,7 +841,6 @@ impl<'a> Layout<'a> {
             out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Input(el.clone())) });
             return;
         }
-        style.background = style.background.or(background);
         let action = match (el.attr("on-click"), el.attr("href")) {
             (Some(handler), _) => Some(Action::Run(handler.clone())),
             (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
@@ -844,6 +855,16 @@ impl<'a> Layout<'a> {
             out.push(Segment { text: "".into(), style: Rc::new(style), action, padding: 0.0, nowrap: true, embed: Some(image) });
             return;
         }
+        if &*el.tag == "canvas" {
+            let size = |name, default| match el.attr(name) {
+                Some(Value::Num(n)) => (*n as f32).max(0.0) * self.scale,
+                _ => default * self.scale,
+            };
+            let embed = Embed::Canvas(el.clone(), size("width", 300.0), size("height", 150.0));
+            out.push(Segment { text: "".into(), style: Rc::new(style), action, padding: 0.0, nowrap: true, embed: Some(embed) });
+            return;
+        }
+        style.background = style.background.or(background);
         let (padding, nowrap) = (style.padding, matches!(&*el.tag, "button" | "code"));
         let style = Rc::new(style);
         for child in &el.children {
@@ -891,7 +912,7 @@ impl<'a> Layout<'a> {
                 let inset = self.input_inset(&segment.style);
                 (height + 2.0 * inset, baseline + inset)
             }
-            Some(Embed::Image(_, _, h, Align::Baseline)) => (h, h),
+            Some(Embed::Image(_, _, h, Align::Baseline)) | Some(Embed::Canvas(_, _, h)) => (h, h),
             // Lowercase letters are about half the font size tall.
             Some(Embed::Image(_, _, h, Align::Middle)) => (h, h / 2.0 + segment.style.font_size * self.scale * 0.25),
             Some(Embed::Spacer) => (0.0, 0.0),
@@ -975,6 +996,129 @@ impl<'a> Layout<'a> {
         if !visible.is_empty() {
             let caret_xs = offsets.iter().map(|offset| text_x + offset).collect();
             self.inputs.push(InputBox { id, area: visible, element: el.clone(), value, caret_xs });
+        }
+    }
+
+    /// Draws a canvas's background and its shapes, clipped to `area`.
+    /// Other children of a canvas are left out.
+    fn canvas(&mut self, el: &Element, style: &Style, area: Clip) {
+        let outer = self.clip;
+        self.clip = area.intersect(outer);
+        self.items.push(DisplayItem::Clip(self.clip));
+        if let Some(color) = style.background {
+            self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w: area.x1 - area.x0, h: area.y1 - area.y0, color });
+        }
+        let first_link = self.links.len();
+        for child in &el.children {
+            if let Node::Element(shape) = child {
+                self.shape(shape, style, (area.x0, area.y0));
+            }
+        }
+        // Later shapes are drawn over earlier ones, so they're clicked first.
+        self.links[first_link..].reverse();
+        self.items.push(DisplayItem::Clip(outer));
+        self.clip = outer;
+    }
+
+    /// One shape in a canvas whose top-left corner is at `origin`. Shapes
+    /// are filled with `:fill` and outlined with `:stroke`, and given
+    /// neither, filled in the text colour; lines are always stroked.
+    fn shape(&mut self, el: &Element, parent: &Style, origin: Point) {
+        let style = Style::compute(el, parent);
+        let scale = self.scale;
+        let num = |name| match el.attr(name) {
+            Some(Value::Num(n)) => *n as f32,
+            _ => 0.0,
+        };
+        let at = |x: f32, y: f32| (origin.0 + x * scale, origin.1 + y * scale);
+        let colour = |name| match el.attr(name) {
+            Some(Value::Str(c)) => Some(style::parse_color(c, style.color)),
+            _ => None,
+        };
+        let (mut fill, stroke) = (colour("fill"), colour("stroke"));
+        if fill.is_none() && stroke.is_none() {
+            fill = Some(style.color);
+        }
+        let width = match el.attr("stroke-width") {
+            Some(Value::Num(n)) => (*n as f32).max(0.0) * scale,
+            _ => scale,
+        };
+
+        let (outline, edge): (Option<Contour>, Vec<Contour>) = match &*el.tag {
+            "rect" => {
+                let (a, b) = (at(num("x"), num("y")), at(num("x") + num("w"), num("y") + num("h")));
+                (Some(canvas::rect(a, b)), canvas::rect_outline(a, b, width))
+            }
+            "circle" => {
+                let (centre, r) = (at(num("x"), num("y")), num("r").max(0.0) * scale);
+                (Some(canvas::circle(centre, r)), canvas::circle_outline(centre, r, width))
+            }
+            "line" => {
+                fill = None;
+                let ends = [at(num("x1"), num("y1")), at(num("x2"), num("y2"))];
+                (None, canvas::stroke(&ends, false, width))
+            }
+            "polyline" | "polygon" => {
+                let closed = &*el.tag == "polygon";
+                let points: Vec<Point> = match el.attr("points") {
+                    Some(Value::List(points)) => points
+                        .iter()
+                        .filter_map(|point| match point {
+                            Value::List(xy) => match &xy[..] {
+                                [Value::Num(x), Value::Num(y)] => Some(at(*x as f32, *y as f32)),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if !closed {
+                    fill = None;
+                }
+                let edge = canvas::stroke(&points, closed, width);
+                (closed.then_some(points), edge)
+            }
+            "text" => {
+                let text: String = el.children.iter().filter_map(|child| match child {
+                    Node::Text(text) => Some(&**text),
+                    Node::Element(_) => None,
+                }).collect();
+                let (x, y) = at(num("x"), num("y"));
+                let (size, face) = (style.font_size * scale, style.face());
+                if let Some(handler) = el.attr("on-click") {
+                    let (height, baseline) = self.line_box(&style);
+                    self.push_link(Clip::rect(x, y - baseline, self.measure(&text, &style), height), Action::Run(handler.clone()));
+                }
+                self.items.push(DisplayItem::Text { x, y, text, size, face, color: style.color });
+                return;
+            }
+            _ => return,
+        };
+        // Lines, which are only stroked, take their colour from `:stroke` or the text.
+        let stroke = stroke.or(match outline {
+            None => Some(style.color),
+            Some(_) => None,
+        });
+
+        let mut bounds: Option<Clip> = None;
+        let mut draw = |items: &mut Vec<DisplayItem>, contours: Vec<Contour>, color| {
+            for &(x, y) in contours.iter().flatten() {
+                let point = Clip { x0: x, y0: y, x1: x, y1: y };
+                bounds = Some(bounds.map_or(point, |b| Clip { x0: b.x0.min(x), y0: b.y0.min(y), x1: b.x1.max(x), y1: b.y1.max(y) }));
+            }
+            items.push(DisplayItem::Polygon { contours, color });
+        };
+        if let (Some(outline), Some(color)) = (outline, fill) {
+            draw(&mut self.items, vec![outline], color);
+        }
+        if let Some(color) = stroke
+            && width > 0.0
+        {
+            draw(&mut self.items, edge, color);
+        }
+        if let (Some(handler), Some(bounds)) = (el.attr("on-click"), bounds) {
+            self.push_link(bounds, Action::Run(handler.clone()));
         }
     }
 
@@ -1143,6 +1287,51 @@ mod tests {
         assert!((across[0].area.x0 - start).abs() < 0.01, "{:?} starts after \"Hell\"", across[0].area);
         assert_eq!(search(src, "hello", true).len(), 0, "outside frames, when only searching inside them");
         assert_eq!(search(src, "", false).len(), 0);
+    }
+
+    fn polygons(items: &[DisplayItem]) -> Vec<(&[Contour], Color)> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Polygon { contours, color } => Some((&contours[..], *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn canvases_draw_their_shapes_from_their_corner() {
+        let src = r##"(page :padding 0 (p (canvas :width 100 :height 50 :background "#fff" :color "#123"
+                         (rect :x 10 :y 5 :w 20 :h 10)
+                         (circle :x 50 :y 25 :r 10 :fill "red" :stroke "blue" :stroke-width 2)
+                         (line :x1 0 :y1 0 :x2 100 :y2 50)
+                         (text :x 5 :y 40 "hi"))))"##;
+        let (items, _) = layout(src, 300.0);
+        let shapes = polygons(&items);
+        assert_eq!(shapes.len(), 4, "the rect, the circle's inside and edge, and the line");
+        assert_eq!(shapes[0], (&[vec![(10.0, 5.0), (30.0, 5.0), (30.0, 15.0), (10.0, 15.0)]][..], Color::parse("#123").unwrap()), "filled in the text colour");
+        assert_eq!((shapes[1].1, shapes[2].1), (Color::parse("red").unwrap(), Color::parse("blue").unwrap()));
+        assert_eq!(shapes[2].0.len(), 2, "the edge is a ring");
+        assert_eq!(shapes[3].1, Color::parse("#123").unwrap(), "a line is stroked in the text colour");
+        assert!(texts(&items).contains(&("hi", 5.0, 40.0)), "text sits on its baseline at :y");
+
+        let clips: Vec<Clip> = items.iter().filter_map(|item| match item { DisplayItem::Clip(c) => Some(*c), _ => None }).collect();
+        assert_eq!(clips, [Clip::rect(0.0, 0.0, 100.0, 50.0), Clip::NONE], "shapes are clipped to the canvas");
+    }
+
+    #[test]
+    fn canvas_shapes_can_be_clicked_and_the_top_one_wins() {
+        let src = r#"(page :padding 0 (p (canvas :width 100 :height 50 :on-click (fn () "canvas")
+                        (rect :x 0 :y 0 :w 60 :h 50 :on-click (fn () "under"))
+                        (circle :x 50 :y 25 :r 10 :on-click (fn () "over")))))"#;
+        let (_, links) = layout(src, 300.0);
+        let clicked = |x, y| match &links.iter().find(|link| link.contains(x, y)).unwrap().action {
+            Action::Run(handler) => crate::lisp::apply(handler, &[]).unwrap().to_string(),
+            Action::Go { .. } => panic!("not a handler"),
+        };
+        assert_eq!(clicked(50.0, 25.0), "over");
+        assert_eq!(clicked(5.0, 5.0), "under");
+        assert_eq!(clicked(90.0, 5.0), "canvas");
     }
 
     #[test]

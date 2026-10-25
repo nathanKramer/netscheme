@@ -5,6 +5,7 @@ use std::{collections::HashMap, rc::Rc};
 use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
+    canvas::Contour,
     dom::Element,
     image::Image,
     layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
@@ -144,6 +145,7 @@ impl Renderer {
                         None => fill_rect(buf, w, area.intersect(clip), palette.button),
                     }
                 }
+                DisplayItem::Polygon { contours, color } => fill_polygon(buf, w, clip, contours, dy, *color),
                 DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
             }
         }
@@ -231,6 +233,110 @@ fn fill_rect(buf: &mut [u32], w: usize, area: Clip, color: Color) {
     }
 }
 
+/// Rows of samples taken in each row of pixels, to smooth a polygon's edges.
+const SAMPLES: usize = 4;
+
+/// An edge of a polygon, from its top to its bottom.
+struct Edge {
+    top: f32,
+    bottom: f32,
+    /// Where the edge is at `top`, and how far it moves along for each pixel down.
+    x: f32,
+    slope: f32,
+    /// 1 for an edge that went down, -1 for one that went up.
+    winding: i32,
+}
+
+/// Fills the area inside `contours`, moved up by `dy`, by the nonzero rule.
+/// Each row of pixels is sampled along `SAMPLES` lines across it, and each
+/// pixel is blended by how much of those lines inside the area cover it.
+fn fill_polygon(buf: &mut [u32], w: usize, clip: Clip, contours: &[Contour], dy: f32, color: Color) {
+    let mut edges = Vec::new();
+    let mut bounds = Clip { x0: f32::INFINITY, y0: f32::INFINITY, x1: f32::NEG_INFINITY, y1: f32::NEG_INFINITY };
+    for contour in contours {
+        for (i, &(ax, ay)) in contour.iter().enumerate() {
+            let (bx, by) = contour[(i + 1) % contour.len()];
+            let (ay, by) = (ay - dy, by - dy);
+            bounds = Clip { x0: bounds.x0.min(ax), y0: bounds.y0.min(ay), x1: bounds.x1.max(ax), y1: bounds.y1.max(ay) };
+            if ay != by {
+                let slope = (bx - ax) / (by - ay);
+                edges.push(match ay < by {
+                    true => Edge { top: ay, bottom: by, x: ax, slope, winding: 1 },
+                    false => Edge { top: by, bottom: ay, x: bx, slope, winding: -1 },
+                });
+            }
+        }
+    }
+    let pixels = Clip { x0: clip.x0.round(), y0: clip.y0.round(), x1: clip.x1.round(), y1: clip.y1.round() };
+    let area = Clip { x0: bounds.x0.floor(), y0: bounds.y0.floor(), x1: bounds.x1.ceil(), y1: bounds.y1.ceil() }.intersect(pixels);
+    if area.is_empty() {
+        return;
+    }
+    let (x0, x1, y0, y1) = (area.x0 as usize, area.x1 as usize, area.y0 as usize, area.y1 as usize);
+    edges.sort_by(|a, b| a.top.total_cmp(&b.top));
+
+    let mut coverage = vec![0.0f32; x1 - x0];
+    let (mut next, mut active, mut crossings) = (0, Vec::new(), Vec::new());
+    for py in y0..y1 {
+        coverage.fill(0.0);
+        for sample in 0..SAMPLES {
+            let sy = py as f32 + (sample as f32 + 0.5) / SAMPLES as f32;
+            while next < edges.len() && edges[next].top <= sy {
+                active.push(next);
+                next += 1;
+            }
+            active.retain(|&i| edges[i].bottom > sy);
+            crossings.clear();
+            crossings.extend(active.iter().map(|&i| {
+                let edge = &edges[i];
+                (edge.x + (sy - edge.top) * edge.slope - x0 as f32, edge.winding)
+            }));
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let (mut winding, mut start) = (0, 0.0);
+            for &(x, change) in &crossings {
+                if winding == 0 {
+                    start = x;
+                }
+                winding += change;
+                if winding == 0 {
+                    cover(&mut coverage, start, x);
+                }
+            }
+        }
+        let row = &mut buf[py * w + x0..py * w + x1];
+        for (dst, &covered) in row.iter_mut().zip(&coverage) {
+            let alpha = (covered / SAMPLES as f32 * 255.0).round().min(255.0) as u8;
+            match alpha {
+                0 => {}
+                255 => *dst = color.to_u32(),
+                _ => *dst = blend(*dst, color, alpha),
+            }
+        }
+    }
+}
+
+/// Adds the part of each pixel between `a` and `b` to `coverage`, a row of
+/// pixels starting at 0.
+fn cover(coverage: &mut [f32], a: f32, b: f32) {
+    let len = coverage.len();
+    let (a, b) = (a.max(0.0), b.min(len as f32));
+    if b <= a {
+        return;
+    }
+    let (first, last) = (a.floor() as usize, b.floor() as usize);
+    if first == last {
+        coverage[first] += b - a;
+        return;
+    }
+    coverage[first] += (first + 1) as f32 - a;
+    for pixel in &mut coverage[first + 1..last] {
+        *pixel += 1.0;
+    }
+    if last < len {
+        coverage[last] += b - last as f32;
+    }
+}
+
 fn blend(dst: u32, src: Color, alpha: u8) -> u32 {
     let a = alpha as u32;
     let mix = |s: u8, shift: u32| (s as u32 * a + ((dst >> shift) & 0xff) * (255 - a)) / 255;
@@ -247,6 +353,33 @@ mod tests {
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
         Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None })
+    }
+
+    /// Paints `src` into a 200 × `h` buffer, starting from black.
+    fn pixels(src: &str, h: usize) -> Vec<u32> {
+        let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let mut buf = vec![0; 200 * h];
+        let scroll = Scroll { page: 0.0, frames: HashMap::new() };
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None });
+        buf
+    }
+
+    #[test]
+    fn polygons_are_filled_with_smooth_edges_and_holes() {
+        let src = r##"(page :padding 0 :background "#000"
+                        (canvas :width 200 :height 60 (circle :x 30.5 :y 30 :r 20 :fill "#fff")
+                                (circle :x 100 :y 30 :r 20 :stroke "#fff" :stroke-width 4)
+                                (rect :x 150 :y 10 :w 80 :h 10 :fill "#fff")))"##;
+        let buf = pixels(src, 60);
+        let at = |x: usize, y: usize| buf[y * 200 + x] & 0xff;
+        assert_eq!(at(30, 30), 0xff, "inside");
+        assert_eq!(at(5, 30), 0, "outside");
+        let edge = at(10, 30);
+        assert!(edge > 0x40 && edge < 0xc0, "half covered at the edge: {edge:#x}");
+        assert_eq!(at(100, 30), 0, "a ring has a hole");
+        assert_eq!(at(100, 11), 0xff, "and an edge");
+        assert_eq!(at(199, 15), 0xff, "a shape reaches the canvas's edge");
+        assert_eq!(at(150, 30), 0, "and stops there");
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
