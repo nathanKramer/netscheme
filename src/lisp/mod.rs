@@ -6,6 +6,7 @@ mod eval;
 mod library;
 mod reader;
 mod value;
+pub mod watch;
 
 use std::rc::Rc;
 

@@ -21,9 +21,10 @@
          " the equivalent of a browser's HTML parser, but it doesn't know about"
          " elements at all.")
   (stage "Evaluate" "lisp/eval.rs"
-         "Runs those values as a program. Element functions build the element"
-         " tree as a side effect of ordinary function calls, so this step is a"
-         " JavaScript engine and the DOM's construction at once.")
+         "Runs those values as a program. Element functions are ordinary"
+         " functions that return elements, so the program's result is the"
+         " element tree. This step does the work that a browser's JavaScript"
+         " engine and its DOM construction do between them.")
   (stage "Style" "style.rs"
          "Works out each element's colours, font and spacing: first its tag's"
          " defaults, then its attributes, with text properties inherited from its"
@@ -44,6 +45,11 @@
      " button, the browser calls its handler, which changes some state, and then"
      " it runs the page again from the top. The new element tree is styled, laid"
      " out and painted from scratch.")
+  (p "There's one shortcut. The browser notes which state the page reads as it"
+     " runs, and which state a handler changes. If a handler changed none of"
+     " what the page read, running it again would make the same page, so the"
+     " browser only calls its canvases' " (code ":draw") " functions again."
+     " That's what lets a game move every frame without running the whole page.")
   (p "That's simple, and the browser is fast enough for it to work: a click on"
      " a page of a few hundred elements takes milliseconds. The state that"
      " survives lives outside the program, in a store kept for each page, and"

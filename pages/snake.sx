@@ -1,0 +1,145 @@
+; Snake. The canvas listens for keys, so clicking it gives it the keyboard:
+; arrow keys or WASD steer, and Space starts a new game. The edges wrap
+; around, so the only way to lose is to run into yourself. Each frame adds up
+; the time since the last, and the snake moves a cell every `step-ms`.
+
+(eval `(do ,@(source "site.sx")))
+
+(define cols 20)
+(define rows 14)
+(define cell 20)
+(define step-ms 110)
+
+(define start-snake (list (list 6 7) (list 5 7) (list 4 7)))
+
+(define-state snake start-snake)
+(define-state heading (list 1 0))
+; Turns waiting to happen, so that two quick presses between steps both count.
+(define-state turns (list))
+(define-state food (list 14 7))
+(define-state seed 2024)
+(define-state since 0)
+(define-state playing false)
+(define-state over false)
+(define-state score 0)
+(define-state best 0)
+(define-state held (list))
+
+(define green (light-dark "#2a7a3a" "#86d993"))
+(define head-green (light-dark "#1d5a2a" "#b5f0bd"))
+(define pink (light-dark "#b8336a" "#f07aa8"))
+
+(define directions
+  (dict "ArrowUp" (list 0 -1) "ArrowDown" (list 0 1) "ArrowLeft" (list -1 0) "ArrowRight" (list 1 0)
+        "w" (list 0 -1) "s" (list 0 1) "a" (list -1 0) "d" (list 1 0)))
+
+; ---------------------------------------------------------------------------
+; The game
+
+; Park–Miller random numbers, as in the lab.
+(define (next-seed s) (mod (* s 16807) 2147483647))
+
+(define (opposite? a b)
+  (and (= (first a) (- (first b))) (= (nth a 1) (- (nth b 1)))))
+
+; A free cell for the food, and the seed after choosing it.
+(define (place-food s body)
+  (let ((c (list (mod s cols) (mod (floor (/ s cols)) rows))))
+    (if (contains? body c) (place-food (next-seed s) body) (list c s))))
+
+; A cell moved on by `dir`. Going off one edge comes back on at the
+; opposite one, as `mod` is never negative.
+(define (ahead c dir)
+  (list (mod (+ (first c) (first dir)) cols) (mod (+ (nth c 1) (nth dir 1)) rows)))
+
+(define (new-game)
+  (set! snake start-snake)
+  (set! heading (list 1 0))
+  (set! turns (list))
+  (set! food (list 14 7))
+  (set! since 0)
+  (set! score 0)
+  (set! over false)
+  (set! playing true))
+
+; Queues a turn, unless it's the way the snake will already be going, or
+; straight back into itself.
+(define (steer dir)
+  (let ((going (if (empty? turns) heading (last turns))))
+    (if (and (not (= dir going)) (not (opposite? dir going)) (< (length turns) 3))
+        (set! turns (append turns (list dir))))))
+
+(define (step)
+  (let ((dir (if (empty? turns) heading (first turns)))
+        (head (first snake))
+        (next (ahead head dir))
+        (eating (= next food))
+        ; The tail moves out of the way, unless the snake is growing.
+        (body (if eating snake (take snake (dec (length snake))))))
+    (set! heading dir)
+    (if (not (empty? turns)) (set! turns (rest turns)))
+    (if (contains? body next)
+        (do (set! over true)
+            (set! playing false)
+            (set! best (max best score)))
+        (do (set! snake (cons next body))
+            (if eating
+                (let ((placed (place-food (next-seed seed) (cons next body))))
+                  (set! food (first placed))
+                  (set! seed (nth placed 1))
+                  (set! score (inc score))))))))
+
+(define (tick dt)
+  (set! since (+ since dt))
+  (if (>= since step-ms)
+      (do (set! since (- since step-ms))
+          (step))))
+
+(define (key-down key)
+  (set! held (append held (list key)))
+  (let ((dir (get directions key)))
+    (cond (dir (do (if (not (or playing over)) (set! playing true))
+                   (if playing (steer dir))))
+          ((= key " ") (new-game)))))
+
+(define (key-up key)
+  (set! held (without key held)))
+
+; ---------------------------------------------------------------------------
+; Drawing
+
+(define (square c colour inset)
+  (rect :x (+ (* cell (first c)) inset) :y (+ (* cell (nth c 1)) inset)
+        :w (- cell (* 2 inset)) :h (- cell (* 2 inset)) :fill colour))
+
+(define (message words)
+  (list (rect :x 0 :y 0 :w (* cols cell) :h (* rows cell) :fill panel)
+        (text :x 70 :y 145 :size 18 :bold true words)))
+
+; What's on the board. The canvas calls this itself, rather than the page
+; drawing the board as it runs, so that when a frame only moves the snake,
+; the browser calls this again instead of running the whole page.
+(define (draw-board)
+  (list
+    (circle :x (+ (* cell (first food)) (/ cell 2)) :y (+ (* cell (nth food 1)) (/ cell 2))
+            :r (/ cell 2.5) :fill pink)
+    (map (fn (c) (square c green 1)) (rest snake))
+    (square (first snake) head-green 0)
+    (cond (over (message "Game over. Space to play again."))
+          ((not playing) (message "Click here, then press an arrow key.")))))
+
+(define board
+  (canvas :width (* cols cell) :height (* rows cell) :background panel
+          :draw draw-board
+          :on-frame (if playing tick)
+          :on-key-down key-down
+          :on-key-up key-up))
+
+(demo "Snake"
+  "A game, drawn on a canvas that listens for keys and moves on every frame."
+  (div :background panel :padding 16 :margin 16 board)
+  (p (b "Score: " score) "   " (span muted "Best: " best))
+  (p small "Held keys: " (if (empty? held) "none" (join (map repr held) ", ")))
+  (p muted "Arrow keys or WASD steer, and Space starts again. The edges wrap around,"
+     " so going off one side brings you back on the other. Escape, or clicking"
+     " elsewhere, gives the keyboard back to the browser."))

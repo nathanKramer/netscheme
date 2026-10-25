@@ -12,6 +12,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key as WinitKey, ModifiersState, NamedKey},
+    platform::modifier_supplement::KeyEventExtModifierSupplement,
     window::{CursorIcon, Icon, Theme, Window, WindowAttributes, WindowId},
 };
 
@@ -132,6 +133,33 @@ impl App {
             && matches!(&event.logical_key, WinitKey::Character(c) if c.eq_ignore_ascii_case(letter))
     }
 
+    /// Whether a key press is for the browser even while a canvas has the
+    /// keyboard: with Ctrl, Alt or Super held, Escape, and function keys.
+    fn is_browser_key(&self, event: &KeyEvent) -> bool {
+        let m = self.modifiers;
+        m.control_key()
+            || m.alt_key()
+            || m.super_key()
+            || matches!(
+                &event.logical_key,
+                WinitKey::Named(
+                    NamedKey::Escape
+                        | NamedKey::F1
+                        | NamedKey::F2
+                        | NamedKey::F3
+                        | NamedKey::F4
+                        | NamedKey::F5
+                        | NamedKey::F6
+                        | NamedKey::F7
+                        | NamedKey::F8
+                        | NamedKey::F9
+                        | NamedKey::F10
+                        | NamedKey::F11
+                        | NamedKey::F12
+                )
+            )
+    }
+
     fn key(&self, event: &KeyEvent) -> Option<Key> {
         let m = self.modifiers;
         if m.alt_key() && event.logical_key == WinitKey::Named(NamedKey::ArrowLeft) {
@@ -169,6 +197,17 @@ impl App {
                 Key::Text(text.to_string())
             }
         })
+    }
+}
+
+/// The name pages know a key by: the web's `KeyboardEvent.key`, but as if
+/// Shift weren't held, so that a key goes up with the name it went down with.
+fn key_name(event: &KeyEvent) -> Option<String> {
+    match event.key_without_modifiers() {
+        WinitKey::Named(NamedKey::Space) => Some(" ".into()),
+        WinitKey::Named(named) => Some(format!("{named:?}")),
+        WinitKey::Character(c) => Some(c.to_string()),
+        _ => None,
     }
 }
 
@@ -301,6 +340,23 @@ impl ApplicationHandler for App {
             WindowEvent::ThemeChanged(theme) if !self.browser.dark_mode_chosen() => {
                 self.browser.set_dark_mode(theme == Theme::Dark);
                 self.redraw();
+            }
+            WindowEvent::Focused(false) => {
+                self.browser.release_keys();
+                self.redraw();
+            }
+            // Releases always go to the canvas, so a key can't stay down for it
+            // because a modifier went down while it was held.
+            WindowEvent::KeyboardInput { event, .. }
+                if self.browser.listening() && (event.state == ElementState::Released || !self.is_browser_key(&event)) =>
+            {
+                if let Some(name) = key_name(&event) {
+                    match event.state {
+                        ElementState::Pressed => self.browser.key_down(&name, event.repeat),
+                        ElementState::Released => self.browser.key_up(&name),
+                    }
+                    self.redraw();
+                }
             }
             WindowEvent::KeyboardInput { event, .. } if self.is_ctrl(&event, "c") => self.copy(),
             WindowEvent::KeyboardInput { event, .. } if self.is_ctrl(&event, "v") => self.paste(),

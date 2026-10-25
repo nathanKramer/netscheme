@@ -8,7 +8,7 @@ use crate::{
     canvas::Contour,
     dom::Element,
     image::Image,
-    layout::{Clip, DisplayItem, Focus, InputBox, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
     loader::Images,
     style::{Color, Face, Palette, Style},
 };
@@ -62,6 +62,8 @@ pub struct View<'a> {
     pub scale: f32,
     pub scroll: &'a Scroll,
     pub focus: Option<Focus>,
+    /// The canvas that has the keyboard, by `KeyTarget::id`.
+    pub key_focus: Option<usize>,
     /// Whether a blinking caret is in its visible phase.
     pub caret_visible: bool,
     /// Whether to use the browser's dark colours.
@@ -71,6 +73,8 @@ pub struct View<'a> {
     pub selection: Option<(usize, usize)>,
     /// The images pages have loaded, for `img` elements to show.
     pub images: Option<&'a Images>,
+    /// What canvases' `:draw` functions returned.
+    pub drawings: Option<&'a Drawings>,
 }
 
 pub struct Rendered {
@@ -80,6 +84,8 @@ pub struct Rendered {
     pub scrollers: Vec<Scroller>,
     /// Text inputs, in window coordinates.
     pub inputs: Vec<InputBox>,
+    /// Canvases that listen for keys, in window coordinates.
+    pub key_targets: Vec<KeyTarget>,
     /// The offsets actually used, after clamping.
     pub scroll: Scroll,
     /// The page's own scrollbar, if it's taller than the window.
@@ -116,12 +122,19 @@ impl Renderer {
         if let Some(images) = view.images {
             layout.images(images);
         }
+        if let Some(drawings) = view.drawings {
+            layout.drawings(drawings);
+        }
         if let Some(selection) = view.selection {
             layout.select(selection);
+        }
+        if let Some(id) = view.key_focus {
+            layout.focus_keys(id);
         }
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs, mut matches) = (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
+        let mut key_targets = layout.key_targets;
         let mut lines = layout.lines;
 
         buf.fill(page_background.to_u32());
@@ -157,7 +170,7 @@ impl Renderer {
             link.y -= dy;
         }
         let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
-        let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area));
+        let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area)).chain(key_targets.iter_mut().map(|k| &mut k.area));
         for area in areas.chain(lines.iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             area.y0 -= dy;
             area.y1 -= dy;
@@ -166,7 +179,7 @@ impl Renderer {
             scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, inputs, scroll: Scroll { page: dy, frames }, bar, matches, lines }
+        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines }
     }
 
     /// Draws `image` scaled to fill `area`, blending it by its transparency.
@@ -352,7 +365,7 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None })
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None })
     }
 
     /// Paints `src` into a 200 × `h` buffer, starting from black.
@@ -360,7 +373,7 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: 0.0, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None });
+        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None });
         buf
     }
 
@@ -419,7 +432,7 @@ mod tests {
         let mut buf = vec![0; 200 * 300];
         let mut render = |frames: HashMap<usize, f32>| {
             let scroll = Scroll { page: 0.0, frames };
-            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None })
+            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None })
         };
 
         let top = render(HashMap::new());

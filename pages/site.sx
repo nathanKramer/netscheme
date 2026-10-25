@@ -64,6 +64,8 @@
               :blurb "A greeting and a to-do list, built from controlled inputs.")
         (dict :file "canvas.sx" :title "Canvas"
               :blurb "Shapes drawn by the page: a clickable bar chart, stars and a wave.")
+        (dict :file "snake.sx" :title "Snake"
+              :blurb "A game: a canvas that listens for keys and moves on every frame.")
         (dict :file "lab.sx" :title "The lab"
               :blurb "A Game of Life, a calculator, a sortable table and a tree explorer.")
         (dict :file "fractal.sx" :title "Fractal"

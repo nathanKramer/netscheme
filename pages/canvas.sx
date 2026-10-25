@@ -101,9 +101,13 @@
   (p "An " (code ":on-frame") " handler runs sixty times a second, given the"
      " milliseconds since the last frame. It changes state, and then the page runs"
      " again, like after a click. Giving " (code ":on-frame nil") " stops it.")
+  (p "The balls are drawn by the canvas's " (code ":draw") " function. Only it"
+     " reads " (code "balls") ", so each frame calls it again, rather than"
+     " running the whole page.")
   (div board :padding 16
     (canvas :width box-w :height box-h
             :on-frame (if running (fn (dt) (set! balls (map (fn (b) (move b dt)) balls))))
-      (map-indexed (fn (i b) (circle :x (get b :x) :y (get b :y) :r (get b :r) :fill (nth palette i)))
-                   balls)))
+            :draw (fn ()
+                    (map-indexed (fn (i b) (circle :x (get b :x) :y (get b :y) :r (get b :r) :fill (nth palette i)))
+                                 balls))))
   (p (button :on-click (fn () (set! running (not running))) (if running "Pause" "Play"))))

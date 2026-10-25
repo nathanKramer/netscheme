@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::{budget, value::Value};
+use super::{budget, value::Value, watch};
 
 /// A page's `define-state` variables, kept between runs of the page.
 #[derive(Default)]
@@ -35,8 +35,16 @@ impl Env {
     fn set(&self, name: &str, value: Value) -> Result<(), String> {
         let mut vars = self.vars.borrow_mut();
         match vars.get_mut(name) {
-            Some(Value::State(cell)) => *cell.borrow_mut() = value,
-            Some(slot) => *slot = value,
+            Some(Value::State(cell)) => {
+                watch::wrote(cell);
+                *cell.borrow_mut() = value;
+            }
+            Some(slot) => {
+                if self.state.is_some() {
+                    watch::wrote_global();
+                }
+                *slot = value;
+            }
             None => {
                 drop(vars);
                 return self.parent.as_ref().ok_or_else(|| format!("set!: undefined variable: {name}"))?.set(name, value);
@@ -69,7 +77,10 @@ pub fn eval(expr: &Value, env: &Rc<Env>) -> Result<Value, String> {
     let _depth = budget::enter()?;
     budget::grow_stack(|| match expr {
         Value::Sym(name) => match env.get(name) {
-            Some(Value::State(cell)) => Ok(cell.borrow().clone()),
+            Some(Value::State(cell)) => {
+                watch::read(&cell);
+                Ok(cell.borrow().clone())
+            }
             Some(value) => Ok(value),
             None => Err(format!("undefined symbol: {name}")),
         },

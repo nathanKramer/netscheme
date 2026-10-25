@@ -48,10 +48,20 @@
        (div
          (canvas :width 300 :height 40
                  :on-frame (if running (fn (dt) (set! x (mod (+ x (* 0.1 dt)) 300))))
-           (circle :x x :y 20 :r 10))
+                 :draw (fn () (circle :x x :y 20 :r 10)))
          (p :margin 0 (button :on-click (fn () (set! running (not running)))
                               (if running "Pause" "Play")))))))
 (eval spinner-code)
+
+(define keys-code
+  '(do
+     (define-state held (list))
+     (define (keys)
+       (canvas :width 300 :height 50 :background panel
+               :on-key-down (fn (key) (set! held (append held (list key))))
+               :on-key-up (fn (key) (set! held (without key held)))
+         (text :x 12 :y 30 (if (empty? held) "Nothing held" (join (map repr held) " ")))))))
+(eval keys-code)
 
 (define (live code view)
   (div :margin 18
@@ -104,9 +114,29 @@
      " at the same pace when a frame comes late. " (code ":on-frame nil")
      " is no handler, so " (code "(if running (fn (dt) ...))") " can pause.")
   (live spinner-code (spinner))
+  (p "This canvas draws its circle with a " (code ":draw") " function, which the"
+     " browser calls after the page runs, rather than the page drawing it as it"
+     " runs. The browser notices which state the page reads, and which state a"
+     " handler changes. When a frame only changes " (code "x") ", which only "
+     (code ":draw") " reads, running the page again would make the same page, so"
+     " the browser just calls " (code ":draw") " again. Clicking Pause changes "
+     (code "running") ", which the page reads, so the page runs again. Either way,"
+     " what you see is the same.")
   (p "A handler that fails stops the animation, so the error can be read,"
      " until the page is loaded again. The " (a :href "canvas.sx" "canvas demo")
      " has balls bouncing around a box.")
+
+  (section "Keys")
+  (p "A canvas with " (code ":on-key-down") " or " (code ":on-key-up") " takes the"
+     " keyboard when it's clicked, until Escape or a click somewhere else. The"
+     " handlers get the key's name: " (code "\"a\"") ", " (code "\" \"") " for Space, "
+     (code "\"ArrowLeft\"") ", " (code "\"Enter\"") " and so on. Holding a key calls "
+     (code ":on-key-down") " once, and every key that goes down comes back up, even"
+     " if the canvas loses the keyboard first, so a page can keep track of which"
+     " keys are held. Click this one and press some keys:")
+  (live keys-code (keys))
+  (p "Keys with Ctrl, Alt or Super, and function keys like F5, still go to the"
+     " browser. " (a :href "snake.sx" "Snake") " puts keys and animation together.")
 
   (section "Where state lives")
   (p "State belongs to the page and lasts while you're on it. Each "

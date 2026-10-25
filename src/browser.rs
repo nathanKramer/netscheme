@@ -3,14 +3,15 @@
 //! window forwards events to it, and screenshots drive it directly.
 
 use std::{
+    collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use crate::{
-    dom::{Element, Node},
-    layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search, TextLine},
-    lisp::{self, Value},
+    dom::{self, Element, Node},
+    layout::{Action, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    lisp::{self, Value, watch::{self, Touched}},
     loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
     paint::{Renderer, Scroll, View},
     settings::Settings,
@@ -93,6 +94,11 @@ pub struct Browser {
     chrome: bool,
     /// The page being shown: the chrome with the site framed inside it, or the bare site.
     page: Rc<Element>,
+    /// The state the page read as it ran: if event handlers change none of
+    /// it, running it again would make the same page.
+    page_reads: Touched,
+    /// What the page's canvases' `:draw` functions returned.
+    drawings: Drawings,
     /// `define-state` variables of the page and its frames.
     page_state: Rc<StateStore>,
     /// Settings, and requests from pages, that outlast navigation.
@@ -103,6 +109,10 @@ pub struct Browser {
     history: Vec<(String, Scroll, Rc<StateStore>)>,
     scroll: Scroll,
     focus: Option<Focus>,
+    /// The canvas that has the keyboard, by `KeyTarget::id`, and the keys
+    /// it's been told went down and not yet that they went up.
+    key_focus: Option<usize>,
+    held: Vec<String>,
     /// The error from the last event handler, which the chrome shows until
     /// something else happens.
     error: Option<String>,
@@ -140,6 +150,7 @@ pub struct Browser {
     links: Vec<Link>,
     scrollers: Vec<Scroller>,
     inputs: Vec<InputBox>,
+    key_targets: Vec<KeyTarget>,
     bar: Option<Scrollbar>,
     matches: Vec<Match>,
     lines: Vec<TextLine>,
@@ -153,12 +164,16 @@ impl Browser {
             site,
             chrome,
             page: loader::error_page("not loaded yet"),
+            page_reads: Touched::default(),
+            drawings: HashMap::new(),
             page_state: Rc::default(),
             host: Rc::new(Host::new(if chrome { "/0" } else { "" })),
             settings: None,
             history: Vec::new(),
             scroll: Scroll::default(),
             focus: None,
+            key_focus: None,
+            held: Vec::new(),
             error: None,
             dragging: false,
             selection: None,
@@ -177,6 +192,7 @@ impl Browser {
             links: Vec::new(),
             scrollers: Vec::new(),
             inputs: Vec::new(),
+            key_targets: Vec::new(),
             bar: None,
             matches: Vec::new(),
             lines: Vec::new(),
@@ -239,10 +255,17 @@ impl Browser {
         let images = self.host.images.borrow();
         let dark = self.host.dark_mode.get();
         let selection = self.selection.map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b);
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, caret_visible, dark, search, selection, images: Some(&images) };
+        let key_focus = self.key_focus;
+        let view = View { scale, scroll: &self.scroll, focus: self.focus, key_focus, caret_visible, dark, search, selection, images: Some(&images), drawings: Some(&self.drawings) };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         drop(images);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
+        self.key_targets = rendered.key_targets;
+        // A canvas that's gone, or stopped listening, loses the keyboard.
+        if !self.key_focus.is_some_and(|id| self.key_targets.iter().any(|target| target.id == id)) {
+            self.key_focus = None;
+            self.held.clear();
+        }
         (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
@@ -346,6 +369,56 @@ impl Browser {
             Hover::Text
         } else {
             Hover::Nothing
+        }
+    }
+
+    fn key_target_at(&self, x: f32, y: f32) -> Option<&KeyTarget> {
+        self.key_targets.iter().find(|target| target.area.contains(x, y))
+    }
+
+    /// Whether a canvas has the keyboard, so keys go to it rather than the browser.
+    pub fn listening(&self) -> bool {
+        self.key_focus.is_some()
+    }
+
+    /// Gives the keyboard to key target `id`, or to nothing. The canvas that
+    /// had it is told its held keys went up.
+    fn focus_keys(&mut self, id: Option<usize>) {
+        if self.key_focus != id {
+            self.release_keys();
+            self.key_focus = id;
+        }
+    }
+
+    /// A key named `name` went down, as the web's `KeyboardEvent.key` names
+    /// it, while a canvas has the keyboard. Repeats, from holding it, are ignored.
+    pub fn key_down(&mut self, name: &str, repeat: bool) {
+        if self.key_focus.is_none() || repeat || self.held.iter().any(|held| held == name) {
+            return;
+        }
+        self.held.push(name.to_string());
+        self.key_handler("on-key-down", name);
+    }
+
+    /// A key named `name` went up. Only keys the canvas saw go down count.
+    pub fn key_up(&mut self, name: &str) {
+        let Some(i) = self.held.iter().position(|held| held == name) else { return };
+        self.held.remove(i);
+        self.key_handler("on-key-up", name);
+    }
+
+    /// Lets go of every held key, as when the window loses focus, so a
+    /// game doesn't think one is still down.
+    pub fn release_keys(&mut self) {
+        for name in std::mem::take(&mut self.held) {
+            self.key_handler("on-key-up", &name);
+        }
+    }
+
+    fn key_handler(&mut self, attr: &str, name: &str) {
+        let target = self.key_targets.iter().find(|target| Some(target.id) == self.key_focus);
+        if let Some(handler) = target.and_then(|target| target.element.attr(attr)).filter(|handler| handler.truthy()).cloned() {
+            self.run(&handler, &[Value::Str(name.into())]);
         }
     }
 
@@ -486,7 +559,8 @@ impl Browser {
 
     /// The mouse button went down: the `clicks`th in quick succession.
     /// Inputs respond now, so that dragging can select; links wait for the
-    /// release. Returns whether the press was on an input.
+    /// release. Returns whether the press was on an input,
+    /// or on a canvas that listens for keys.
     pub fn press(&mut self, x: f32, y: f32, clicks: u32) -> bool {
         // On a scrollbar, the thumb can be dragged. Pressing elsewhere on its
         // track jumps there, with the thumb centred on the pointer.
@@ -496,6 +570,13 @@ impl Browser {
             self.drag_scrollbar((target, grab), y);
             return false;
         }
+        // A canvas that listens for keys takes the keyboard, rather than starting a selection.
+        if let Some(id) = self.key_target_at(x, y).map(|target| target.id) {
+            self.focus = None;
+            self.focus_keys(Some(id));
+            return true;
+        }
+        self.focus_keys(None);
         let Some(input) = self.input_at(x, y) else {
             self.focus = None;
             self.select_from(x, y, clicks);
@@ -584,6 +665,7 @@ impl Browser {
                 self.host.images.borrow_mut().clear();
                 self.page_state = Rc::default();
                 (self.focus, self.error, self.selection) = (None, None, None);
+                (self.key_focus, self.held) = (None, Vec::new());
                 return self.reload();
             }
             // The find bar is part of the chrome, so there's none without it.
@@ -601,6 +683,7 @@ impl Browser {
                 self.repl = !self.repl;
                 return self.reload();
             }
+            Key::Escape if self.key_focus.is_some() => return self.focus_keys(None),
             Key::Escape if self.focus.is_none() && self.find.is_some() => {
                 self.find_request(FindRequest::Close);
                 return self.reload();
@@ -680,6 +763,7 @@ impl Browser {
     }
 
     fn set_focus(&mut self, focus: Focus) {
+        self.focus_keys(None);
         self.focus = Some(focus);
         self.caret_moved = Instant::now();
     }
@@ -702,6 +786,8 @@ impl Browser {
         if href == BACK {
             return self.back();
         }
+        // The page's state is kept for coming back, so it's told its keys went up.
+        self.release_keys();
         let from = base.map_or_else(|| self.location(), String::from);
         let site = loader::resolve(&from, href);
         if let Err(e) = loader::may_reach(&from, &site) {
@@ -716,11 +802,15 @@ impl Browser {
         );
         self.history.push(previous);
         (self.focus, self.selection) = (None, None);
+        (self.key_focus, self.held) = (None, Vec::new());
         self.dragging = false;
         self.reload();
     }
 
     pub fn back(&mut self) {
+        if !self.history.is_empty() {
+            self.release_keys();
+        }
         if let Some((site, scroll, page_state)) = self.history.pop() {
             (self.error, self.frames_failed) = (None, false);
             self.host.forget_downloads();
@@ -731,6 +821,7 @@ impl Browser {
             }
             (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
             (self.focus, self.selection) = (None, None);
+            (self.key_focus, self.held) = (None, Vec::new());
             self.reload();
         }
     }
@@ -747,25 +838,34 @@ impl Browser {
     /// shown. Returns whether they all succeeded.
     fn run_all(&mut self, handlers: &[Value], args: &[Value], clear_error: bool) -> bool {
         let dark = self.dark_mode();
-        let result = handlers.iter().try_for_each(|handler| lisp::apply(handler, args).map(drop));
-        if let Some(settings) = self.settings.as_mut().filter(|_| self.host.dark_mode.get() != dark) {
+        let (result, changed) = watch::writes(|| handlers.iter().try_for_each(|handler| lisp::apply(handler, args).map(drop)));
+        // The page and the chrome show these, so changing them means running the page again.
+        let mut shown_changed = self.dark_mode() != dark;
+        if let Some(settings) = self.settings.as_mut().filter(|_| shown_changed) {
             settings.set_dark_mode(!dark);
         }
         if let Some(request) = self.host.take_find().filter(|_| result.is_ok()) {
             self.find_request(request);
+            shown_changed = true;
         }
         // Before following `go`, so code run in the REPL can navigate.
         if let Some(request) = self.host.take_repl().filter(|_| result.is_ok()) {
             self.repl_request(request);
+            shown_changed = true;
         }
         match result {
             Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
                 None => {
-                    if clear_error {
-                        self.error = None;
+                    if clear_error && self.error.take().is_some() {
+                        shown_changed = true;
                     }
-                    self.reload();
+                    if shown_changed || changed.affects(&self.page_reads) {
+                        self.reload();
+                    } else if !changed.cells.is_empty() {
+                        // Only state the page didn't read changed, which only `:draw` functions can show.
+                        self.draw();
+                    }
                 }
             },
             Err(e) => {
@@ -812,21 +912,81 @@ impl Browser {
             self.error = Some(error);
             self.reload();
         } else {
-            self.page = loader::error_page(&error);
+            self.show(loader::error_page(&error), Touched::default());
         }
     }
 
-    /// Runs the page, keeping its state, scroll offsets and focus.
+    /// Runs the page, keeping its state, scroll offsets and focus, then
+    /// its canvases' `:draw` functions.
     fn reload(&mut self) {
-        self.page = loader::open(&self.location(), &self.page_state, &self.host);
+        self.run_page();
+        self.draw();
+    }
+
+    /// Runs the page, noting the state it reads.
+    fn run_page(&mut self) {
+        let (page, reads) = watch::reads(|| loader::open(&self.location(), &self.page_state, &self.host));
+        self.show(page, reads);
         // `go` only means something in an event handler, not while the page runs.
         self.host.take_navigation();
+    }
+
+    fn show(&mut self, page: Rc<Element>, reads: Touched) {
+        (self.page, self.page_reads) = (page, reads);
+        // Drawings are by the address of their canvas, which a new page could reuse.
+        self.drawings.clear();
+    }
+
+    /// Calls the page's canvases' `:draw` functions, keeping what they return
+    /// for the canvases to draw. If one fails, it stops animation, as a
+    /// failing `:on-frame` handler does, and shows why.
+    fn draw(&mut self) {
+        let mut draws = Vec::new();
+        draw_functions(&self.page, &mut draws);
+        let drawn: Result<Drawings, String> = draws
+            .into_iter()
+            .map(|(canvas, draw)| {
+                let shapes = lisp::apply(&draw, &[])?;
+                Ok((canvas, dom::build_element("canvas", &[shapes])?.children))
+            })
+            .collect();
+        match drawn {
+            Ok(drawn) => self.drawings = drawn,
+            Err(e) => {
+                let e = format!("in a canvas's :draw: {e}");
+                self.frames_failed = true;
+                self.drawings.clear();
+                // The chrome shows the error, so it runs again, but not the drawing that failed.
+                match self.chrome {
+                    true => {
+                        self.error = Some(e);
+                        self.run_page();
+                    }
+                    false => self.show(loader::error_page(&e), Touched::default()),
+                }
+            }
+        }
     }
 }
 
 /// An element's `:on-frame` handler. `nil` is none, so a page can pause.
 fn frame_handler(el: &Element) -> Option<&Value> {
     el.attr("on-frame").filter(|handler| handler.truthy())
+}
+
+/// Every canvas in `el` and in pages framed inside it that has a `:draw`
+/// function, by address, with the function.
+fn draw_functions(el: &Rc<Element>, out: &mut Vec<(usize, Value)>) {
+    if &*el.tag == "canvas"
+        && let Some(draw) = el.attr("draw").filter(|draw| draw.truthy())
+    {
+        out.push((Rc::as_ptr(el) as usize, draw.clone()));
+    }
+    for child in &el.children {
+        if let Node::Element(child) = child {
+            draw_functions(child, out);
+        }
+    }
 }
 
 /// Whether any element in `el`, or in pages framed inside it, has an `:on-frame` handler.
@@ -1048,6 +1208,100 @@ mod tests {
         assert!(browser.next_frame().is_none(), "and stops the animation");
         browser.key(Key::Reload, false, (0.0, 0.0));
         assert!(browser.next_frame().is_some(), "until the page is reloaded");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_clicked_canvas_gets_keys_until_it_lets_go() {
+        let (mut browser, dir) = browse(
+            "keys",
+            r#"(define-state log (list))
+               (define (note s) (set! log (append log (list s))))
+               (page :padding 0
+                 (canvas :width 100 :height 50 :on-key-down (fn (k) (note (str "+" k))) :on-key-up (fn (k) (note (str "-" k))))
+                 (p "log: " (join log " ")))"#,
+            false,
+        );
+        let log = |browser: &Browser| {
+            let page = browser.page.to_string();
+            page[page.find("\"log: \" ").unwrap() + 8..].trim_end_matches(['"', ')']).trim_start_matches('"').to_string()
+        };
+        render(&mut browser);
+        assert!(!browser.listening());
+        browser.key_down("a", false);
+        assert_eq!(log(&browser), "", "nothing has the keyboard");
+
+        assert!(browser.click(50.0, 25.0), "clicking the canvas gives it the keyboard");
+        assert!(browser.listening());
+        browser.key_down("a", false);
+        browser.key_down("a", true);
+        browser.key_down("a", false);
+        browser.key_down(" ", false);
+        browser.key_up("a");
+        browser.key_up("b");
+        assert_eq!(log(&browser), "+a +  -a", "repeats, and keys it didn't see go down, are ignored");
+
+        browser.key(Key::Escape, false, (0.0, 0.0));
+        assert!(!browser.listening());
+        assert_eq!(log(&browser), "+a +  -a - ", "letting go of the keyboard lets go of held keys");
+
+        render(&mut browser);
+        browser.click(50.0, 25.0);
+        browser.key_down("x", false);
+        render(&mut browser);
+        browser.press(50.0, 500.0, 1);
+        assert!(!browser.listening(), "clicking elsewhere takes the keyboard back");
+        assert!(log(&browser).ends_with("+x -x"), "{}", log(&browser));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_canvases_redraw_when_handlers_change_state_the_page_didnt_read() {
+        let (mut browser, dir) = browse(
+            "draw",
+            r#"(define-state x 0) (define-state score 0)
+               (page :padding 0
+                 (canvas :width 100 :height 50 :draw (fn () (rect :x x :y 0 :w 10 :h 10))
+                         :on-frame (fn (dt) (set! x (+ x 1)) (if (= x 3) (set! score 1))))
+                 (p "score: " score))"#,
+            true,
+        );
+        let x = |browser: &Browser| {
+            let shapes: Vec<String> = browser.drawings.values().flatten().map(|node| match node {
+                Node::Element(el) => el.to_string(),
+                Node::Text(text) => text.to_string(),
+            }).collect();
+            shapes.join(" ")
+        };
+        render(&mut browser);
+        assert_eq!(x(&browser), r#"(rect :x "0" :y "0" :w "10" :h "10")"#.replace('"', ""));
+        let page = browser.page.clone();
+        browser.frame(FRAME);
+        assert!(Rc::ptr_eq(&page, &browser.page), "the page didn't run again");
+        assert!(x(&browser).contains(":x 1 "), "{}", x(&browser));
+        render(&mut browser);
+        browser.frame(FRAME);
+        assert!(Rc::ptr_eq(&page, &browser.page));
+        browser.frame(FRAME);
+        assert!(!Rc::ptr_eq(&page, &browser.page), "the score changed, which the page shows");
+        assert!(browser.page.to_string().contains(r#""score: " "1""#));
+        assert!(x(&browser).contains(":x 3 "), "and the canvas drew again too");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_draw_stops_animation_and_shows_why() {
+        let (mut browser, dir) = browse(
+            "draw-error",
+            r#"(define-state n 0)
+               (page (canvas :draw (fn () (if (> n 0) (car n))) :on-frame (fn (dt) (set! n (inc n)))))"#,
+            true,
+        );
+        render(&mut browser);
+        assert!(browser.next_frame().is_some());
+        browser.frame(FRAME);
+        assert!(browser.error.as_ref().is_some_and(|e| e.contains(":draw")), "{:?}", browser.error);
+        assert!(browser.next_frame().is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

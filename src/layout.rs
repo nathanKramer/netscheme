@@ -65,6 +65,25 @@ pub struct Focus {
     pub anchor: usize,
 }
 
+/// What canvases' `:draw` functions returned, by the address of the canvas
+/// element. A canvas draws these after its children.
+pub type Drawings = HashMap<usize, Vec<Node>>;
+
+/// A canvas that listens for keys, as laid out. Clicking it gives it the
+/// keyboard.
+pub struct KeyTarget {
+    /// Key targets are numbered in layout order.
+    pub id: usize,
+    /// The visible part of the canvas.
+    pub area: Clip,
+    pub element: Rc<Element>,
+}
+
+/// Whether `el` has `:on-key-down` or `:on-key-up` handlers. `nil` is none.
+pub fn listens_for_keys(el: &Element) -> bool {
+    ["on-key-down", "on-key-up"].iter().any(|name| el.attr(name).is_some_and(Value::truthy))
+}
+
 /// A text input, as laid out.
 pub struct InputBox {
     pub id: usize,
@@ -310,6 +329,9 @@ pub struct Layout<'a> {
     focus: Option<Focus>,
     caret_visible: bool,
     next_input_id: usize,
+    /// The key target that has the keyboard, if one does.
+    key_focus: Option<usize>,
+    next_key_target_id: usize,
     clip: Clip,
     /// Location of the framed page being laid out, if any; see `Link::base`.
     base: Option<Rc<str>>,
@@ -317,10 +339,12 @@ pub struct Layout<'a> {
     pub links: Vec<Link>,
     pub scrollers: Vec<Scroller>,
     pub inputs: Vec<InputBox>,
+    pub key_targets: Vec<KeyTarget>,
     /// What to find, and where it was found.
     search: Option<(Search<'a>, Vec<char>)>,
     /// Images that pages have loaded, by location.
     images: Option<&'a Images>,
+    drawings: Option<&'a Drawings>,
     pub matches: Vec<Match>,
     /// The selected range of text positions, start first, and every line of text.
     selection: Option<(usize, usize)>,
@@ -353,14 +377,18 @@ impl<'a> Layout<'a> {
             focus,
             caret_visible,
             next_input_id: 0,
+            key_focus: None,
+            next_key_target_id: 0,
             clip: Clip::NONE,
             base: None,
             items: Vec::new(),
             links: Vec::new(),
             scrollers: Vec::new(),
             inputs: Vec::new(),
+            key_targets: Vec::new(),
             search: None,
             images: None,
+            drawings: None,
             matches: Vec::new(),
             selection: None,
             lines: Vec::new(),
@@ -373,6 +401,15 @@ impl<'a> Layout<'a> {
 
     pub fn images(&mut self, images: &'a Images) {
         self.images = Some(images);
+    }
+
+    pub fn drawings(&mut self, drawings: &'a Drawings) {
+        self.drawings = Some(drawings);
+    }
+
+    /// Outlines key target `id`, which has the keyboard.
+    pub fn focus_keys(&mut self, id: usize) {
+        self.key_focus = Some(id);
     }
 
     /// Highlights the text from position `start` up to `end`.
@@ -557,6 +594,7 @@ impl<'a> Layout<'a> {
 
         // Measure the page first, to know how far it can scroll.
         let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id, self.matches.len());
+        let key_marks = (self.key_targets.len(), self.next_key_target_id);
         let text_marks = (self.lines.len(), self.next_char, self.paragraph);
         let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
         self.items.truncate(marks.0);
@@ -565,6 +603,8 @@ impl<'a> Layout<'a> {
         self.inputs.truncate(marks.3);
         self.next_input_id = marks.4;
         self.matches.truncate(marks.5);
+        self.key_targets.truncate(key_marks.0);
+        self.next_key_target_id = key_marks.1;
         self.lines.truncate(text_marks.0);
         (self.next_char, self.paragraph) = (text_marks.1, text_marks.2);
         self.next_frame_id = id + 1;
@@ -999,9 +1039,10 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// Draws a canvas's background and its shapes, clipped to `area`.
-    /// Other children of a canvas are left out.
-    fn canvas(&mut self, el: &Element, style: &Style, area: Clip) {
+    /// Draws a canvas's background and its shapes, clipped to `area`: its
+    /// children, then what its `:draw` function returned. Other children of
+    /// a canvas are left out.
+    fn canvas(&mut self, el: &Rc<Element>, style: &Style, area: Clip) {
         let outer = self.clip;
         self.clip = area.intersect(outer);
         self.items.push(DisplayItem::Clip(self.clip));
@@ -1009,13 +1050,31 @@ impl<'a> Layout<'a> {
             self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w: area.x1 - area.x0, h: area.y1 - area.y0, color });
         }
         let first_link = self.links.len();
-        for child in &el.children {
+        let drawn = self.drawings.and_then(|drawings| drawings.get(&(Rc::as_ptr(el) as usize)));
+        for child in el.children.iter().chain(drawn.into_iter().flatten()) {
             if let Node::Element(shape) = child {
                 self.shape(shape, style, (area.x0, area.y0));
             }
         }
         // Later shapes are drawn over earlier ones, so they're clicked first.
         self.links[first_link..].reverse();
+        if listens_for_keys(el) {
+            let id = self.next_key_target_id;
+            self.next_key_target_id += 1;
+            if self.key_focus == Some(id) {
+                let (x, y, w, h) = (area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
+                let (thick, color) = (2.0 * self.scale.round().max(1.0), self.palette.focus);
+                self.items.extend([
+                    DisplayItem::Rect { x, y, w, h: thick, color },
+                    DisplayItem::Rect { x, y: y + h - thick, w, h: thick, color },
+                    DisplayItem::Rect { x, y, w: thick, h, color },
+                    DisplayItem::Rect { x: x + w - thick, y, w: thick, h, color },
+                ]);
+            }
+            if !self.clip.is_empty() {
+                self.key_targets.push(KeyTarget { id, area: self.clip, element: el.clone() });
+            }
+        }
         self.items.push(DisplayItem::Clip(outer));
         self.clip = outer;
     }

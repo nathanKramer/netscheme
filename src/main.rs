@@ -16,7 +16,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N | --key-down KEY | --key-up KEY]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -49,6 +49,8 @@ fn main() -> ExitCode {
             "--type" => value().map(|v| steps.push(Step::Type(v))),
             "--find" => value().map(|v| steps.push(Step::Find(v))),
             "--repl" => value().map(|v| steps.push(Step::Repl(v))),
+            "--key-down" => value().map(|v| steps.push(Step::KeyDown(v))),
+            "--key-up" => value().map(|v| steps.push(Step::KeyUp(v))),
             "--frames" => value().and_then(|v| v.parse().map(|n| steps.push(Step::Frames(n))).map_err(|_| USAGE)),
             "--chrome" => {
                 chrome = true;
@@ -110,6 +112,10 @@ enum Step {
     Repl(String),
     /// This many frames of animation, each a 60th of a second after the last.
     Frames(u32),
+    /// A key going down or up, by its name, for the canvas that has the
+    /// keyboard: click it first.
+    KeyDown(String),
+    KeyUp(String),
 }
 
 /// Renders the browser's page to a PNG, after carrying out `steps` as the
@@ -139,6 +145,16 @@ fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps
                 browser.press(*x0, *y0, 1);
                 browser.drag_to(*x1, *y1);
                 browser.release(*x1, *y1);
+            }
+            Step::KeyDown(name) | Step::KeyUp(name) => {
+                browser.render(&mut buf, w, h, 1.0);
+                if !browser.listening() {
+                    return Err(format!("no canvas has the keyboard for {name:?}: click one that listens for keys first").into());
+                }
+                match step {
+                    Step::KeyDown(_) => browser.key_down(name, false),
+                    _ => browser.key_up(name),
+                }
             }
             Step::Frames(n) => {
                 for _ in 0..*n {

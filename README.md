@@ -54,6 +54,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
 | `lisp/reader.rs` | Text to `Value`s | HTML tokenizer and parser |
 | `lisp/eval.rs`, `builtins.rs` | Runs the page program | JS engine, plus building the DOM |
 | `lisp/library.rs`, `ui/prelude.sx` | The standard library, in Rust and in the language | JS's built-in objects |
+| `lisp/watch.rs` | Which state a page reads and handlers change | Rendering only what changed |
 | `lisp/budget.rs` | Limits on steps, nesting and sizes | Script timeouts |
 | `loader.rs` | Locations, downloading, URL resolution, the origin rule, and loading pages into frames | Networking and navigation |
 | `dom.rs` | `Element` / `Node` tree | DOM |
@@ -197,10 +198,47 @@ gap, such as a slow frame, `dt` is at most 100. `:on-frame nil` is no
 handler, so `(if running (fn (dt) ...))` pauses. Handlers run in the order
 their elements appear, before the page runs again.
 
-The window doesn't animate while it's hidden. A handler that fails stops
-the animation, so the error stays on screen, until the page is loaded
+Running the whole page again after every frame would mostly rebuild what
+hasn't changed. So as the page runs, the evaluator notes which
+`define-state` variables it reads, and while a handler runs, which ones it
+changes (`lisp/watch.rs`). If a handler changed none that the page read,
+running the page again would make the same page, so the browser only calls
+the canvases' `:draw` functions again; if it changed nothing at all, not
+even those. Anything that only `:draw` reads, like the snake's position in
+`pages/snake.sx`, can then change every frame without the page running,
+while its score, which the page shows, runs the page when it changes. This
+applies after every handler, not just `:on-frame`, and what's shown is the
+same either way. Changing a page's global variable that isn't state, dark
+mode, the find bar or the REPL always runs the page again.
+
+The window doesn't animate while it's hidden. A handler or `:draw`
+function that fails stops the animation, so the error stays on screen, until the page is loaded
 again by following a link, going back or reloading. Each frame has the
 same step budget as any other event.
+
+### Keys
+
+```lisp
+(define-state held (list))
+
+(page
+  (canvas :width 300 :height 100
+          :on-key-down (fn (key) (set! held (append held (list key))))
+          :on-key-up (fn (key) (set! held (without key held)))
+    (text :x 10 :y 50 (join held " "))))
+```
+
+A canvas with `:on-key-down` or `:on-key-up` takes the keyboard when it's
+clicked, and shows a focus outline. Until Escape, or a click somewhere else,
+it gets every key except those pressed with Ctrl, Alt or Super, and
+function keys, so arrow keys and Space stop scrolling the page. The handlers
+are called with the key's name, as the web's `KeyboardEvent.key` gives it
+but as if Shift weren't held: `"a"`, `"1"`, `" "`, `"ArrowLeft"`, `"Enter"`,
+`"Shift"`. Holding a key down calls `:on-key-down` once, not again for each
+repeat, and every key that went down goes up again: when the canvas loses
+the keyboard, when the window loses focus, or when following a link or going
+back, its held keys get `:on-key-up` first. A game can keep the keys that are
+down in state, and read them on each frame.
 
 ### Text input
 
@@ -289,6 +327,10 @@ stroked line bends are rounded. `:on-click` works on each shape, over the
 box around it, and on the canvas; a shape drawn later is clicked first.
 Other children of a canvas are left out.
 
+`:draw` takes a function of no arguments, which returns more shapes: the
+browser calls it after the page runs, and the canvas draws what it returns
+after its children. See Animation for why that's useful.
+
 Layout turns every shape into polygons, in `canvas.rs`: a circle has
 enough sides to look round at its size, a stroke is a rectangle for each
 segment and a circle at each joint, and an outline is a ring with a hole.
@@ -352,7 +394,9 @@ The REPL is part of `ui/chrome.sx` too. It hands code to the browser with
 `--click X,Y`, `--drag X,Y,X,Y` and `--type TEXT` act on the page before
 the screenshot, in order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
 `--frames N` runs N frames of animation, each a 60th of a second after the
-last, so the same steps always draw the same picture.
+last, so the same steps always draw the same picture. `--key-down KEY` and
+`--key-up KEY` send keys, by name, to the canvas that has the keyboard, so
+click it first.
 `--chrome` includes the toolbar, as the window shows it, and `--dark` turns on dark mode:
 
 ```sh
@@ -362,6 +406,7 @@ cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type 
 cargo run -- pages/library.sx --chrome --screenshot out.png --find $'dict\n\n'   # Ctrl+F, type, Enter twice
 cargo run -- pages/counter.sx --chrome --screenshot out.png --repl $'(set! count 41)\n'   # Ctrl+Shift+J, type, Enter
 cargo run -- pages/canvas.sx --screenshot out.png --frames 120   # two seconds of animation
+cargo run -- pages/snake.sx --screenshot out.png --click 200,450 --key-down ArrowDown --frames 30
 ```
 
 ## Runaway code
