@@ -656,6 +656,16 @@ impl Browser {
     /// Handles a key press. A focused input gets it first; otherwise it
     /// scrolls whatever is at `pointer`.
     pub fn key(&mut self, key: Key, shift: bool, pointer: (f32, f32)) {
+        // Out of an input, some letters are shortcuts, as in vim.
+        let key = match key {
+            Key::Text(text) if self.focus.is_none() => match text.as_str() {
+                "/" => Key::Find,
+                "j" => Key::Down,
+                "k" => Key::Up,
+                _ => Key::Text(text),
+            },
+            key => key,
+        };
         match key {
             Key::Back => return self.back(),
             Key::FocusAddressBar => return self.focus_address_bar(),
@@ -1316,6 +1326,34 @@ mod tests {
             browser.key(key, false, (0.0, 0.0));
         }
         render(browser);
+    }
+
+    #[test]
+    fn vim_keys_scroll_and_find_outside_inputs() {
+        let lines: Vec<String> = (0..200).map(|i| format!("(p \"line {i}\")")).collect();
+        let (mut browser, dir) = browse("vim-keys", &format!("(page {})", lines.join(" ")), true);
+        let text = |s: &str| Key::Text(s.into());
+        let page_scroll = |browser: &Browser| browser.scrollers[0].scroll;
+        // Over the site, which is what keys scroll.
+        let press = |browser: &mut Browser, keys: Vec<Key>| {
+            for key in keys {
+                render(browser);
+                browser.key(key, false, (450.0, 300.0));
+            }
+            render(browser);
+        };
+
+        press(&mut browser, vec![text("j"), text("j")]);
+        assert_eq!(page_scroll(&browser), 2.0 * LINE_HEIGHT, "j scrolls down");
+        press(&mut browser, vec![text("k")]);
+        assert_eq!(page_scroll(&browser), LINE_HEIGHT, "and k up");
+
+        press(&mut browser, vec![text("/")]);
+        assert_eq!(browser.inputs.len(), 2, "/ opens the find bar");
+        press(&mut browser, vec![text("j"), text("/"), text("k")]);
+        assert_eq!(browser.inputs[1].value, "j/k", "which types them like any input");
+        assert_eq!(page_scroll(&browser), LINE_HEIGHT);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

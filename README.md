@@ -110,7 +110,7 @@ source ──reader──▶ s-expressions ──eval──▶ element tree ─�
   current page. An href starting with `/` is relative to the working directory.
   Go back with Alt+←, the mouse's back button, or the toolbar.
 
-Scroll with a trackpad, mouse wheel, arrow keys, Page Up/Down, Space and
+Scroll with a trackpad, mouse wheel, arrow keys or J/K, Page Up/Down, Space and
 Shift+Space, or Home/End. This scrolls the frame under the cursor, if it has a
 fixed height, and otherwise the page. Going back restores where you'd scrolled to.
 Anything taller than the space it's shown in gets a scrollbar on its right
@@ -358,7 +358,7 @@ past the edge of the window doesn't scroll.
 
 ### Finding text
 
-Ctrl+F opens a find bar under the toolbar. Matches in the site are
+Ctrl+F, or / outside an input, opens a find bar under the toolbar. Matches in the site are
 highlighted as you type, ignoring case, with the current one in orange and
 scrolled into view. Enter or F3 or Ctrl+G goes to the next, and with Shift
 the previous; Escape closes the bar. Matches are found line by line, so a
