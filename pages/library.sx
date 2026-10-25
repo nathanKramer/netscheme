@@ -51,7 +51,7 @@
 
   (section "Strings")
   (entry "(str a b ...)" "The arguments as text, joined together.")
-  (entry "(repr x)" "How x would be written as code: strings get their quotes.")
+  (entry "(repr x)" "Stands for Representation. How x would be written as code: strings get their quotes.")
   (entry "(join xs sep), (split s sep)" "Items joined into a string with sep between"
          " them, and a string split at each sep, or into characters if sep is \"\".")
   (entry "(upper s), (lower s), (trim s)" "Changes case, and removes spaces from the ends.")
