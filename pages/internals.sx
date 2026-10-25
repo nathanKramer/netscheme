@@ -75,8 +75,19 @@
      (code "browser:") " page. Files and browser pages can reach anything.")
 
   (p "Links on a web page resolve against the address it was actually served"
-     " from, after any redirects. Downloading blocks the window for now, with 5"
-     " seconds to connect and 10 overall.")
+     " from, after any redirects.")
+  (subsection "Loading in the background")
+  (p "In the window, pages and images from the web download on threads of their"
+     " own, so a slow server doesn't freeze it. Following a link to a web page"
+     " starts the download and leaves the current page up, still usable, with"
+     " Loading… in the toolbar. When the download arrives, the thread wakes the"
+     " window, and the browser goes there.")
+  (p "A page can only run once its source is here, but what it asks for while"
+     " it runs may not be: a frame shows Loading… in its place, an image shows"
+     " nothing, and " (code "source") " stops the page with Loading… too. Each"
+     " starts a download, and when one arrives the page runs again, which is"
+     " what it does after every click anyway. Screenshots wait for each download"
+     " instead, so they show the finished page.")
 
   (section "Drawing shapes")
   (p "Layout turns every canvas shape into polygons, in " (code "canvas.rs") ". A"

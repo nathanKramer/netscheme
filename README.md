@@ -91,8 +91,7 @@ is started from a launcher.
 
 ## Roadmap
 
-1. **Loading in the background**, so a slow server doesn't freeze the window,
-   with a loading indicator in the toolbar. Forward history too.
+1. Forward history.
 2. More of the language: macros, tail calls.
 
 ## License

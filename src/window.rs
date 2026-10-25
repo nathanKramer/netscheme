@@ -3,6 +3,7 @@
 use std::{
     num::NonZeroU32,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -10,7 +11,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key as WinitKey, ModifiersState, NamedKey},
     platform::modifier_supplement::KeyEventExtModifierSupplement,
     window::{CursorIcon, Icon, Theme, Window, WindowAttributes, WindowId},
@@ -19,6 +20,7 @@ use winit::{
 use crate::{
     browser::{Browser, Hover, Key, LINE_HEIGHT},
     image::Image,
+    loader::Wake,
 };
 
 /// What desktops know the browser as. On Linux, taskbars and launchers find
@@ -30,10 +32,13 @@ const APP_ID: &str = "netscheme";
 const MULTI_CLICK_TIME: Duration = Duration::from_millis(400);
 const MULTI_CLICK_DISTANCE: f32 = 4.0;
 
-pub fn run(browser: Browser) {
-    let event_loop = EventLoop::new().expect("create event loop");
+/// Opens a window on the browser that `browser` makes, which should load in
+/// the background, waking the window with what it's given.
+pub fn run(browser: impl FnOnce(Wake) -> Browser) {
+    let event_loop = EventLoop::<Loaded>::with_user_event().build().expect("create event loop");
+    let proxy: EventLoopProxy<Loaded> = event_loop.create_proxy();
     let mut app = App {
-        browser,
+        browser: browser(Arc::new(move || _ = proxy.send_event(Loaded))),
         pointer: (0.0, 0.0),
         modifiers: ModifiersState::empty(),
         last_press: None,
@@ -44,6 +49,9 @@ pub fn run(browser: Browser) {
     };
     event_loop.run_app(&mut app).expect("run event loop");
 }
+
+/// Sent from another thread when a download has finished.
+struct Loaded;
 
 struct App {
     browser: Browser,
@@ -246,7 +254,7 @@ fn logo_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, SIZE, SIZE).ok()
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<Loaded> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -264,6 +272,12 @@ impl ApplicationHandler for App {
         }
         self.state = Some(WindowState { window, _context: context, surface });
         self.redraw();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, Loaded: Loaded) {
+        if self.browser.loaded() {
+            self.redraw();
+        }
     }
 
     /// Wakes up when the caret should blink, or the page's animation is due a frame.

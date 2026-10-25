@@ -14,6 +14,9 @@
 ; Set while the REPL is open. What's typed into it runs in the site, and
 ; `repl-log` lists what has run so far.
 (define repl-open (param "repl"))
+; Set while something is downloading: the site the browser is going to, which
+; replaces this one when it arrives, or frames and images in this one.
+(define loading (param "loading"))
 
 ; What's in the address bar. Going somewhere starts this page with fresh
 ; state, so it resets to the new location.
@@ -89,6 +92,7 @@
              :on-submit (fn (text) (go text)))
       " "
       (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")
+      (if loading (list "  " (span toolbar-text disabled "Loading…")))
       ; The spacer pushes the mode switch to the right-hand end.
       (spacer)
       ; A moon to switch to dark mode, and a sun to switch back. Each is

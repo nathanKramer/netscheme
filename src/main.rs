@@ -86,13 +86,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        // Screenshots wait for downloads; the window doesn't.
         None => {
-            let mut browser = Browser::new(location, true);
-            // Only the window keeps settings, so screenshots don't depend on them.
-            if let Some(settings) = settings::Settings::standard() {
-                browser.keep_settings(settings);
-            }
-            window::run(browser);
+            window::run(|wake| {
+                let mut browser = Browser::loading_in_background(location, true, wake);
+                // Only the window keeps settings, so screenshots don't depend on them.
+                if let Some(settings) = settings::Settings::standard() {
+                    browser.keep_settings(settings);
+                }
+                browser
+            });
             ExitCode::SUCCESS
         }
     }

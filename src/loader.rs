@@ -9,10 +9,15 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
     rc::Rc,
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
     time::Duration,
 };
 
@@ -34,8 +39,15 @@ const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 /// The biggest image file the browser will read or download.
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
+/// What a download that's still running fails with, so the page shows
+/// it's loading rather than an error.
+const STILL_LOADING: &str = " is still loading";
+
 /// Decoded images, by location, or why one couldn't be loaded.
 pub type Images = HashMap<String, Result<Rc<Image>, String>>;
+
+/// Called from another thread when a download finishes, to wake the browser.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// What a running page knows about where it was loaded from.
 pub struct PageContext {
@@ -96,6 +108,23 @@ pub struct Host {
     repl: RefCell<Option<ReplRequest>>,
     /// What has been run in the REPL, oldest first.
     pub repl_log: RefCell<Vec<ReplEntry>>,
+    /// Downloads running on other threads, while loading in the background.
+    loads: RefCell<Option<Loads>>,
+}
+
+/// Downloads running on other threads, which send what they got back here.
+struct Loads {
+    wake: Wake,
+    sender: Sender<(String, Loaded)>,
+    receiver: Receiver<(String, Loaded)>,
+    /// Where each running download is from.
+    running: HashSet<String>,
+}
+
+/// What a finished download got.
+enum Loaded {
+    Page(Result<Source, String>),
+    Image(Result<Image, String>),
 }
 
 /// What the REPL can ask of the browser.
@@ -126,14 +155,90 @@ impl Host {
         Host { site_key: site_key.into(), ..Host::default() }
     }
 
-    /// Downloads a web page, or returns the copy from earlier.
+    /// From now on, downloads web pages and images on other threads rather
+    /// than making the page wait. Until one arrives, a page that needs it
+    /// shows that it's loading. `wake` is called as each one finishes; the
+    /// browser should then call `take_loaded` and run the page again.
+    pub fn load_in_background(&self, wake: Wake) {
+        let (sender, receiver) = mpsc::channel();
+        *self.loads.borrow_mut() = Some(Loads { wake, sender, receiver, running: HashSet::new() });
+    }
+
+    pub fn in_background(&self) -> bool {
+        self.loads.borrow().is_some()
+    }
+
+    /// Whether any downloads are running in the background.
+    pub fn loading(&self) -> bool {
+        self.loads.borrow().as_ref().is_some_and(|loads| !loads.running.is_empty())
+    }
+
+    /// Whether the page or image at `location` is downloading in the background.
+    pub fn is_loading(&self, location: &str) -> bool {
+        self.loads.borrow().as_ref().is_some_and(|loads| loads.running.contains(location))
+    }
+
+    /// Starts downloading `location` in the background, unless it already
+    /// is. Returns whether the browser loads in the background at all.
+    fn start(&self, location: &str, image: bool) -> bool {
+        let mut loads = self.loads.borrow_mut();
+        let Some(loads) = loads.as_mut() else { return false };
+        if loads.running.insert(location.into()) {
+            let (location, sender, wake) = (location.to_string(), loads.sender.clone(), loads.wake.clone());
+            thread::spawn(move || {
+                let loaded = if image { Loaded::Image(read_image(&location)) } else { Loaded::Page(download(&location)) };
+                // Nobody is listening once the browser has closed.
+                if sender.send((location, loaded)).is_ok() {
+                    wake();
+                }
+            });
+        }
+        true
+    }
+
+    /// Keeps what downloads in the background have got since last asked.
+    /// Returns whether any had finished.
+    pub fn take_loaded(&self) -> bool {
+        let finished: Vec<(String, Loaded)> = match &mut *self.loads.borrow_mut() {
+            Some(loads) => loads.receiver.try_iter().inspect(|(location, _)| _ = loads.running.remove(location)).collect(),
+            None => return false,
+        };
+        let any = !finished.is_empty();
+        for (location, loaded) in finished {
+            match loaded {
+                Loaded::Page(download) => _ = self.downloads.borrow_mut().insert(location, download),
+                Loaded::Image(image) => self.keep_image(&location, image),
+            }
+        }
+        any
+    }
+
+    /// Downloads a web page, or returns the copy from earlier. Loading in
+    /// the background, a page that isn't here yet is still loading.
     fn download(&self, url: &str) -> Result<Source, String> {
         if let Some(download) = self.downloads.borrow().get(url) {
             return download.clone();
         }
+        if self.start(url, false) {
+            return Err(format!("{url}{STILL_LOADING}"));
+        }
         let download = download(url);
         self.downloads.borrow_mut().insert(url.into(), download.clone());
         download
+    }
+
+    /// Starts downloading the web page at `url` again, in the background.
+    /// The copy from earlier, if there is one, is kept until it arrives.
+    pub fn download_again(&self, url: &str) {
+        self.start(url, false);
+    }
+
+    /// Stops waiting for the download from `url`, which nothing needs any
+    /// more. What it gets is kept if it does finish, like any other.
+    pub fn abandon(&self, url: &str) {
+        if let Some(loads) = self.loads.borrow_mut().as_mut() {
+            loads.running.remove(url);
+        }
     }
 
     /// Forgets downloaded pages, so they're downloaded afresh next time.
@@ -141,19 +246,32 @@ impl Host {
         self.downloads.borrow_mut().clear();
     }
 
+    /// Forgets downloaded pages, except the one at `url`.
+    pub fn forget_downloads_but(&self, url: &str) {
+        self.downloads.borrow_mut().retain(|location, _| location == url);
+    }
+
     /// Reads and decodes the image at `location`, unless it already has.
     /// Errors are kept too, so a missing image isn't looked for again.
+    /// Loading in the background, an image from the web shows nothing until
+    /// it arrives.
     pub fn load_image(&self, location: &str) -> Result<Rc<Image>, String> {
         if let Some(image) = self.images.borrow().get(location) {
             return image.clone();
         }
-        let image = read_bytes(location, MAX_IMAGE_BYTES).and_then(|bytes| Image::decode_png(&bytes)).map(Rc::new);
-        let image = image.map_err(|e| format!("{location}: {e}"));
+        if is_remote(location) && self.start(location, true) {
+            return Err(format!("{location}{STILL_LOADING}"));
+        }
+        self.keep_image(location, read_image(location));
+        self.images.borrow()[location].clone()
+    }
+
+    fn keep_image(&self, location: &str, image: Result<Image, String>) {
+        let image = image.map(Rc::new).map_err(|e| format!("{location}: {e}"));
         if let Err(e) = &image {
             eprintln!("image {e}");
         }
-        self.images.borrow_mut().insert(location.into(), image.clone());
-        image
+        self.images.borrow_mut().insert(location.into(), image);
     }
 
     pub fn request_navigation(&self, href: &str, from: &str) {
@@ -228,6 +346,7 @@ fn open_nested(location: &str, frame: Frame) -> (Rc<Element>, String) {
     let Frame { depth, scale, state_key, store, host } = frame;
     let source = match read_source(location, &host) {
         Ok(source) => source,
+        Err(e) if e.ends_with(STILL_LOADING) => return (loading_page(), location.into()),
         Err(e) => return (error_page(&e), location.into()),
     };
     let location = source.location.as_str();
@@ -253,7 +372,6 @@ fn open_nested(location: &str, frame: Frame) -> (Rc<Element>, String) {
     (evaluate(&source.text, &ctx), source.location)
 }
 
-/// The source code of the page at `location`.
 /// A page's source code, and where it came from.
 #[derive(Clone, Debug)]
 pub struct Source {
@@ -304,6 +422,11 @@ fn fetch(url: &str, limit: u64) -> Result<(Vec<u8>, String), String> {
     let location = response.get_uri().to_string();
     let bytes = response.body_mut().with_config().limit(limit).read_to_vec().map_err(failed)?;
     Ok((bytes, location))
+}
+
+/// Reads and decodes the image at `location`.
+fn read_image(location: &str) -> Result<Image, String> {
+    read_bytes(location, MAX_IMAGE_BYTES).and_then(|bytes| Image::decode_png(&bytes))
 }
 
 /// The contents of a file or web resource, up to `limit` bytes.
@@ -442,8 +565,16 @@ fn evaluate(source: &str, ctx: &Rc<PageContext>) -> Rc<Element> {
     match lisp::run(source, ctx) {
         Ok(Value::Element(el)) if &*el.tag == "page" => el,
         Ok(other) => error_page(&format!("a page must evaluate to (page ...), got {other}")),
+        // Reading the source of a page that's still downloading.
+        Err(e) if e.ends_with(STILL_LOADING) => loading_page(),
         Err(e) => error_page(&e),
     }
+}
+
+/// Stands in for a page that's downloading in the background.
+pub fn loading_page() -> Rc<Element> {
+    let text = build_element("p", &[Value::Keyword("color".into()), Value::Str("#8a8494".into()), Value::Str("Loading…".into())]);
+    Rc::new(build_element("page", &[Value::Element(Rc::new(text.unwrap()))]).unwrap())
 }
 
 pub fn error_page(message: &str) -> Rc<Element> {

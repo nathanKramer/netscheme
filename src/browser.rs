@@ -12,7 +12,7 @@ use crate::{
     dom::{self, Element, Node},
     layout::{Action, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
     lisp::{self, Value, watch::{self, Touched}},
-    loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
+    loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore, Wake},
     paint::{Renderer, Scroll, View},
     settings::Settings,
 };
@@ -80,6 +80,17 @@ pub enum Hover {
     Text,
 }
 
+/// A way of going to another site.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Navigation {
+    /// Following a link, with fresh state.
+    Follow,
+    /// Back to the last site in history, with its state as it was left.
+    Back,
+    /// The same site, downloaded again and with its state started over.
+    Reload,
+}
+
 /// Something that scrolls: the page, or a frame, by its `Scroller::id`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Scrolling {
@@ -107,6 +118,9 @@ pub struct Browser {
     settings: Option<Settings>,
     /// Sites to return to with "back", with their scroll offsets and state, most recent last.
     history: Vec<(String, Scroll, Rc<StateStore>)>,
+    /// Where the browser is going, while the site there downloads in the
+    /// background; the current site stays until it arrives.
+    navigating: Option<(Navigation, String)>,
     scroll: Scroll,
     focus: Option<Focus>,
     /// The canvas that has the keyboard, by `KeyTarget::id`, and the keys
@@ -160,7 +174,24 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(site: String, chrome: bool) -> Browser {
-        let mut browser = Browser {
+        let mut browser = Browser::unloaded(site, chrome);
+        browser.reload();
+        browser
+    }
+
+    /// A browser that downloads web pages and images on other threads, so
+    /// that a slow server doesn't keep it waiting. `wake` is called when a
+    /// download finishes, after which `loaded` should be called.
+    pub fn loading_in_background(site: String, chrome: bool, wake: Wake) -> Browser {
+        let mut browser = Browser::unloaded(site, chrome);
+        browser.host.load_in_background(wake);
+        browser.reload();
+        browser
+    }
+
+    /// A browser that hasn't run its page yet.
+    fn unloaded(site: String, chrome: bool) -> Browser {
+        Browser {
             site,
             chrome,
             page: loader::error_page("not loaded yet"),
@@ -170,6 +201,7 @@ impl Browser {
             host: Rc::new(Host::new(if chrome { "/0" } else { "" })),
             settings: None,
             history: Vec::new(),
+            navigating: None,
             scroll: Scroll::default(),
             focus: None,
             key_focus: None,
@@ -197,9 +229,33 @@ impl Browser {
             matches: Vec::new(),
             lines: Vec::new(),
             viewport: (0.0, 1.0),
-        };
-        browser.reload();
-        browser
+        }
+    }
+
+    /// Catches up with downloads that finished in the background: goes to
+    /// the site the browser was going to once it's here, or else runs the
+    /// page again with what arrived. Returns whether anything did.
+    pub fn loaded(&mut self) -> bool {
+        if !self.host.take_loaded() {
+            return false;
+        }
+        match self.navigating.take() {
+            Some((navigation, site)) if !self.host.is_loading(&site) => {
+                self.host.forget_downloads_but(&site);
+                self.arrive(navigation, site);
+            }
+            navigating => {
+                self.navigating = navigating;
+                self.reload();
+            }
+        }
+        true
+    }
+
+    /// Whether anything is downloading in the background, including the
+    /// site the browser is going to.
+    fn loading(&self) -> bool {
+        self.navigating.is_some() || self.host.loading()
     }
 
     pub fn set_scroll(&mut self, page: f32) {
@@ -669,15 +725,7 @@ impl Browser {
         match key {
             Key::Back => return self.back(),
             Key::FocusAddressBar => return self.focus_address_bar(),
-            Key::Reload => {
-                self.frames_failed = false;
-                self.host.forget_downloads();
-                self.host.images.borrow_mut().clear();
-                self.page_state = Rc::default();
-                (self.focus, self.error, self.selection) = (None, None, None);
-                (self.key_focus, self.held) = (None, Vec::new());
-                return self.reload();
-            }
+            Key::Reload => return self.navigate(Navigation::Reload, self.site.clone()),
             // The find bar is part of the chrome, so there's none without it.
             Key::Find if self.chrome => {
                 self.find.get_or_insert_default();
@@ -694,6 +742,11 @@ impl Browser {
                 return self.reload();
             }
             Key::Escape if self.key_focus.is_some() => return self.focus_keys(None),
+            // Stops going to another site, and stays on this one.
+            Key::Escape if self.focus.is_none() && self.navigating.is_some() => {
+                self.stop();
+                return self.reload();
+            }
             Key::Escape if self.focus.is_none() && self.find.is_some() => {
                 self.find_request(FindRequest::Close);
                 return self.reload();
@@ -788,7 +841,8 @@ impl Browser {
             format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1)
         });
         let repl = if self.repl { "&repl=1" } else { "" };
-        format!("browser:chrome?location={}{back}{error}{find}{repl}", loader::encode(&self.site))
+        let loading = if self.loading() { "&loading=1" } else { "" };
+        format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -796,44 +850,72 @@ impl Browser {
         if href == BACK {
             return self.back();
         }
-        // The page's state is kept for coming back, so it's told its keys went up.
-        self.release_keys();
         let from = base.map_or_else(|| self.location(), String::from);
         let site = loader::resolve(&from, href);
         if let Err(e) = loader::may_reach(&from, &site) {
             return self.fail(e);
         }
-        (self.error, self.frames_failed) = (None, false);
+        self.navigate(Navigation::Follow, site);
+    }
+
+    pub fn back(&mut self) {
+        if let Some((site, ..)) = self.history.last() {
+            self.navigate(Navigation::Back, site.clone());
+        }
+    }
+
+    /// Goes to `site` by way of `navigation`. Loading in the background, a
+    /// site on the web is downloaded first, while the current one stays,
+    /// and `loaded` arrives there.
+    fn navigate(&mut self, navigation: Navigation, site: String) {
+        self.stop();
+        if self.host.in_background() && loader::is_remote(&site) {
+            self.host.download_again(&site);
+            self.navigating = Some((navigation, site));
+            // So the toolbar shows that it's loading.
+            return self.reload();
+        }
         self.host.forget_downloads();
-        let previous = (
-            std::mem::replace(&mut self.site, site),
-            std::mem::take(&mut self.scroll),
-            std::mem::take(&mut self.page_state),
-        );
-        self.history.push(previous);
+        self.arrive(navigation, site);
+    }
+
+    /// Stops going to the site the browser was going to, if any.
+    fn stop(&mut self) {
+        if let Some((_, site)) = self.navigating.take() {
+            self.host.abandon(&site);
+        }
+    }
+
+    /// Shows `site`, by way of `navigation`, now that it's here.
+    fn arrive(&mut self, navigation: Navigation, site: String) {
+        self.navigating = None;
+        // The page's state is kept for coming back, so it's told its keys went up.
+        self.release_keys();
+        (self.error, self.frames_failed) = (None, false);
+        match navigation {
+            Navigation::Follow => self.history.push((
+                std::mem::replace(&mut self.site, site),
+                std::mem::take(&mut self.scroll),
+                std::mem::take(&mut self.page_state),
+            )),
+            Navigation::Back => {
+                let Some((site, scroll, page_state)) = self.history.pop() else { return };
+                // The site's state comes back, but the toolbar's describes the
+                // current site, so the toolbar (the top-level page) starts afresh.
+                if self.chrome {
+                    page_state.forget("");
+                }
+                (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
+            }
+            Navigation::Reload => {
+                self.host.images.borrow_mut().clear();
+                self.page_state = Rc::default();
+            }
+        }
         (self.focus, self.selection) = (None, None);
         (self.key_focus, self.held) = (None, Vec::new());
         self.dragging = false;
         self.reload();
-    }
-
-    pub fn back(&mut self) {
-        if !self.history.is_empty() {
-            self.release_keys();
-        }
-        if let Some((site, scroll, page_state)) = self.history.pop() {
-            (self.error, self.frames_failed) = (None, false);
-            self.host.forget_downloads();
-            // The site's state comes back, but the toolbar's describes the
-            // current site, so the toolbar (the top-level page) starts afresh.
-            if self.chrome {
-                page_state.forget("");
-            }
-            (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
-            (self.focus, self.selection) = (None, None);
-            (self.key_focus, self.held) = (None, Vec::new());
-            self.reload();
-        }
     }
 
     /// Calls a handler, then goes where it asked to with `go`, or else runs
@@ -935,6 +1017,15 @@ impl Browser {
 
     /// Runs the page, noting the state it reads.
     fn run_page(&mut self) {
+        let loading = self.loading();
+        self.run_page_once();
+        // The page may have started downloads, which the toolbar shows.
+        if self.chrome && self.loading() != loading {
+            self.run_page_once();
+        }
+    }
+
+    fn run_page_once(&mut self) {
         let (page, reads) = watch::reads(|| loader::open(&self.location(), &self.page_state, &self.host));
         self.show(page, reads);
         // `go` only means something in an event handler, not while the page runs.
@@ -1793,6 +1884,65 @@ mod tests {
         press(&mut browser, [Key::Reload]);
         assert_eq!(server.requests(), 2);
         assert_eq!(browser.inputs[0].value, "", "reloading starts the page's state over");
+    }
+
+    /// A browser loading `url` in the background, with the chrome, and what
+    /// its downloads send to as they finish.
+    fn in_background(url: String) -> (Browser, std::sync::mpsc::Receiver<()>) {
+        let (sender, woken) = std::sync::mpsc::channel();
+        (Browser::loading_in_background(url, true, std::sync::Arc::new(move || _ = sender.send(()))), woken)
+    }
+
+    /// Waits for downloads, catching up with each, until none are left.
+    fn settle(browser: &mut Browser, woken: &std::sync::mpsc::Receiver<()>) {
+        while browser.loading() {
+            woken.recv_timeout(Duration::from_secs(5)).expect("a download to finish");
+            browser.loaded();
+        }
+        render(browser);
+    }
+
+    #[test]
+    fn loading_in_the_background_keeps_the_page_until_the_next_arrives() {
+        let server = crate::test_server::TestServer::start(&[
+            ("index.sx", r#"(page :title "Remote" (p (a :href "other.sx" "other")) (frame :src "sub/framed.sx") (img :src "logo.png"))"#),
+            ("other.sx", r#"(page :title "Other" (p "forms: " (length (source "index.sx"))))"#),
+            ("sub/framed.sx", r#"(page (p "framed"))"#),
+        ]);
+        server.add("logo.png", &std::fs::read("assets/images/logo.png").unwrap());
+        let loading = |browser: &Browser| browser.page.to_string().contains("Loading…");
+        let (mut browser, woken) = in_background(server.url("index.sx"));
+        assert!(loading(&browser), "the site isn't here yet: {}", browser.page);
+        settle(&mut browser, &woken);
+        assert_eq!(browser.title(), "Remote — Netscheme");
+        assert!(browser.page.to_string().contains(r#"(p "framed")"#), "then its frame came: {}", browser.page);
+        assert!(browser.host.images.borrow()[&server.url("logo.png")].is_ok(), "and its image");
+        assert!(!loading(&browser));
+
+        click_link(&mut browser, to("other.sx"));
+        assert_eq!(browser.site, server.url("index.sx"), "the page stays while the next downloads");
+        assert!(loading(&browser), "and the toolbar says it's loading");
+        settle(&mut browser, &woken);
+        assert_eq!(browser.site, server.url("other.sx"));
+        assert!(browser.page.to_string().contains(r#""forms: " "1""#), "source waits for its download too: {}", browser.page);
+
+        press(&mut browser, [Key::Back]);
+        assert_eq!(browser.site, server.url("other.sx"));
+        settle(&mut browser, &woken);
+        assert_eq!(browser.site, server.url("index.sx"), "going back downloads the page first too");
+
+        click_link(&mut browser, to("other.sx"));
+        press(&mut browser, [Key::Escape]);
+        assert!(!loading(&browser), "Escape stops going there");
+        settle(&mut browser, &woken);
+        assert_eq!(browser.site, server.url("index.sx"), "even once it arrives");
+
+        let requests = server.requests();
+        press(&mut browser, [Key::Reload]);
+        assert_eq!(browser.title(), "Remote — Netscheme", "the page stays while it downloads again");
+        settle(&mut browser, &woken);
+        assert!(server.requests() > requests, "reloading downloads it again");
+        assert!(!loading(&browser));
     }
 
     #[test]

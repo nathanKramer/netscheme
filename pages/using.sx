@@ -21,6 +21,8 @@ cargo run -- http://localhost:8000/hello.sx")
          " state, so the address bar shows where you are.")
   (entry "F5, Ctrl+R" "Reloads: downloads the page again, reloads its images, and"
          " starts its state over.")
+  (entry "Escape" "While a web page downloads, stops going there. The page you're"
+         " on stays up until the next one arrives, with Loading… in the toolbar.")
   (entry "View source" "Shows the current page's code, coloured and indented.")
 
   (section "Scrolling")
