@@ -529,3 +529,8 @@ The chrome can frame itself, too:
 1. **Loading in the background**, so a slow server doesn't freeze the window,
    with a loading indicator in the toolbar. Forward history too.
 2. More of the language: macros, tail calls.
+
+## License
+
+MIT, in `LICENSE`. The bundled Liberation fonts are under the SIL Open Font
+License, in `assets/fonts/LICENSE-Liberation`.
