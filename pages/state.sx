@@ -96,8 +96,19 @@
      " " (code ":on-input") " with the new text, and the handler decides what to"
      " keep, usually by storing it in state. Enter calls " (code ":on-submit") ".")
   (live greeting-code (greeter))
+  (p "Without an " (code ":on-input") " handler, typing changes nothing, as with"
+     " React's controlled inputs. The browser itself only keeps track of which input"
+     " has focus, where the caret is, and what's selected.")
   (p "Inputs have " (code ":placeholder") " text for when they're empty, and a"
-     " " (code ":width") " in pixels. Tab moves to the next input, and Escape leaves it.")
+     " " (code ":width") " in pixels. Click one to focus it. Arrow keys, Home, End,"
+     " Backspace and Delete edit; Tab moves to the next input; Escape, or a click"
+     " somewhere else, leaves it.")
+  (p "To select text in an input, drag across it, double-click a word,"
+     " triple-click for all of it, hold Shift with the arrow keys or Home and End,"
+     " or press Ctrl+A. Typing, Backspace and Delete replace the selection. With "
+     (code ":select-on-focus true") ", a click that focuses the input selects all"
+     " its text, as the address bar does. Tab, and Ctrl+L for the address bar,"
+     " select everything in the input they move to.")
   (p "A few more attributes make an input behave like a control. "
      (code ":autofocus true") " focuses it when it first appears. "
      (code ":on-escape") " runs when Escape leaves it, and " (code ":on-shift-submit")
@@ -126,6 +137,36 @@
      " until the page is loaded again. The " (a :href "canvas.sx" "canvas demo")
      " has balls bouncing around a box.")
 
+  (subsection "What happens in a frame")
+  (entry "Scheduling" "After every event, the browser checks whether any element,"
+         " in the page or a page framed in it, has an " (code ":on-frame") " handler."
+         " If one does, the next frame is due 16.7ms after the last. If none does,"
+         " the window sleeps until the next event.")
+  (entry "Timing" (code "dt") " is the time since the last frame actually ran, in"
+         " milliseconds, and at most 100. A late frame isn't made up for with extra"
+         " frames: one frame runs, with a larger " (code "dt") ". While nothing has a"
+         " handler, such as while paused, the clock stops, so the first frame after"
+         " resuming gets about 16.7, not the length of the pause.")
+  (entry "Handlers" "The browser calls every " (code ":on-frame") " handler in the"
+         " page as it was last built, framed pages included, in the order their"
+         " elements appear, each with the same " (code "dt") ". A later handler sees"
+         " what an earlier one set.")
+  (entry "Afterwards" "Once they've all run, the browser decides what to redo, as"
+         " after a click: run the page again, call only the " (code ":draw")
+         " functions, or nothing. The page runs at most once per frame, however many"
+         " handlers there are. A handler that calls " (code "go") " goes there instead.")
+  (p "Because handlers come from the page as last built, a handler that sets "
+     (code "running") " to false still runs that frame. Its element has "
+     (code ":on-frame nil") " from the next frame on.")
+  (p "The browser works out what to redo from which state the page reads, and"
+     " which state handlers change. Changing a global variable that isn't state,"
+     " or dark mode, the find bar or the REPL, always runs the page again. This"
+     " applies after every event, not just frames.")
+  (p "The window doesn't animate while it's hidden, and when it's shown again,"
+     " the first frame's " (code "dt") " is 100. When a handler fails, the ones"
+     " after it don't run that frame, and what earlier ones set is kept. Each frame"
+     " has the same budget as any other event.")
+
   (section "Keys")
   (p "A canvas with " (code ":on-key-down") " or " (code ":on-key-up") " takes the"
      " keyboard when it's clicked, until Escape or a click somewhere else. The"
@@ -135,6 +176,12 @@
      " if the canvas loses the keyboard first, so a page can keep track of which"
      " keys are held. Click this one and press some keys:")
   (live keys-code (keys))
+  (p "Names are as the web's " (code "KeyboardEvent.key") " gives them, but as if"
+     " Shift weren't held, so Shift+A is " (code "\"a\"") ", and Shift itself is "
+     (code "\"Shift\"") ". A canvas with the keyboard shows a focus outline, and"
+     " arrow keys and Space stop scrolling the page. Its held keys get "
+     (code ":on-key-up") " when it loses the keyboard, when the window loses focus,"
+     " and when you follow a link or go back.")
   (p "Keys with Ctrl, Alt or Super, and function keys like F5, still go to the"
      " browser. " (a :href "snake.sx" "Snake") " puts keys and animation together.")
 
@@ -142,7 +189,9 @@
   (p "State belongs to the page and lasts while you're on it. Each "
      (code "define-state") " is identified by its order in the page, so state"
      " should be defined at the top level, the same way every time the page runs."
-     " Going back to a page restores the state it had. Reloading, with F5 or"
-     " Ctrl+R, starts it over.")
+     " Following a link starts the new page with fresh state, going back to a page"
+     " restores the state it had, and reloading, with F5 or Ctrl+R, starts it over.")
+  (p "Each frame keeps its own state, keyed by its position among the frames, so"
+     " two frames of the same page count separately.")
   (p "For more, see the " (a :href "counter.sx" "counter") " and "
      (a :href "inputs.sx" "text inputs") " demos."))

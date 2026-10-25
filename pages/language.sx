@@ -71,7 +71,13 @@
   (p "Pages also have limits on how much work they can do, so a mistake can't"
      " freeze the browser:")
   (div :padding-left 18 :margin 12
-    (p :margin 4 "• " (b "A million evaluation steps") " for each run of a page, and each event handler.")
-    (p :margin 4 "• " (b "Ten thousand levels of nesting") ", so runaway recursion stops quickly.")
-    (p :margin 4 "• " (b "A million characters or items") " in any string or list a builtin makes."))
+    (p :margin 4 "• " (b "A million evaluation steps") " for each run of a page, and each"
+       " event handler. The pages here use at most about 20,000.")
+    (p :margin 4 "• " (b "Ten thousand levels of nesting") ", which is about 3,300"
+       " recursive calls, so runaway recursion stops quickly.")
+    (p :margin 4 "• " (b "A million characters or items") " in any string or list a"
+       " builtin makes, checked as it's built, so a string that doubles in a loop stops early.")
+    (p :margin 4 "• " (b "512 levels of element nesting") ", and source nested at most 1,000 deep."))
+  (p "Frames share the budget of the page they're on. Evaluation moves to a fresh"
+     " stack segment as it needs one, so recursion within the limit is fine.")
   (p "See " (a :href "runaway.sx" "Runaway code") " for what happens when a page goes over."))

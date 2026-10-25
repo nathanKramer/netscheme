@@ -6,7 +6,7 @@
     (p :margin 0 muted description)))
 
 (chapter "internals.sx"
-  (p "Netscheme is written in Rust, in under five thousand lines. It draws"
+  (p "Netscheme is written in Rust, in about seven thousand lines with its tests. It draws"
      " everything itself, from the text to the caret in the address bar, using a"
      " window, a buffer of pixels, and a font.")
 
@@ -74,13 +74,51 @@
      " to, frame, or read the source of a file on your computer, or a "
      (code "browser:") " page. Files and browser pages can reach anything.")
 
-  (section "Taking screenshots")
-  (p "The browser can draw a page straight into a PNG file, without opening a"
-     " window. It can click and type first, which is how its tests and this"
-     " guide's pictures were checked:")
-  (code-block
-"cargo run -- pages/hello.sx --screenshot out.png
-cargo run -- pages/lab.sx --screenshot out.png --chrome --dark \\
-    --click 117,178 --width 1000 --height 800")
-  (p "The source is all in the " (code "src") " folder, and the README describes"
-     " each part in more detail."))
+  (p "Links on a web page resolve against the address it was actually served"
+     " from, after any redirects. Downloading blocks the window for now, with 5"
+     " seconds to connect and 10 overall.")
+
+  (section "Drawing shapes")
+  (p "Layout turns every canvas shape into polygons, in " (code "canvas.rs") ". A"
+     " circle has enough sides to look round at its size, a stroke is a rectangle"
+     " for each segment and a circle at each joint, and an outline is a ring with a"
+     " hole. The painter fills them by the nonzero rule, sampling four lines across"
+     " each row of pixels and blending each pixel by how much of it is covered,"
+     " which smooths the edges.")
+  (p "Selections are kept the same way as find's matches: layout numbers"
+     " every character it lays out, in order, so a selection is a range of those"
+     " positions, highlighted as the page is laid out.")
+
+  (section "The rest of the source")
+  (entry "lisp/builtins.rs, lisp/library.rs" "The builtins, written in Rust. The"
+         " prelude, " (code "ui/prelude.sx") ", is the half written in Netscheme:"
+         " together they're the equivalent of JavaScript's built-in objects.")
+  (entry "lisp/watch.rs" "Notes which state a page reads and which a handler"
+         " changes, so the browser can skip running a page that wouldn't change.")
+  (entry "lisp/budget.rs" "The limits on steps, nesting and sizes, like a web"
+         " browser's script timeouts.")
+  (entry "loader.rs" "Locations, downloading, resolving URLs, the origin rule, and"
+         " loading pages into frames.")
+  (entry "dom.rs" "The tree of elements and text that a page builds.")
+  (entry "canvas.rs" "A canvas's shapes as polygons.")
+  (entry "image.rs" "Decoding PNG files, and scaling images.")
+  (entry "settings.rs" "Settings kept between runs, like dark mode.")
+  (entry "test_server.rs" "A tiny HTTP server, so tests can load pages from the web.")
+
+  (section "What it's built on")
+  (p "There's no GUI toolkit, on purpose. Parsing, styling, layout and painting are"
+     " the interesting parts of a browser, so Netscheme does them itself. It leans"
+     " on a few crates for the rest:")
+  (entry "winit" "The window and its input, on Wayland, X11 and elsewhere.")
+  (entry "softbuffer" "A plain buffer of pixels to paint into, the way a simple"
+         " browser engine paints.")
+  (entry "fontdue" "Rasterizes glyphs from the bundled Liberation Sans and Mono."
+         " Shaping and kerning are left out for now.")
+  (entry "png" "Reads images, and writes screenshots.")
+  (entry "arboard" "The clipboard. It uses Wayland's clipboard directly where the"
+         " compositor supports it, and X11's otherwise.")
+  (entry "ureq, url" "Downloading pages, and resolving addresses.")
+  (entry "stacker" "Grows the stack as evaluation needs it, so deep recursion"
+         " within the limits doesn't overflow.")
+  (p "Rust suits it: it's fast enough to lay out and paint every frame, and its"
+     " enums and pattern matching suit an interpreter."))

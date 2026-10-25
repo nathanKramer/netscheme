@@ -986,6 +986,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "netscheme"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "fontdue",
+ "png",
+ "softbuffer",
+ "stacker",
+ "ureq",
+ "url",
+ "winit",
+]
+
+[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2001,20 +2015,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "toy-browser"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "fontdue",
- "png",
- "softbuffer",
- "stacker",
- "ureq",
- "url",
- "winit",
 ]
 
 [[package]]

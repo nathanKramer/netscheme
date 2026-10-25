@@ -63,7 +63,8 @@
   (example '(frame :src "hello.sx" :scale 0.5 :height 260))
   (p "Since a page can frame any page, it can frame itself. "
      (a :href "fractal.sx" "The fractal") " does, twice, and the browser stops"
-     " once the copies are too small to see.")
+     " once the copies are too small to see: frames more than 8 deep, or drawn at"
+     " under 4% of full size, are left empty.")
 
   (subsection "The browser is a page")
   (p "The toolbar at the top of the window is "
@@ -72,4 +73,17 @@
      ", its buttons are " (code "button") "s, and the site you're reading is in its"
      " " (code "frame") ". Pages at " (code "browser:") " locations live in the"
      " browser's " (code "ui") " folder, and they're the only pages allowed to"
-     " change the browser's settings."))
+     " change the browser's settings.")
+  (entry "browser:chrome?location=<site>" "The toolbar. The window always shows it,"
+         " with the site in a " (code "(frame :height \"fill\")") " below. It reads the"
+         " site's title out of the frame's document tree, and that becomes the window"
+         " title. The browser tells it about the find bar and the REPL through its"
+         " location too. Edit " (code "ui/chrome.sx") " to change the browser's interface.")
+  (entry "browser:view-source?page=<site>" "A page's source. It can show its own.")
+  (entry "browser:back" "Not a page: following a link to it goes back.")
+  (p "Links on browser pages are relative to the folder the browser was started in,"
+     " and any link, whether in the toolbar or the site, navigates the site. Values"
+     " inside a query, like the site's own location, are percent-encoded.")
+  (p "The toolbar can frame itself too, so "
+     (code "cargo run -- 'browser:chrome?location=pages/hello.sx'")
+     " opens a browser inside a browser."))

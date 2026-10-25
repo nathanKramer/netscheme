@@ -93,6 +93,16 @@
   (entry "(tag el), (attr el :name), (children el)" "What's inside an element: its tag,"
          " an attribute's value, and its children.")
 
+  (subsection "For the browser's own pages")
+  (p "Only pages at " (code "browser:") " locations may call these. The toolbar uses"
+     " them to drive the browser.")
+  (entry "(set-dark-mode on)" "Turns dark mode on or off, and remembers the choice.")
+  (entry "(set-find text), (find-next), (find-previous), (close-find)" "Searches the"
+         " site for text, moves between the matches, and closes the find bar.")
+  (entry "(repl-eval code), (repl-log), (close-repl)" "Runs code in the site, lists"
+         " what has run, as dictionaries of " (code ":input") ", " (code ":output")
+         " and " (code ":error") ", and closes the REPL.")
+
   (section "The prelude")
   (p "These are written in Netscheme, in " (code "ui/prelude.sx") ". A page can"
      " define its own function with the same name, and its version wins.")

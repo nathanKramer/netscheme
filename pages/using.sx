@@ -1,0 +1,113 @@
+(eval `(do ,@(source "site.sx")))
+
+(chapter "using.sx"
+  (section "Opening pages")
+  (p "Type a location into the address bar and press Enter. Clicking the address"
+     " bar, or pressing Ctrl+L, selects what's there, so typing replaces it. A"
+     " location is a file, relative to the folder the browser was started in, a"
+     " " (code "browser:") " page, or an " (code "http://") " or " (code "https://")
+     " address. From the command line:")
+  (code-block
+"cargo run                          # opens pages/hello.sx
+cargo run -- path/to/page.sx
+cargo run -- http://localhost:8000/hello.sx")
+  (p "To try the web, run " (code "python3 -m http.server") " in " (code "pages/")
+     " and open the last of those.")
+
+  (section "Getting around")
+  (entry "Click a link" "Goes to its page, which starts with fresh state.")
+  (entry "Alt+←, the mouse's back button, ← Back" "Goes back, to the page's"
+         " state and scroll position as you left them. The toolbar keeps its own"
+         " state, so the address bar shows where you are.")
+  (entry "F5, Ctrl+R" "Reloads: downloads the page again, reloads its images, and"
+         " starts its state over.")
+  (entry "View source" "Shows the current page's code, coloured and indented.")
+
+  (section "Scrolling")
+  (p "Scroll with a trackpad or mouse wheel, or with the keys below. They scroll"
+     " the frame under the pointer, if it has a fixed height, and otherwise the page.")
+  (entry "↑ ↓, J K" "A line at a time.")
+  (entry "Page Up, Page Down, Space, Shift+Space" "A screen at a time.")
+  (entry "Home, End" "To the top or the bottom.")
+  (p "Anything taller than the space it's shown in gets a scrollbar on its right"
+     " edge. Drag the thumb, or press the track to jump to that point.")
+
+  (section "Selecting and copying")
+  (p "Drag across text to select it, double-click a word, or triple-click a"
+     " paragraph. Ctrl+C copies the selection, or the selection in the focused"
+     " input if it has one. Ctrl+V pastes into the focused input, replacing its"
+     " selection. Inputs hold one line, so line breaks and tabs in pasted text"
+     " become spaces.")
+  (p "Lines that wrapped within a paragraph are copied joined by spaces, and"
+     " separate paragraphs, and the lines of " (code "pre") " text, by line breaks."
+     " Clicking without dragging still follows links; dragging across one selects"
+     " its text instead. A selection stays inside the frame it started in, so"
+     " dragging from the site into the toolbar doesn't select the toolbar too."
+     " Going to another page clears it.")
+  (note "Text inside inputs isn't part of a page's selection, and dragging past"
+        " the edge of the window doesn't scroll.")
+
+  (section "Finding text")
+  (p "Ctrl+F, or " (code "/") " when no input has focus, opens a find bar under the"
+     " toolbar. Matches are highlighted as you type, ignoring case, with the"
+     " current one in orange and scrolled into view.")
+  (entry "Enter, F3, Ctrl+G" "The next match. With Shift, the previous one.")
+  (entry "Escape" "Closes the find bar.")
+  (p "Matches are found line by line, so a phrase that wraps onto the next line"
+     " isn't found, and text in inputs isn't searched.")
+
+  (section "The REPL")
+  (p "Ctrl+Shift+J opens a REPL under the toolbar, and pressing it again, or"
+     " Escape, closes it. Code typed into it runs in the site, like a web"
+     " browser's JavaScript console: it can read the site's variables, call its"
+     " functions, and " (code "set!") " its state, after which the site runs again"
+     " and shows the change. Open the " (a :href "counter.sx" "counter") " and try"
+     " " (code "(set! count 41)") ".")
+  (p "The REPL shows its last eight entries, each with the value printed as code,"
+     " or the error in red, and keeps its log until the browser closes.")
+  (note "The REPL runs code in the environment from the site's latest run. The"
+        " site runs again from a fresh environment after every click and keystroke,"
+        " so anything " (code "define") "d in the REPL is gone by the next entry. "
+        (code "define-state") " variables are what last. A runaway entry stops"
+        " with an error, as an event handler does.")
+
+  (section "Dark mode")
+  (p "The moon and sun at the right of the toolbar switch between light and dark"
+     " mode. The browser starts in the system's theme, when the system reports"
+     " one, and follows it when it changes, until you use the switch. From then"
+     " on it remembers your choice and stops following the system.")
+  (p "The choice is kept in " (code "~/.config/netscheme/settings") ", or under"
+     " " (code "$XDG_CONFIG_HOME") " if that's set. Deleting the file goes back to"
+     " following the system. Screenshots and tests neither read nor write it.")
+
+  (section "Screenshots")
+  (p "The browser can draw a page straight into a PNG file, without opening a"
+     " window. The picture is the bare page, " (code "--width") " by " (code "--height")
+     " (900 × 700 unless given), scrolled down by " (code "--scroll") " pixels."
+     " " (code "--chrome") " includes the toolbar, as the window shows it, and"
+     " " (code "--dark") " turns on dark mode.")
+  (code-block
+"cargo run -- pages/hello.sx --screenshot out.png \\
+    --width 800 --height 600 --scroll 200")
+  (p "These act on the page first, in the order they're given:")
+  (entry "--click X,Y, --drag X,Y,X,Y" "Click, or drag from one point to another.")
+  (entry "--type TEXT" "Type into whatever has focus. " (code "\\n") " is Enter, "
+         (code "\\t") " is Tab and " (code "\\b") " is Backspace.")
+  (entry "--find TEXT" "Open the find bar, as Ctrl+F does, and type.")
+  (entry "--repl TEXT" "Open the REPL, as Ctrl+Shift+J does, and type.")
+  (entry "--frames N" "Run N frames of animation, each a sixtieth of a second after"
+         " the last, so the same steps always draw the same picture.")
+  (entry "--key-down KEY, --key-up KEY" "Send a key, by name, to the canvas that"
+         " has the keyboard. Click it first.")
+  (code-block
+"cargo run -- pages/inputs.sx --screenshot out.png \\
+    --click 250,332 --type $'Ada\\tWrite docs\\n'
+cargo run -- pages/hello.sx --chrome --screenshot out.png \\
+    --drag 200,330,300,420
+cargo run -- pages/library.sx --chrome --screenshot out.png \\
+    --find $'dict\\n\\n'
+cargo run -- pages/counter.sx --chrome --screenshot out.png \\
+    --repl $'(set! count 41)\\n'
+cargo run -- pages/canvas.sx --screenshot out.png --frames 120
+cargo run -- pages/snake.sx --screenshot out.png \\
+    --click 200,450 --key-down ArrowDown --frames 30"))

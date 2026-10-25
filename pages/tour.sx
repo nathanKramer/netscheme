@@ -80,6 +80,12 @@
         (img :src logo :width 96 :align "middle") " large."))
   (p "An image inside an " (code "a") " is a link. One that can't be loaded"
      " keeps its space as an empty box, and the reason is printed to the terminal.")
+  (p "Images can be files or on the web, but pages from the web can only load"
+     " images from the web. Images at " (code "browser:") " locations, like the"
+     " toolbar's " (code "browser:icons/moon.png") ", come from the browser's "
+     (code "ui") " folder. A file can be up to 16 MB, and 4096 × 4096 pixels once"
+     " decoded. Each image is decoded once and kept, along with copies scaled to"
+     " the sizes it's drawn at, until a reload.")
 
   (section "Drawing")
   (p "A " (code "canvas") " is a box, " (code ":width") " by " (code ":height") ", that"
@@ -100,10 +106,19 @@
      (code "(text :x 10 :y 20 \"hi\")") " puts text with its baseline at "
      (code ":y") ", and takes the usual text attributes. See "
      (a :href "canvas.sx" "the canvas demo") " for more.")
+  (p "A canvas is 300 × 150 unless it's given a size. A stroke is centred on the"
+     " shape's edge, and corners where a stroked line bends are rounded. A click"
+     " lands on a shape anywhere in the box around it, and a shape drawn later is"
+     " clicked first. Children of a canvas that aren't shapes are left out.")
+  (p "A canvas's " (code ":draw") " is a function of no arguments that returns more"
+     " shapes. The browser calls it after the page runs, and draws what it returns"
+     " after the canvas's children. " (a :href "state.sx" "State and events")
+     " explains why that's useful for animation.")
 
   (section "Links")
   (p "An " (code "a") " element with an " (code ":href") " goes to another page when"
      " clicked. Relative locations are resolved against the current page, like"
      " on the web, and " (code "http://") " and " (code "https://") " links download"
-     " pages from servers. Alt+← goes back.")
+     " pages from servers. On a page that's a file, a location starting with "
+     (code "/") " is relative to the folder the browser was started in. Alt+← goes back.")
   (example '(p "Read on: " (a :href "styles.sx" "styles are values") ".")))

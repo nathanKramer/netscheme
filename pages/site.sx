@@ -54,6 +54,8 @@
               :blurb "Every built-in function, and the prelude that's written in Netscheme itself.")
         (dict :file "code-as-data.sx" :title "Code is data"
               :blurb "Reading a page's source, building code with quasiquote, and pages inside pages.")
+        (dict :file "using.sx" :title "Using the browser"
+              :blurb "Navigating, scrolling, finding, the REPL, dark mode, and screenshots.")
         (dict :file "internals.sx" :title "How it works"
               :blurb "From source text to pixels: the reader, evaluator, layout and painter.")))
 
