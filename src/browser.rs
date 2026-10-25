@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    dom::Element,
+    dom::{Element, Node},
     layout::{Action, Focus, InputBox, Link, Match, Scrollbar, Scroller, Search, TextLine},
     lisp::{self, Value},
     loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore},
@@ -22,6 +22,11 @@ pub const LINE_HEIGHT: f32 = 40.0;
 const BACK: &str = "browser:back";
 /// How long the caret stays on, then off.
 const BLINK: Duration = Duration::from_millis(530);
+/// Time between frames of animation: 60 a second.
+pub const FRAME: Duration = Duration::from_micros(16_667);
+/// The longest time a frame of animation is told has passed, so that after
+/// a slow frame or a pause, things move on by a little rather than jump.
+const MAX_FRAME_TIME: Duration = Duration::from_millis(100);
 
 /// A key press, as far as the browser cares.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +130,11 @@ pub struct Browser {
     refocus: bool,
     /// When the caret last moved; it blinks starting from then.
     caret_moved: Instant,
+    /// When the last frame of animation ran, while the page is animating.
+    last_frame: Option<Instant>,
+    /// Whether an `:on-frame` handler failed, which stops animation until
+    /// the page is next loaded.
+    frames_failed: bool,
     renderer: Renderer,
     // From the last render:
     links: Vec<Link>,
@@ -161,6 +171,8 @@ impl Browser {
             autofocused: Vec::new(),
             refocus: false,
             caret_moved: Instant::now(),
+            last_frame: None,
+            frames_failed: false,
             renderer: Renderer::new(),
             links: Vec::new(),
             scrollers: Vec::new(),
@@ -295,6 +307,34 @@ impl Browser {
         self.focus?;
         let blinks = self.caret_moved.elapsed().as_millis() / BLINK.as_millis();
         Some(self.caret_moved + BLINK * (blinks as u32 + 1))
+    }
+
+    /// When the next frame of animation is due, if the page has elements
+    /// with `:on-frame` handlers.
+    pub fn next_frame(&mut self) -> Option<Instant> {
+        if self.frames_failed || !animates(&self.page) {
+            self.last_frame = None;
+            return None;
+        }
+        Some(*self.last_frame.get_or_insert_with(Instant::now) + FRAME)
+    }
+
+    /// Runs a frame of animation if one is due at `now`. Returns whether it did.
+    pub fn animate(&mut self, now: Instant) -> bool {
+        let Some(last) = self.last_frame.filter(|&last| now >= last + FRAME) else { return false };
+        self.last_frame = Some(now);
+        self.frame((now - last).min(MAX_FRAME_TIME));
+        true
+    }
+
+    /// Calls every `:on-frame` handler with the milliseconds `dt` since the
+    /// last frame, then runs the page again.
+    pub fn frame(&mut self, dt: Duration) {
+        let mut handlers = Vec::new();
+        frame_handlers(&self.page, &mut handlers);
+        if !handlers.is_empty() && !self.run_all(&handlers, &[Value::Num(dt.as_secs_f64() * 1000.0)], false) {
+            self.frames_failed = true;
+        }
     }
 
     pub fn hover(&self, x: f32, y: f32) -> Hover {
@@ -539,6 +579,7 @@ impl Browser {
             Key::Back => return self.back(),
             Key::FocusAddressBar => return self.focus_address_bar(),
             Key::Reload => {
+                self.frames_failed = false;
                 self.host.forget_downloads();
                 self.host.images.borrow_mut().clear();
                 self.page_state = Rc::default();
@@ -666,7 +707,7 @@ impl Browser {
         if let Err(e) = loader::may_reach(&from, &site) {
             return self.fail(e);
         }
-        self.error = None;
+        (self.error, self.frames_failed) = (None, false);
         self.host.forget_downloads();
         let previous = (
             std::mem::replace(&mut self.site, site),
@@ -681,7 +722,7 @@ impl Browser {
 
     pub fn back(&mut self) {
         if let Some((site, scroll, page_state)) = self.history.pop() {
-            self.error = None;
+            (self.error, self.frames_failed) = (None, false);
             self.host.forget_downloads();
             // The site's state comes back, but the toolbar's describes the
             // current site, so the toolbar (the top-level page) starts afresh.
@@ -697,8 +738,16 @@ impl Browser {
     /// Calls a handler, then goes where it asked to with `go`, or else runs
     /// the page again so it shows any state the handler changed.
     fn run(&mut self, handler: &Value, args: &[Value]) {
+        self.run_all(std::slice::from_ref(handler), args, true);
+    }
+
+    /// Like `run`, for several handlers called with the same arguments, in
+    /// order, before the page runs again. Success clears the last error if
+    /// `clear_error`, as animation shouldn't hide an error as soon as it's
+    /// shown. Returns whether they all succeeded.
+    fn run_all(&mut self, handlers: &[Value], args: &[Value], clear_error: bool) -> bool {
         let dark = self.dark_mode();
-        let result = lisp::apply(handler, args);
+        let result = handlers.iter().try_for_each(|handler| lisp::apply(handler, args).map(drop));
         if let Some(settings) = self.settings.as_mut().filter(|_| self.host.dark_mode.get() != dark) {
             settings.set_dark_mode(!dark);
         }
@@ -713,15 +762,19 @@ impl Browser {
             Ok(_) => match self.host.take_navigation() {
                 Some((href, from)) => self.follow(&href, Some(&from)),
                 None => {
-                    self.error = None;
+                    if clear_error {
+                        self.error = None;
+                    }
                     self.reload();
                 }
             },
             Err(e) => {
                 self.host.take_navigation();
                 self.fail(format!("in an event handler: {e}"));
+                return false;
             }
         }
+        true
     }
 
     fn find_request(&mut self, request: FindRequest) {
@@ -768,6 +821,26 @@ impl Browser {
         self.page = loader::open(&self.location(), &self.page_state, &self.host);
         // `go` only means something in an event handler, not while the page runs.
         self.host.take_navigation();
+    }
+}
+
+/// An element's `:on-frame` handler. `nil` is none, so a page can pause.
+fn frame_handler(el: &Element) -> Option<&Value> {
+    el.attr("on-frame").filter(|handler| handler.truthy())
+}
+
+/// Whether any element in `el`, or in pages framed inside it, has an `:on-frame` handler.
+fn animates(el: &Element) -> bool {
+    frame_handler(el).is_some() || el.children.iter().any(|child| matches!(child, Node::Element(child) if animates(child)))
+}
+
+/// Every `:on-frame` handler in `el` and in pages framed inside it, in document order.
+fn frame_handlers(el: &Element, out: &mut Vec<Value>) {
+    out.extend(frame_handler(el).cloned());
+    for child in &el.children {
+        if let Node::Element(child) = child {
+            frame_handlers(child, out);
+        }
     }
 }
 
@@ -920,6 +993,61 @@ mod tests {
         browser.key(Key::Text("x".into()), false, (0.0, 0.0));
         render(&mut browser);
         assert_eq!(browser.inputs[0].value, "h!", "typing does nothing without focus");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A browser showing `src`, with or without the chrome. The page is in
+    /// `target`, as the chrome takes locations starting with `/` to be in
+    /// the working directory.
+    fn browse(name: &str, src: &str, chrome: bool) -> (Browser, std::path::PathBuf) {
+        let dir = std::path::Path::new("target").join(format!("test-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.sx");
+        std::fs::write(&file, src).unwrap();
+        (Browser::new(file.to_string_lossy().into(), chrome), dir)
+    }
+
+    #[test]
+    fn frames_of_animation_are_told_the_time_and_can_pause() {
+        let (mut browser, dir) = browse(
+            "frames",
+            r#"(define-state t 0) (define-state ticks 0) (define-state running true)
+               (page :on-frame (if running (fn (dt) (set! ticks (inc ticks))))
+                 (p :on-frame (fn (dt) (set! t (+ t dt)) (if (>= ticks 2) (set! running false)))
+                    "t: " (round t) ", ticks: " ticks))"#,
+            false,
+        );
+        let start = browser.next_frame().expect("animating");
+        assert!(!browser.animate(start - FRAME / 2), "not due yet");
+        assert!(browser.animate(start));
+        assert!(browser.page.to_string().contains(r#""t: " "17" ", ticks: " "1""#), "{}", browser.page);
+        assert!(browser.animate(start + Duration::from_secs(5)));
+        assert!(browser.page.to_string().contains(r#""t: " "117" ", ticks: " "2""#), "a long pause counts as 100ms: {}", browser.page);
+        assert!(browser.next_frame().is_some(), "the paragraph still animates after the page's handler is nil");
+        browser.frame(FRAME);
+        assert!(browser.page.to_string().contains(r#"", ticks: " "2""#), "{}", browser.page);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_frame_stops_animation_until_the_page_loads_again() {
+        let (mut browser, dir) = browse(
+            "frame-error",
+            r#"(define-state n 0)
+               (page (p :on-frame (fn (dt) (set! n (inc n)) (if (> n 1) (car n))) "n: " n)
+                     (button :on-click (fn () (car 1)) "fail"))"#,
+            true,
+        );
+        render(&mut browser);
+        browser.frame(FRAME);
+        assert!(browser.next_frame().is_some());
+        render(&mut browser);
+        assert!(browser.error.is_none());
+        browser.frame(FRAME);
+        assert!(browser.error.is_some(), "the second frame fails");
+        assert!(browser.next_frame().is_none(), "and stops the animation");
+        browser.key(Key::Reload, false, (0.0, 0.0));
+        assert!(browser.next_frame().is_some(), "until the page is reloaded");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

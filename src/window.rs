@@ -38,6 +38,7 @@ pub fn run(browser: Browser) {
         last_press: None,
         // Kept for the whole session: on X11, copied text is only available while it lives.
         clipboard: arboard::Clipboard::new().map_err(|e| eprintln!("no clipboard: {e}")).ok(),
+        occluded: false,
         state: None,
     };
     event_loop.run_app(&mut app).expect("run event loop");
@@ -50,6 +51,8 @@ struct App {
     /// When and where the left button last went down, and how many quick presses that made.
     last_press: Option<(Instant, (f32, f32), u32)>,
     clipboard: Option<arboard::Clipboard>,
+    /// Whether the window is hidden from view, as when minimised.
+    occluded: bool,
     state: Option<WindowState>,
 }
 
@@ -224,15 +227,20 @@ impl ApplicationHandler for App {
         self.redraw();
     }
 
-    /// Wakes up when the caret should blink.
+    /// Wakes up when the caret should blink, or the page's animation is due a frame.
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if let StartCause::ResumeTimeReached { .. } = cause {
+            self.browser.animate(Instant::now());
             self.redraw();
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(match self.browser.next_blink() {
+        // A window that can't be seen doesn't animate, and starts again from
+        // where it was when it's back.
+        let frame = if self.occluded { None } else { self.browser.next_frame() };
+        let wake = [self.browser.next_blink(), frame].into_iter().flatten().min();
+        event_loop.set_control_flow(match wake {
             Some(time) => ControlFlow::WaitUntil(time),
             None => ControlFlow::Wait,
         });
@@ -242,6 +250,7 @@ impl ApplicationHandler for App {
         let Some(state) = &mut self.state else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Occluded(occluded) => self.occluded = occluded,
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => state.window.request_redraw(),
             WindowEvent::RedrawRequested => {
                 let size = state.window.inner_size();

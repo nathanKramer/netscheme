@@ -6,6 +6,11 @@
 
 (define-state picked nil)
 (define-state turns 0)
+(define-state balls
+  (list (dict :x 40 :y 30 :dx 0.13 :dy 0.09 :r 14)
+        (dict :x 200 :y 90 :dx -0.1 :dy 0.16 :r 22)
+        (dict :x 320 :y 50 :dx 0.18 :dy -0.12 :r 9)))
+(define-state running true)
 
 (define pink (light-dark "#b8336a" "#f07aa8"))
 (define green (light-dark "#2a7a3a" "#86d993"))
@@ -35,6 +40,26 @@
                     :on-click (fn () (set! picked (if (= picked i) nil i))))
               (text :x (+ x 4) :y (+ h 20) :size 13 :color faint (nth labels i)))))
         values))))
+
+; ---------------------------------------------------------------------------
+; Balls bouncing around a box. Each frame moves them on by their speed, in
+; pixels per millisecond, times the milliseconds since the last frame.
+
+(define box-w 400)
+(define box-h 160)
+
+; A position moved on by `step`, and the speed after bouncing off 0 or `size`.
+(define (bounce at speed step r size)
+  (let ((next (+ at (* speed step))))
+    (cond ((< next r) (list (- (* 2 r) next) (abs speed)))
+          ((> next (- size r)) (list (- (* 2 (- size r)) next) (- (abs speed))))
+          (else (list next speed)))))
+
+(define (move ball dt)
+  (let ((r (get ball :r))
+        (x (bounce (get ball :x) (get ball :dx) dt r box-w))
+        (y (bounce (get ball :y) (get ball :dy) dt r box-h)))
+    (assoc ball :x (first x) :dx (nth x 1) :y (first y) :dy (nth y 1))))
 
 ; ---------------------------------------------------------------------------
 ; Points on a circle, joined up.
@@ -70,4 +95,15 @@
       (polygon :points (star-points 240 80 70 7 3) :fill accent :stroke ink :stroke-width 2)
       (polyline :points (map (fn (x) (list (+ 330 x) (+ 80 (* 40 (sin (/ x 8)))))) (range 70))
                 :stroke pink :stroke-width 3)))
-  (p (button :on-click (fn () (set! turns (inc turns))) "Turn the stars")))
+  (p (button :on-click (fn () (set! turns (inc turns))) "Turn the stars"))
+
+  (section "Animation")
+  (p "An " (code ":on-frame") " handler runs sixty times a second, given the"
+     " milliseconds since the last frame. It changes state, and then the page runs"
+     " again, like after a click. Giving " (code ":on-frame nil") " stops it.")
+  (div board :padding 16
+    (canvas :width box-w :height box-h
+            :on-frame (if running (fn (dt) (set! balls (map (fn (b) (move b dt)) balls))))
+      (map-indexed (fn (i b) (circle :x (get b :x) :y (get b :y) :r (get b :r) :fill (nth palette i)))
+                   balls)))
+  (p (button :on-click (fn () (set! running (not running))) (if running "Pause" "Play"))))

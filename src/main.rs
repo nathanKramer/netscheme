@@ -16,7 +16,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -49,6 +49,7 @@ fn main() -> ExitCode {
             "--type" => value().map(|v| steps.push(Step::Type(v))),
             "--find" => value().map(|v| steps.push(Step::Find(v))),
             "--repl" => value().map(|v| steps.push(Step::Repl(v))),
+            "--frames" => value().and_then(|v| v.parse().map(|n| steps.push(Step::Frames(n))).map_err(|_| USAGE)),
             "--chrome" => {
                 chrome = true;
                 Ok(())
@@ -107,6 +108,8 @@ enum Step {
     Find(String),
     /// Ctrl+Shift+J, then typing, as `Type` does.
     Repl(String),
+    /// This many frames of animation, each a 60th of a second after the last.
+    Frames(u32),
 }
 
 /// Renders the browser's page to a PNG, after carrying out `steps` as the
@@ -136,6 +139,12 @@ fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps
                 browser.press(*x0, *y0, 1);
                 browser.drag_to(*x1, *y1);
                 browser.release(*x1, *y1);
+            }
+            Step::Frames(n) => {
+                for _ in 0..*n {
+                    browser.render(&mut buf, w, h, 1.0);
+                    browser.frame(browser::FRAME);
+                }
             }
             Step::Type(text) | Step::Find(text) | Step::Repl(text) => {
                 let opening = match step {

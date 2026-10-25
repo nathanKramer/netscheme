@@ -177,6 +177,31 @@ Each frame keeps its own state, keyed by its position among the frames, so two
 frames of the same page count separately. Following a link starts the new
 page with fresh state; going back restores the old page's state.
 
+### Animation
+
+```lisp
+(define-state x 0)
+
+(page
+  (canvas :width 300 :height 40
+          :on-frame (fn (dt) (set! x (mod (+ x (* 0.1 dt)) 300)))
+    (circle :x x :y 20 :r 10)))
+```
+
+`:on-frame` takes a function of one argument, and works on any element.
+While a page, or a page framed in it, has one, the browser calls it 60
+times a second with the milliseconds since the last frame, then runs the
+page again, as after a click. Moving things by their speed times `dt`
+keeps them moving at the same speed when frames come late. After a long
+gap, such as a slow frame, `dt` is at most 100. `:on-frame nil` is no
+handler, so `(if running (fn (dt) ...))` pauses. Handlers run in the order
+their elements appear, before the page runs again.
+
+The window doesn't animate while it's hidden. A handler that fails stops
+the animation, so the error stays on screen, until the page is loaded
+again by following a link, going back or reloading. Each frame has the
+same step budget as any other event.
+
 ### Text input
 
 ```lisp
@@ -326,6 +351,8 @@ The REPL is part of `ui/chrome.sx` too. It hands code to the browser with
 
 `--click X,Y`, `--drag X,Y,X,Y` and `--type TEXT` act on the page before
 the screenshot, in order. In typed text, `\n` is Enter, `\t` is Tab and `\b` is Backspace.
+`--frames N` runs N frames of animation, each a 60th of a second after the
+last, so the same steps always draw the same picture.
 `--chrome` includes the toolbar, as the window shows it, and `--dark` turns on dark mode:
 
 ```sh
@@ -334,6 +361,7 @@ cargo run -- pages/hello.sx --chrome --screenshot out.png --drag 200,330,300,420
 cargo run -- pages/hello.sx --chrome --screenshot out.png --click 300,21 --type $'\b\b\b\b\b\b\b\binputs.sx\n'
 cargo run -- pages/library.sx --chrome --screenshot out.png --find $'dict\n\n'   # Ctrl+F, type, Enter twice
 cargo run -- pages/counter.sx --chrome --screenshot out.png --repl $'(set! count 41)\n'   # Ctrl+Shift+J, type, Enter
+cargo run -- pages/canvas.sx --screenshot out.png --frames 120   # two seconds of animation
 ```
 
 ## Runaway code

@@ -40,6 +40,19 @@
               items)))))
 (eval list-code)
 
+(define spinner-code
+  '(do
+     (define-state x 0)
+     (define-state running true)
+     (define (spinner)
+       (div
+         (canvas :width 300 :height 40
+                 :on-frame (if running (fn (dt) (set! x (mod (+ x (* 0.1 dt)) 300))))
+           (circle :x x :y 20 :r 10))
+         (p :margin 0 (button :on-click (fn () (set! running (not running)))
+                              (if running "Pause" "Play")))))))
+(eval spinner-code)
+
 (define (live code view)
   (div :margin 18
     (show-code code)
@@ -83,6 +96,17 @@
   (subsection "A to-do list")
   (p "Put state, inputs and lists together and you have an app:")
   (live list-code (todo))
+
+  (section "Animation")
+  (p "An " (code ":on-frame") " handler is called sixty times a second, with the"
+     " milliseconds since the last frame, and then the page runs again, as it"
+     " does after a click. Multiplying a speed by that time keeps things moving"
+     " at the same pace when a frame comes late. " (code ":on-frame nil")
+     " is no handler, so " (code "(if running (fn (dt) ...))") " can pause.")
+  (live spinner-code (spinner))
+  (p "A handler that fails stops the animation, so the error can be read,"
+     " until the page is loaded again. The " (a :href "canvas.sx" "canvas demo")
+     " has balls bouncing around a box.")
 
   (section "Where state lives")
   (p "State belongs to the page and lasts while you're on it. Each "
