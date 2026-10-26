@@ -302,18 +302,22 @@ impl Browser {
         }
     }
 
-    /// Draws the page into `buf`, which is `w` × `h` physical pixels.
-    pub fn render(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
-        self.render_once(buf, w, h, scale);
+    /// Draws the page into `buf`, which is `w` × `h` physical pixels and
+    /// was last drawn into `age` frames ago, or never if 0. Returns the parts
+    /// of it that were drawn, or `None` for all of it.
+    pub fn render(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32, age: u8) -> Option<Vec<Clip>> {
+        let mut damage = self.render_once(buf, w, h, scale, age);
         // Finding text can mean drawing again: once the chrome has been told
         // how many matches there are, or to scroll the current one into view.
         if self.after_search() {
-            self.render_once(buf, w, h, scale);
+            let again = self.render_once(buf, w, h, scale, 1);
+            damage = damage.zip(again).map(|(first, second)| first.into_iter().chain(second).collect());
         }
         self.autofocus();
+        damage
     }
 
-    fn render_once(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32) {
+    fn render_once(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32, age: u8) -> Option<Vec<Clip>> {
         let caret_visible = (self.caret_moved.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
         let search = self.find.as_ref().map(|find| Search { query: &find.query, current: find.current, frames_only: self.chrome });
         let images = self.host.images.borrow();
@@ -333,7 +337,7 @@ impl Browser {
             drawings: Some(&self.drawings),
             pointer: self.pointer,
         };
-        let rendered = self.renderer.render(&self.page, buf, w, h, &view);
+        let rendered = self.renderer.render(&self.page, buf, w, h, &view, age);
         drop(images);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
         self.key_targets = rendered.key_targets;
@@ -351,6 +355,7 @@ impl Browser {
             let len = input.caret_xs.len() - 1;
             Some(Focus { cursor: focus.cursor.min(len), anchor: focus.anchor.min(len), ..focus })
         });
+        rendered.damage
     }
 
     /// Catches up with what the last render found. Returns whether to draw again.
@@ -1273,7 +1278,7 @@ mod tests {
         .unwrap();
         let mut browser = Browser::new(file.to_string_lossy().into(), false);
         let mut buf = vec![0; 400 * 200];
-        let mut render = |browser: &mut Browser| browser.render(&mut buf, 400, 200, 1.0);
+        let mut render = |browser: &mut Browser| browser.render(&mut buf, 400, 200, 1.0, 0);
 
         render(&mut browser);
         assert!(browser.click(10.0, 10.0), "focus the input");
@@ -1448,7 +1453,7 @@ mod tests {
 
     fn render(browser: &mut Browser) {
         let mut buf = vec![0; 900 * 600];
-        browser.render(&mut buf, 900, 600, 1.0);
+        browser.render(&mut buf, 900, 600, 1.0, 0);
     }
 
     fn press(browser: &mut Browser, keys: impl IntoIterator<Item = Key>) {

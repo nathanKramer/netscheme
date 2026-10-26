@@ -13,3 +13,11 @@ stacker = "0.1.25"
 ureq = "3.5.0"
 url = "2.5.8"
 winit = "0.30"
+
+# Painting is pixel loops, which an unoptimised build runs several times
+# slower. Debug info and assertions stay on.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

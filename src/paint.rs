@@ -1,11 +1,15 @@
 //! Rasterizes a display list into a 0RGB pixel buffer.
 
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+};
 
 use fontdue::{Font, FontSettings, Metrics};
 
 use crate::{
     canvas::Contour,
+    damage::{self, Blit, Changes, Frame},
     dom::Element,
     image::Image,
     layout::{Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
@@ -105,6 +109,8 @@ pub struct Rendered {
     pub lines: Vec<TextLine>,
     /// The visible parts of elements with hover styles, in window coordinates.
     pub hover_areas: Vec<Clip>,
+    /// The parts of the window that were painted, or `None` for all of it.
+    pub damage: Option<Vec<Clip>>,
 }
 
 pub struct Renderer {
@@ -112,17 +118,23 @@ pub struct Renderer {
     glyphs: HashMap<(char, u32, Face), (Metrics, Vec<u8>)>,
     /// Images scaled to the sizes they're drawn at, by `Image::id`, width and height.
     scaled: HashMap<(u64, u32, u32), Vec<u8>>,
+    /// The last frame painted, and the colour behind it.
+    last: Option<(Frame, Color)>,
+    /// What changed in each recent frame, latest first, or `None` for a
+    /// frame that was painted in full or blitted.
+    history: VecDeque<Option<Vec<Clip>>>,
 }
 
 impl Renderer {
     pub fn new() -> Renderer {
-        Renderer { fonts: Fonts::load(), glyphs: HashMap::new(), scaled: HashMap::new() }
+        Renderer { fonts: Fonts::load(), glyphs: HashMap::new(), scaled: HashMap::new(), last: None, history: VecDeque::new() }
     }
 
     /// Lays out `page` and paints it into `buf` (`w` × `h` physical pixels),
     /// scrolled by `view.scroll`. Offsets are first clamped so nothing
-    /// scrolls past its end.
-    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, view: &View) -> Rendered {
+    /// scrolls past its end. `age` is how many frames ago `buf` was last
+    /// painted, or 0 if it's new; only what changed since then is painted.
+    pub fn render(&mut self, page: &Element, buf: &mut [u32], w: usize, h: usize, view: &View, age: u8) -> Rendered {
         let palette = Palette::new(view.dark);
         let root = Style::root(palette);
         let page_background = Style::compute(page, &root).background.unwrap_or(palette.page);
@@ -153,42 +165,29 @@ impl Renderer {
         let mut key_targets = layout.key_targets;
         let (mut lines, mut hover_areas) = (layout.lines, layout.hover_areas);
 
-        buf.fill(blend(palette.page.to_u32(), page_background, 255));
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
-        let mut clip = screen;
-        for item in &items {
-            match item {
-                DisplayItem::Rect { x, y, w: rw, h: rh, color, radius } => {
-                    let area = Clip::rect(*x, *y - dy, *rw, *rh);
-                    if *radius > 0.0 {
-                        fill_rounded_rect(buf, w, clip, area, *radius, *color)
-                    } else {
-                        fill_rect(buf, w, area.intersect(clip), *color)
+        // Each frame's content moves up by how far it's scrolled, and by how
+        // far the frames and the page it's in are.
+        let scrolls: HashMap<usize, f32> = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
+        let mut offsets = HashMap::from([(None, dy)]);
+        let mut layer = None;
+        let mut items: Vec<DisplayItem> = items
+            .into_iter()
+            .map(|item| {
+                if let DisplayItem::Layer(next) = item {
+                    if let Some(id) = next {
+                        let offset = offsets[&layer] + scrolls.get(&id).copied().unwrap_or(0.0);
+                        offsets.entry(next).or_insert(offset);
                     }
+                    layer = next;
                 }
-                DisplayItem::Border { x, y, w: bw, h: bh, width, color, radius } => {
-                    stroke_rounded_rect(buf, w, clip, Clip::rect(*x, *y - dy, *bw, *bh), *radius, *width, *color)
-                }
-                DisplayItem::Text { x, y, text, size, face, color } => {
-                    let baseline = *y - dy;
-                    if baseline + size >= clip.y0 && baseline - size < clip.y1 {
-                        self.draw_text(buf, w, clip, *x, baseline, text, *size, *face, *color)
-                    }
-                }
-                DisplayItem::Image { x, y, w: iw, h: ih, image, radius } => {
-                    let area = Clip::rect(*x, *y - dy, *iw, *ih);
-                    match image {
-                        Some(image) => self.draw_image(buf, w, clip, area, *radius, image),
-                        None => fill_rounded_rect(buf, w, clip, area, *radius, palette.button),
-                    }
-                }
-                DisplayItem::Polygon { contours, color } => fill_polygon(buf, w, clip, contours, dy, *color),
-                DisplayItem::Clip(c) => clip = Clip { y0: c.y0 - dy, y1: c.y1 - dy, ..*c }.intersect(screen),
-            }
-        }
+                item.placed(-offsets[&layer])
+            })
+            .collect();
         let bar = Scrollbar::new(screen, content_height, dy, view.scale);
         if let Some(bar) = bar {
-            fill_rect(buf, w, bar.thumb, palette.scrollbar);
+            let (x, y, w, h) = (bar.thumb.x0, bar.thumb.y0, bar.thumb.x1 - bar.thumb.x0, bar.thumb.y1 - bar.thumb.y0);
+            items.push(DisplayItem::Rect { x, y, w, h, color: palette.scrollbar, radius: 0.0 });
         }
         for link in &mut links {
             link.y -= dy;
@@ -204,7 +203,120 @@ impl Renderer {
             scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines, hover_areas }
+
+        let mut layers: HashMap<_, _> = scrollers.iter().map(|s| (Some(s.id), (s.scroll, s.area))).collect();
+        layers.insert(None, (dy, screen));
+        let background = blend(palette.page.to_u32(), page_background, 255);
+        let background = Color((background >> 16) as u8, (background >> 8) as u8, background as u8, 255);
+        let damage = self.paint(buf, w, Frame { items, layers, screen }, background, age, palette);
+        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines, hover_areas, damage }
+    }
+
+    /// Paints `frame` over `background`, or just the parts of it that differ
+    /// from what `buf` showed `age` frames ago. Returns the parts painted, or
+    /// `None` if it all was.
+    fn paint(&mut self, buf: &mut [u32], w: usize, frame: Frame, background: Color, age: u8, palette: &Palette) -> Option<Vec<Clip>> {
+        let changes = match &self.last {
+            Some((last, last_background)) if *last_background == background && age > 0 => {
+                damage::changes(last, &frame, |item| self.bounds(item))
+            }
+            _ => None,
+        };
+        let since_last = changes.as_ref().and_then(|changes| changes.blit.is_none().then(|| changes.areas.clone()));
+        // An older buffer also missed what changed in the frames since it, and
+        // can't be blitted, as the blit is from the last frame's pixels.
+        let changes = changes.and_then(|mut changes| {
+            if age > 1 {
+                if changes.blit.is_some() {
+                    return None;
+                }
+                for missed in self.history.iter().take(age as usize - 1) {
+                    changes.areas.extend(missed.as_ref()?);
+                }
+                if self.history.len() < age as usize - 1 {
+                    return None;
+                }
+                changes.areas = damage::merge(changes.areas);
+            }
+            Some(changes)
+        });
+        self.history.push_front(since_last);
+        self.history.truncate(4);
+
+        let painted = match changes {
+            None => {
+                self.paint_area(buf, w, &frame.items, frame.screen, background, palette);
+                None
+            }
+            Some(Changes { blit, areas }) => {
+                if let Some(blit) = blit {
+                    blit_pixels(buf, w, blit);
+                }
+                for &area in &areas {
+                    self.paint_area(buf, w, &frame.items, area, background, palette);
+                }
+                Some(areas.into_iter().chain(blit.map(|blit| blit.area)).collect())
+            }
+        };
+        self.last = Some((frame, background));
+        painted
+    }
+
+    /// Paints the part of `items` inside `area` over `background`.
+    fn paint_area(&mut self, buf: &mut [u32], w: usize, items: &[DisplayItem], area: Clip, background: Color, palette: &Palette) {
+        fill_rect(buf, w, area, background);
+        let mut clip = area;
+        for item in items {
+            match item {
+                DisplayItem::Rect { x, y, w: rw, h: rh, color, radius } => {
+                    let rect = Clip::rect(*x, *y, *rw, *rh);
+                    if *radius > 0.0 {
+                        fill_rounded_rect(buf, w, clip, rect, *radius, *color)
+                    } else {
+                        fill_rect(buf, w, rect.intersect(clip), *color)
+                    }
+                }
+                DisplayItem::Border { x, y, w: bw, h: bh, width, color, radius } => {
+                    stroke_rounded_rect(buf, w, clip, Clip::rect(*x, *y, *bw, *bh), *radius, *width, *color)
+                }
+                DisplayItem::Text { x, y, text, size, face, color } => {
+                    if y + size >= clip.y0 && y - size < clip.y1 && *x < clip.x1 {
+                        self.draw_text(buf, w, clip, *x, *y, text, *size, *face, *color)
+                    }
+                }
+                DisplayItem::Image { x, y, w: iw, h: ih, image, radius } => {
+                    let rect = Clip::rect(*x, *y, *iw, *ih);
+                    match image {
+                        Some(image) => self.draw_image(buf, w, clip, rect, *radius, image),
+                        None => fill_rounded_rect(buf, w, clip, rect, *radius, palette.button),
+                    }
+                }
+                DisplayItem::Polygon { contours, color } => fill_polygon(buf, w, clip, contours, 0.0, *color),
+                DisplayItem::Clip(c) => clip = c.intersect(area),
+                DisplayItem::Layer(_) => {}
+            }
+        }
+    }
+
+    /// The area `item` may paint, with a pixel to spare for smoothed edges.
+    fn bounds(&self, item: &DisplayItem) -> Clip {
+        let grown = |c: Clip| Clip { x0: c.x0 - 1.0, y0: c.y0 - 1.0, x1: c.x1 + 1.0, y1: c.y1 + 1.0 };
+        match item {
+            DisplayItem::Rect { x, y, w, h, .. } | DisplayItem::Border { x, y, w, h, .. } | DisplayItem::Image { x, y, w, h, .. } => {
+                grown(Clip::rect(*x, *y, *w, *h))
+            }
+            // Glyphs can reach a little past their advance, and above the font size.
+            DisplayItem::Text { x, y, text, size, face, .. } => {
+                let width = self.fonts.measure(text, *size, *face);
+                grown(Clip { x0: x - size * 0.25, y0: y - size * 1.25, x1: x + width + size * 0.25, y1: y + size * 0.5 })
+            }
+            DisplayItem::Polygon { contours, .. } => {
+                let points = contours.iter().flatten();
+                let start = Clip { x0: f32::INFINITY, y0: f32::INFINITY, x1: f32::NEG_INFINITY, y1: f32::NEG_INFINITY };
+                grown(points.fold(start, |b, &(x, y)| Clip { x0: b.x0.min(x), y0: b.y0.min(y), x1: b.x1.max(x), y1: b.y1.max(y) }))
+            }
+            DisplayItem::Clip(_) | DisplayItem::Layer(_) => Clip::NONE,
+        }
     }
 
     /// Draws `image` scaled to fill `area`, blending it by its transparency,
@@ -261,6 +373,21 @@ impl Renderer {
             pen += m.advance_width;
         }
     }
+}
+
+/// Moves the pixels in `blit.area` down by `blit.dy`, or up if it's
+/// negative. What moves out of the area is lost, and what it uncovers is
+/// left as it was, to be painted.
+fn blit_pixels(buf: &mut [u32], w: usize, blit: Blit) {
+    let Blit { area, dy } = blit;
+    let (x0, x1, y0, y1) = (area.x0 as usize, area.x1 as usize, area.y0 as i64, area.y1 as i64);
+    let rows = (y0..y1).filter(|row| (y0..y1).contains(&(row - dy as i64)));
+    let mut copy = |row: i64| {
+        let from = (row - dy as i64) as usize * w;
+        buf.copy_within(from + x0..from + x1, row as usize * w + x0);
+    };
+    // Rows are copied in the order that doesn't overwrite ones still to move.
+    if dy > 0 { rows.rev().for_each(&mut copy) } else { rows.for_each(&mut copy) }
 }
 
 /// Fills `area`, which must already be clipped to the buffer.
@@ -494,6 +621,7 @@ mod tests {
                 drawings: None,
                 pointer: None,
             },
+            0,
         )
     }
 
@@ -520,6 +648,7 @@ mod tests {
                 drawings: None,
                 pointer: None,
             },
+            0,
         );
         buf
     }
@@ -585,7 +714,7 @@ mod tests {
             drawings: None,
             pointer: None,
         };
-        Renderer::new().render(&page, &mut buf, 200, 60, &view);
+        Renderer::new().render(&page, &mut buf, 200, 60, &view, 0);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
         let at = |x: usize, y: usize| buf[(top + y) * 200 + x] & 0xff;
         assert_eq!(at(0, 0), 0, "a circle's corner is clear");
@@ -649,6 +778,7 @@ mod tests {
                     drawings: None,
                     pointer: None,
                 },
+                0,
             )
         };
 
@@ -665,5 +795,143 @@ mod tests {
         assert_eq!(frame.scroll, 300.0);
         assert!(frame.area.contains(link.x, link.y), "the link scrolled into view");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// What changes from frame to frame in `painting_only_what_changed_matches_painting_everything`.
+    #[derive(Clone, Copy, Default)]
+    struct Moment {
+        pointer: Option<(f32, f32)>,
+        page: f32,
+        frame: f32,
+        caret: bool,
+        selection: Option<(usize, usize)>,
+        dark: bool,
+    }
+
+    #[test]
+    fn painting_only_what_changed_matches_painting_everything() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-damage-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("long.sx"),
+            r##"(page :padding 6
+                  (div :group true :border "#888" :radius 4 :padding 4 :hover (style :border "#f15125" :background "#ffffff20")
+                    (p :margin 0 :group-hover (style :color "#f15125") "a card in the frame"))
+                  (map (fn (i) (p :margin 4 "line " i " of the framed page")) (range 30)))"##,
+        )
+        .unwrap();
+        let ctx = std::rc::Rc::new(crate::loader::PageContext {
+            location: dir.join("outer.sx").to_string_lossy().into(),
+            params: Vec::new(),
+            depth: 0,
+            scale: 1.0,
+            state_key: String::new(),
+            store: Default::default(),
+            host: Default::default(),
+            frames_created: Default::default(),
+        });
+        let src = r##"(page :padding 10
+                        (p "address " (input :value "netscheme"))
+                        (div :group true :border "#333" :radius 6 :padding 8 :background "#00000010"
+                             :hover (style :border "#f15125")
+                          (p :margin 0 :group-hover (style :color "#f15125" :bold true) "card title")
+                          (p :margin 0 (canvas :width 60 :height 30 (rect :x 5 :y 5 :w 30 :h 20 :fill "#36c") (circle :x 40 :y 15 :r 12 :fill "#c63"))))
+                        (frame :src "long.sx" :height 160 :margin 0)
+                        (map (fn (i) (p "paragraph " i " below the frame")) (range 40)))"##;
+        let Ok(Value::Element(page)) = lisp::run(src, &ctx) else { panic!("not a page") };
+        let (w, h) = (300, 400);
+        let render = |renderer: &mut Renderer, buf: &mut [u32], moment: Moment, age: u8| {
+            let scroll = Scroll { page: moment.page, frames: HashMap::from([(0, moment.frame)]) };
+            let view = View {
+                scale: 1.0,
+                scroll: &scroll,
+                focus: Some(Focus { id: 0, cursor: 3, anchor: 3 }),
+                key_focus: None,
+                caret_visible: moment.caret,
+                dark: moment.dark,
+                search: None,
+                selection: moment.selection,
+                images: None,
+                drawings: None,
+                pointer: moment.pointer,
+            };
+            renderer.render(&page, buf, w, h, &view, age)
+        };
+        // Where the cards are, to point at them.
+        let areas = render(&mut Renderer::new(), &mut vec![0; w * h], Moment::default(), 0).hover_areas;
+        let middle = |c: Clip| Some(((c.x0 + c.x1) / 2.0, (c.y0 + c.y1) / 2.0));
+        let (card, framed_card) = (middle(areas[0]), middle(areas[1]));
+        let start = Moment { caret: true, ..Moment::default() };
+        let moments = [
+            start,
+            Moment { pointer: card, ..start },
+            Moment { pointer: Some((5.0, 395.0)), ..start },
+            Moment { caret: false, ..start },
+            Moment { frame: 40.0, ..start },
+            Moment { frame: 10.0, pointer: framed_card, ..start },
+            Moment { frame: 300.0, ..start },
+            Moment { page: 60.0, frame: 300.0, ..start },
+            Moment { page: 20.0, frame: 300.0, pointer: card, ..start },
+            Moment { page: 20.0, frame: 250.0, ..start },
+            Moment { selection: Some((2, 12)), ..start },
+            Moment { dark: true, ..start },
+            start,
+        ];
+        let full = |moment| {
+            let mut buf = vec![0; w * h];
+            render(&mut Renderer::new(), &mut buf, moment, 0);
+            buf
+        };
+        let expected: Vec<Vec<u32>> = moments.iter().map(|&m| full(m)).collect();
+
+        // A window with one buffer, which always holds the last frame.
+        let (mut renderer, mut buf) = (Renderer::new(), vec![0; w * h]);
+        let mut partial = 0;
+        for (i, &moment) in moments.iter().enumerate() {
+            let damage = render(&mut renderer, &mut buf, moment, if i == 0 { 0 } else { 1 }).damage;
+            partial += damage.is_some() as usize;
+            assert!(buf == expected[i], "frame {i} with one buffer differs from painting it all");
+        }
+        // All but the first, the one that scrolls two things at once, and the two that change the background.
+        assert_eq!(partial, moments.len() - 4, "the rest were painted in part");
+
+        // A window with two buffers, which take turns.
+        let (mut renderer, mut bufs) = (Renderer::new(), [vec![0; w * h], vec![0; w * h]]);
+        for (i, &moment) in moments.iter().enumerate() {
+            render(&mut renderer, &mut bufs[i % 2], moment, if i < 2 { 0 } else { 2 });
+            assert!(bufs[i % 2] == expected[i], "frame {i} with two buffers differs from painting it all");
+        }
+    }
+
+    #[test]
+    fn a_hover_paints_only_the_card() {
+        let src = r##"(page :padding 10 (p "above") (div :hover (style :background "#eee") :padding 8 "card") (p "below"))"##;
+        let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let mut renderer = Renderer::new();
+        let mut buf = vec![0; 200 * 200];
+        let scroll = Scroll::default();
+        let mut render = |pointer, age| {
+            let view = View {
+                scale: 1.0,
+                scroll: &scroll,
+                focus: None,
+                key_focus: None,
+                caret_visible: true,
+                dark: false,
+                search: None,
+                selection: None,
+                images: None,
+                drawings: None,
+                pointer,
+            };
+            renderer.render(&page, &mut buf, 200, 200, &view, age)
+        };
+        let first = render(None, 0);
+        assert_eq!(first.damage, None, "a new buffer is painted in full");
+        let card = first.hover_areas[0];
+        let hovered = render(Some((50.0, (card.y0 + card.y1) / 2.0)), 1);
+        let grown = Clip { x0: card.x0 - 1.0, y0: card.y0 - 1.0, x1: card.x1 + 1.0, y1: card.y1 + 1.0 };
+        assert_eq!(hovered.damage, Some(vec![grown.round_out()]), "just the card, and a pixel around it");
+        assert_eq!(render(Some((50.0, (card.y0 + card.y1) / 2.0)), 1).damage, Some(vec![]), "nothing changed");
     }
 }

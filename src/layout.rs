@@ -13,6 +13,7 @@ use crate::{
     style::{self, Color, Face, Palette, Style},
 };
 
+#[derive(Clone)]
 pub enum DisplayItem {
     /// A rectangle whose corners are rounded by `radius`, at most half its shorter side.
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color, radius: f32 },
@@ -26,6 +27,79 @@ pub enum DisplayItem {
     Polygon { contours: Vec<Contour>, color: Color },
     /// Items after this are only drawn inside `Clip`, until the next `Clip`.
     Clip(Clip),
+    /// Items after this scroll with this fixed-height frame, by `Scroller::id`,
+    /// or with the page if `None`, until the next `Layer`.
+    Layer(Option<usize>),
+}
+
+/// Images are the same if they're the same picture.
+impl PartialEq for DisplayItem {
+    fn eq(&self, other: &DisplayItem) -> bool {
+        use DisplayItem::*;
+        let same_image = |a: &Option<Rc<crate::image::Image>>, b: &Option<Rc<crate::image::Image>>| match (a, b) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        match (self, other) {
+            (Rect { x, y, w, h, color, radius }, Rect { x: x2, y: y2, w: w2, h: h2, color: c2, radius: r2 }) => {
+                (x, y, w, h, color, radius) == (x2, y2, w2, h2, c2, r2)
+            }
+            (Border { x, y, w, h, width, color, radius }, Border { x: x2, y: y2, w: w2, h: h2, width: t2, color: c2, radius: r2 }) => {
+                (x, y, w, h, width, color, radius) == (x2, y2, w2, h2, t2, c2, r2)
+            }
+            (Image { x, y, w, h, image, radius }, Image { x: x2, y: y2, w: w2, h: h2, image: i2, radius: r2 }) => {
+                (x, y, w, h, radius) == (x2, y2, w2, h2, r2) && same_image(image, i2)
+            }
+            (Text { x, y, text, size, face, color }, Text { x: x2, y: y2, text: t2, size: s2, face: f2, color: c2 }) => {
+                (x, y, text, size, face, color) == (x2, y2, t2, s2, f2, c2)
+            }
+            (Polygon { contours, color }, Polygon { contours: c2, color: col2 }) => (contours, color) == (c2, col2),
+            (Clip(a), Clip(b)) => a == b,
+            (Layer(a), Layer(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl DisplayItem {
+    /// The item with its y coordinates snapped to 64ths of a pixel, then
+    /// moved down by `dy`, a whole number of pixels. Snapped, a coordinate
+    /// moves exactly, so content painted at two scroll offsets lines up
+    /// to the bit, as moving its pixels needs. Layout in browsers works
+    /// in 64ths of a pixel for the same sort of reason.
+    pub fn placed(self, dy: f32) -> DisplayItem {
+        let snap = |y: f32| (y * 64.0).round() / 64.0 + dy;
+        use DisplayItem::*;
+        match self {
+            Rect { x, y, w, h, color, radius } => Rect { x, y: snap(y), w, h, color, radius },
+            Border { x, y, w, h, width, color, radius } => Border { x, y: snap(y), w, h, width, color, radius },
+            Image { x, y, w, h, image, radius } => Image { x, y: snap(y), w, h, image, radius },
+            Text { x, y, text, size, face, color } => Text { x, y: snap(y), text, size, face, color },
+            Polygon { mut contours, color } => {
+                contours.iter_mut().flatten().for_each(|point| point.1 = snap(point.1));
+                Polygon { contours, color }
+            }
+            Clip(clip) => Clip(crate::layout::Clip { y0: snap(clip.y0), y1: snap(clip.y1), ..clip }),
+            Layer(layer) => Layer(layer),
+        }
+    }
+
+    /// The item moved down by `dy`.
+    pub fn shifted(self, dy: f32) -> DisplayItem {
+        use DisplayItem::*;
+        match self {
+            Rect { x, y, w, h, color, radius } => Rect { x, y: y + dy, w, h, color, radius },
+            Border { x, y, w, h, width, color, radius } => Border { x, y: y + dy, w, h, width, color, radius },
+            Image { x, y, w, h, image, radius } => Image { x, y: y + dy, w, h, image, radius },
+            Text { x, y, text, size, face, color } => Text { x, y: y + dy, text, size, face, color },
+            Polygon { mut contours, color } => {
+                contours.iter_mut().flatten().for_each(|point| point.1 += dy);
+                Polygon { contours, color }
+            }
+            Clip(clip) => Clip(clip.shifted(dy)),
+            Layer(layer) => Layer(layer),
+        }
+    }
 }
 
 /// A rectangle, as edges, that drawing is limited to.
@@ -54,6 +128,26 @@ impl Clip {
 
     pub fn contains(self, x: f32, y: f32) -> bool {
         x >= self.x0 && x < self.x1 && y >= self.y0 && y < self.y1
+    }
+
+    /// Whether `other` is entirely inside this.
+    pub fn covers(self, other: Clip) -> bool {
+        self.x0 <= other.x0 && self.y0 <= other.y0 && self.x1 >= other.x1 && self.y1 >= other.y1
+    }
+
+    /// The rectangle moved down by `dy`.
+    pub fn shifted(self, dy: f32) -> Clip {
+        Clip { y0: self.y0 + dy, y1: self.y1 + dy, ..self }
+    }
+
+    /// The smallest rectangle containing both.
+    pub fn union(self, other: Clip) -> Clip {
+        Clip { x0: self.x0.min(other.x0), y0: self.y0.min(other.y0), x1: self.x1.max(other.x1), y1: self.y1.max(other.y1) }
+    }
+
+    /// Grown out to whole pixels.
+    pub fn round_out(self) -> Clip {
+        Clip { x0: self.x0.floor(), y0: self.y0.floor(), x1: self.x1.ceil(), y1: self.y1.ceil() }
     }
 }
 
@@ -371,6 +465,9 @@ pub struct Layout<'a> {
     /// the content so far: spacers don't stretch then.
     fitting: bool,
     right: f32,
+    /// How far the frames layout is inside are scrolled, in all. Their
+    /// content is laid out as if they weren't, and painting moves it.
+    scrolled: f32,
 }
 
 /// How much layout has produced, to go back to after laying something out
@@ -444,6 +541,7 @@ impl<'a> Layout<'a> {
             hover_areas: Vec::new(),
             fitting: false,
             right: 0.0,
+            scrolled: 0.0,
         }
     }
 
@@ -484,6 +582,25 @@ impl<'a> Layout<'a> {
         (self.next_char, self.paragraph) = (marks.next_char, marks.paragraph);
         self.next_frame_id = marks.next_frame_id;
         self.hover_areas.truncate(marks.hover_areas);
+    }
+
+    /// Moves the links, text lines and other areas recorded since `marks`
+    /// down by `dy`. Display items stay where they are.
+    fn shift_since(&mut self, marks: &Marks, dy: f32) {
+        for link in &mut self.links[marks.links..] {
+            link.y += dy;
+        }
+        for scroller in &mut self.scrollers[marks.scrollers..] {
+            scroller.area = scroller.area.shifted(dy);
+            scroller.bar = scroller.bar.map(|bar| bar.shifted(dy));
+        }
+        let areas = self.inputs[marks.inputs..].iter_mut().map(|input| &mut input.area);
+        let areas = areas.chain(self.matches[marks.matches..].iter_mut().map(|m| &mut m.area));
+        let areas = areas.chain(self.key_targets[marks.key_targets..].iter_mut().map(|k| &mut k.area));
+        let areas = areas.chain(self.hover_areas[marks.hover_areas..].iter_mut());
+        for area in areas.chain(self.lines[marks.lines..].iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
+            *area = area.shifted(dy);
+        }
     }
 
     /// `el`'s style, with its `:hover` style if it's hovered and its
@@ -794,7 +911,7 @@ impl<'a> Layout<'a> {
             _ => 1.0,
         };
         let height = match el.attr("height") {
-            Some(Value::Str(fill)) if &**fill == "fill" => Some((self.viewport_height - y).max(40.0 * self.scale)),
+            Some(Value::Str(fill)) if &**fill == "fill" => Some((self.viewport_height - (y - self.scrolled)).max(40.0 * self.scale)),
             Some(Value::Num(n)) => Some(*n as f32 * self.scale),
             _ => None,
         };
@@ -856,9 +973,20 @@ impl<'a> Layout<'a> {
         let background = self.style(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
         let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
         self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background, radius: 0.0 });
+        // The content is laid out unscrolled, in the frame's layer, which
+        // painting moves; so the clip and pointer move the other way.
         let outer_scroller = self.scroller.replace(id);
-        self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
+        let marks = self.marks();
+        let saved = (self.clip, self.pointer, self.scrolled);
+        self.clip = self.clip.shifted(scroll);
+        self.pointer = self.pointer.map(|(x, y)| (x, y + scroll));
+        self.scrolled += scroll;
+        self.items.push(DisplayItem::Layer(Some(id)));
+        self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
+        self.items.push(DisplayItem::Layer(outer_scroller));
+        (self.clip, self.pointer, self.scrolled) = saved;
         self.scroller = outer_scroller;
+        self.shift_since(&marks, -scroll);
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
         if let Some(bar) = bar {
             self.items.push(DisplayItem::Rect {

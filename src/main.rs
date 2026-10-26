@@ -1,5 +1,6 @@
 mod browser;
 mod canvas;
+mod damage;
 mod dom;
 mod image;
 mod layout;
@@ -152,7 +153,7 @@ fn write_screenshot(
     for step in steps {
         match step {
             Step::Click(x, y) => {
-                browser.render(&mut buf, w, h, 1.0);
+                browser.render(&mut buf, w, h, 1.0, 0);
                 if !browser.click(*x, *y) {
                     return Err(format!("nothing to click at {x},{y}").into());
                 }
@@ -161,13 +162,13 @@ fn write_screenshot(
                 browser.point_at(Some((*x, *y)));
             }
             Step::Drag((x0, y0), (x1, y1)) => {
-                browser.render(&mut buf, w, h, 1.0);
+                browser.render(&mut buf, w, h, 1.0, 0);
                 browser.press(*x0, *y0, 1);
                 browser.drag_to(*x1, *y1);
                 browser.release(*x1, *y1);
             }
             Step::KeyDown(name) | Step::KeyUp(name) => {
-                browser.render(&mut buf, w, h, 1.0);
+                browser.render(&mut buf, w, h, 1.0, 0);
                 if !browser.listening() {
                     return Err(format!("no canvas has the keyboard for {name:?}: click one that listens for keys first").into());
                 }
@@ -178,7 +179,7 @@ fn write_screenshot(
             }
             Step::Frames(n) => {
                 for _ in 0..*n {
-                    browser.render(&mut buf, w, h, 1.0);
+                    browser.render(&mut buf, w, h, 1.0, 0);
                     browser.frame(browser::FRAME);
                 }
             }
@@ -189,17 +190,17 @@ fn write_screenshot(
                     _ => None,
                 };
                 if let Some(key) = opening {
-                    browser.render(&mut buf, w, h, 1.0);
+                    browser.render(&mut buf, w, h, 1.0, 0);
                     browser.key(key, false, (0.0, 0.0));
                 }
                 for key in keys(text) {
-                    browser.render(&mut buf, w, h, 1.0);
+                    browser.render(&mut buf, w, h, 1.0, 0);
                     browser.key(key, false, (0.0, 0.0));
                 }
             }
         }
     }
-    browser.render(&mut buf, w, h, 1.0);
+    browser.render(&mut buf, w, h, 1.0, 0);
     let rgb: Vec<u8> = buf.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(fs::File::create(out)?), w as u32, h as u32);
     encoder.set_color(png::ColorType::Rgb);

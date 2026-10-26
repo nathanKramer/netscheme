@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use softbuffer::Rect;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -20,6 +21,7 @@ use winit::{
 use crate::{
     browser::{Browser, Hover, Key, LINE_HEIGHT},
     image::Image,
+    layout::Clip,
     loader::Wake,
 };
 
@@ -311,8 +313,15 @@ impl ApplicationHandler<Loaded> for App {
                 state.surface.resize(w, h).expect("resize surface");
                 let mut buffer = state.surface.buffer_mut().expect("surface buffer");
                 let scale = state.window.scale_factor() as f32;
-                self.browser.render(&mut buffer, size.width as usize, size.height as usize, scale);
-                buffer.present().expect("present buffer");
+                let age = buffer.age();
+                match self.browser.render(&mut buffer, size.width as usize, size.height as usize, scale, age) {
+                    // Only the parts that changed need sending to the compositor.
+                    Some(areas) => {
+                        let rects: Vec<Rect> = areas.iter().filter_map(|area| to_rect(*area)).collect();
+                        buffer.present_with_damage(&rects).expect("present buffer");
+                    }
+                    None => buffer.present().expect("present buffer"),
+                }
                 // Scrolling and re-running the page move things under a still pointer.
                 self.update_cursor();
             }
@@ -387,4 +396,10 @@ impl ApplicationHandler<Loaded> for App {
             _ => {}
         }
     }
+}
+
+/// A painted area as softbuffer's rectangle, or `None` if it's empty.
+fn to_rect(area: Clip) -> Option<Rect> {
+    let (width, height) = (NonZeroU32::new((area.x1 - area.x0) as u32)?, NonZeroU32::new((area.y1 - area.y0) as u32)?);
+    Some(Rect { x: area.x0 as u32, y: area.y0 as u32, width, height })
 }

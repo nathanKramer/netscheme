@@ -35,7 +35,10 @@
   (stage "Paint" "paint.rs"
          "Draws the list into a buffer of pixels, with fontdue rasterizing each"
          " glyph, and images scaled to size and blended by their transparency."
-         " The buffer goes to the window through softbuffer.")
+         " After the first frame it only paints what changed: " (code "damage.rs")
+         " compares the new list with the last one, and moves the pixels of"
+         " whatever scrolled rather than painting them again. The buffer goes to"
+         " the window through softbuffer, with the parts that changed marked.")
   (stage "Run the session" "browser.rs, window.rs"
          "Holds the history, the state, scrolling and focus, and turns clicks"
          " and keys into calls on the page.")
@@ -112,6 +115,8 @@
          " loading pages into frames.")
   (entry "dom.rs" "The tree of elements and text that a page builds.")
   (entry "canvas.rs" "A canvas's shapes as polygons.")
+  (entry "damage.rs" "Which parts of the window changed between two frames, so"
+         " only those are painted again, the way browsers repaint.")
   (entry "image.rs" "Decoding PNG files, and scaling images.")
   (entry "settings.rs" "Settings kept between runs, like dark mode.")
   (entry "test_server.rs" "A tiny HTTP server, so tests can load pages from the web.")
