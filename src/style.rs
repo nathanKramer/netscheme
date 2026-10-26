@@ -111,6 +111,8 @@ pub struct Style {
     pub padding: f32,
     pub padding_left: f32,
     pub margin: f32,
+    /// How round the corners of its box are.
+    pub radius: f32,
 }
 
 impl Style {
@@ -126,6 +128,7 @@ impl Style {
             padding: 0.0,
             padding_left: 0.0,
             margin: 0.0,
+            radius: 0.0,
         }
     }
 
@@ -134,7 +137,7 @@ impl Style {
     }
 
     pub fn compute(el: &Element, parent: &Style) -> Style {
-        let mut s = Style { background: None, padding: 0.0, padding_left: 0.0, margin: 0.0, ..parent.clone() };
+        let mut s = Style { background: None, padding: 0.0, padding_left: 0.0, margin: 0.0, radius: 0.0, ..parent.clone() };
         let mut padding_left = None;
 
         // The "user-agent stylesheet".
@@ -169,6 +172,7 @@ impl Style {
                 ("padding", Value::Num(n)) => s.padding = *n as f32,
                 ("padding-left", Value::Num(n)) => padding_left = Some(*n as f32),
                 ("margin", Value::Num(n)) => s.margin = *n as f32,
+                ("radius", Value::Num(n)) => s.radius = (*n as f32).max(0.0),
                 _ => {}
             }
         }
@@ -182,4 +186,19 @@ pub fn parse_color(s: &str, fallback: Color) -> Color {
         eprintln!("warning: unknown color {s:?}");
         fallback
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::{self, Value};
+
+    #[test]
+    fn radius_is_read_but_not_inherited() {
+        let Ok(Value::Element(page)) = lisp::run(r#"(div :radius 8 (span "x"))"#, &crate::loader::test_context()) else { panic!("not an element") };
+        let style = Style::compute(&page, &Style::root(&Palette::LIGHT));
+        assert_eq!(style.radius, 8.0);
+        let crate::dom::Node::Element(span) = &page.children[0] else { panic!("no span") };
+        assert_eq!(Style::compute(span, &style).radius, 0.0);
+    }
 }

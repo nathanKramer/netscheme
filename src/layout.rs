@@ -14,9 +14,10 @@ use crate::{
 };
 
 pub enum DisplayItem {
-    Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
+    /// A rectangle whose corners are rounded by `radius`, at most half its shorter side.
+    Rect { x: f32, y: f32, w: f32, h: f32, color: Color, radius: f32 },
     /// An image scaled to `w` × `h`, or an empty box if it couldn't be loaded.
-    Image { x: f32, y: f32, w: f32, h: f32, image: Option<Rc<Image>> },
+    Image { x: f32, y: f32, w: f32, h: f32, image: Option<Rc<Image>>, radius: f32 },
     /// `y` is the text baseline.
     Text { x: f32, y: f32, text: String, size: f32, face: Face, color: Color },
     /// The area inside `contours`, by the nonzero rule, with smoothed edges.
@@ -453,7 +454,8 @@ impl<'a> Layout<'a> {
 
         let h = bottom + pad - y;
         if let Some(color) = style.background {
-            self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color });
+            let radius = style.radius * self.scale;
+            self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color, radius });
         }
         // After the children's, so a click on a child's own handler or link wins.
         if let Some(handler) = el.attr("on-click") {
@@ -577,10 +579,10 @@ impl<'a> Layout<'a> {
             let color = self.palette.border;
             let h = bottom - y;
             self.items.extend([
-                DisplayItem::Rect { x, y, w, h: border, color },
-                DisplayItem::Rect { x, y: bottom - border, w, h: border, color },
-                DisplayItem::Rect { x, y, w: border, h, color },
-                DisplayItem::Rect { x: x + w - border, y, w: border, h, color },
+                DisplayItem::Rect { x, y, w, h: border, color, radius: 0.0 },
+                DisplayItem::Rect { x, y: bottom - border, w, h: border, color, radius: 0.0 },
+                DisplayItem::Rect { x, y, w: border, h, color, radius: 0.0 },
+                DisplayItem::Rect { x: x + w - border, y, w: border, h, color, radius: 0.0 },
             ]);
         }
         bottom
@@ -618,13 +620,13 @@ impl<'a> Layout<'a> {
         // The page's background fills the frame, even below its content.
         let background = Style::compute(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
         let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
-        self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background });
+        self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background, radius: 0.0 });
         let outer_scroller = self.scroller.replace(id);
         self.block(page, &Style::root(self.palette), area.x0, area.y0 - scroll, area.x1 - area.x0);
         self.scroller = outer_scroller;
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
         if let Some(bar) = bar {
-            self.items.push(DisplayItem::Rect { x: bar.thumb.x0, y: bar.thumb.y0, w: bar.thumb.x1 - bar.thumb.x0, h: bar.thumb.y1 - bar.thumb.y0, color: self.palette.scrollbar });
+            self.items.push(DisplayItem::Rect { x: bar.thumb.x0, y: bar.thumb.y0, w: bar.thumb.x1 - bar.thumb.x0, h: bar.thumb.y1 - bar.thumb.y0, color: self.palette.scrollbar, radius: 0.0 });
         }
         self.items.push(DisplayItem::Clip(outer));
         self.scrollers.push(Scroller { id, area: self.clip, scroll, bar });
@@ -744,6 +746,9 @@ impl<'a> Layout<'a> {
         let baseline_y = y + above;
 
         // Backgrounds first so neighbouring text is never painted over.
+        // Consecutive pieces of one segment share a background, so rounded
+        // corners go round a whole phrase rather than each word.
+        let mut last_background: Option<(usize, usize)> = None;
         for piece in line {
             let segment = &run[piece.segment];
             let (height, baseline) = self.piece_box(segment);
@@ -754,7 +759,8 @@ impl<'a> Layout<'a> {
                     continue;
                 }
                 Some(Embed::Image(image, w, h, _)) => {
-                    self.items.push(DisplayItem::Image { x: px, y: py, w: *w, h: *h, image: image.clone() });
+                    let radius = segment.style.radius * self.scale;
+                    self.items.push(DisplayItem::Image { x: px, y: py, w: *w, h: *h, image: image.clone(), radius });
                     if let Some(action) = &segment.action {
                         self.push_link(Clip::rect(px, py, *w, *h), action.clone());
                     }
@@ -771,7 +777,18 @@ impl<'a> Layout<'a> {
                 None => {}
             }
             if let Some(color) = segment.style.background {
-                self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color });
+                match last_background.and_then(|(i, item)| (i == piece.segment).then_some(item)) {
+                    Some(item) => {
+                        if let DisplayItem::Rect { x: start, w, .. } = &mut self.items[item] {
+                            *w = px + piece.w - *start;
+                        }
+                    }
+                    None => {
+                        let radius = segment.style.radius * self.scale;
+                        last_background = Some((piece.segment, self.items.len()));
+                        self.items.push(DisplayItem::Rect { x: px, y: py, w: piece.w, h: height, color, radius });
+                    }
+                }
             }
             if let Some(action) = &segment.action {
                 self.push_link(Clip::rect(px, py, piece.w, height), action.clone());
@@ -792,7 +809,7 @@ impl<'a> Layout<'a> {
             if style.underline {
                 let thickness = (size / 14.0).max(1.0).round();
                 let y = (baseline_y + size * 0.1).round();
-                self.items.push(DisplayItem::Rect { x: x + piece.x, y, w: piece.w, h: thickness, color: style.color });
+                self.items.push(DisplayItem::Rect { x: x + piece.x, y, w: piece.w, h: thickness, color: style.color, radius: 0.0 });
             }
         }
         y + above + below
@@ -822,7 +839,7 @@ impl<'a> Layout<'a> {
             && from < to
         {
             let (x0, x1) = (chars[from - start].1, chars[to - start - 1].2);
-            self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color: self.palette.selection });
+            self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color: self.palette.selection, radius: 0.0 });
         }
         let caret_xs: Vec<f32> = chars.iter().map(|c| c.1).chain(chars.last().map(|c| c.2)).collect();
         let (x0, x1) = (caret_xs.first().copied().unwrap_or(x), caret_xs.last().copied().unwrap_or(x));
@@ -853,7 +870,7 @@ impl<'a> Layout<'a> {
             if chars[i..i + n].iter().zip(query).all(|((c, ..), q)| lower(*c) == *q) {
                 let (x0, x1) = (chars[i].1, chars[i + n - 1].2);
                 let color = if self.matches.len() == search.current { self.palette.current_match } else { self.palette.found };
-                self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color });
+                self.items.push(DisplayItem::Rect { x: x0, y, w: x1 - x0, h, color, radius: 0.0 });
                 self.matches.push(Match { area: Clip::rect(x0, y, x1 - x0, h), frame: self.scroller });
                 i += n;
             } else {
@@ -992,8 +1009,8 @@ impl<'a> Layout<'a> {
             None => (thin, style.palette.border),
         };
         let background = style.background.unwrap_or(style.palette.input);
-        self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color });
-        self.items.push(DisplayItem::Rect { x: x + border, y: y + border, w: w - 2.0 * border, h: h - 2.0 * border, color: background });
+        self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color, radius: 0.0 });
+        self.items.push(DisplayItem::Rect { x: x + border, y: y + border, w: w - 2.0 * border, h: h - 2.0 * border, color: background, radius: 0.0 });
 
         let value = match el.attr("value") {
             None | Some(Value::Nil) => String::new(),
@@ -1020,7 +1037,7 @@ impl<'a> Layout<'a> {
         if let Some((a, c)) = selection {
             let (start, end) = (offsets[a.min(c)], offsets[a.max(c)]);
             let highlight = style.palette.selection;
-            self.items.push(DisplayItem::Rect { x: text_x + start, y: y + inset, w: end - start, h: line_height, color: highlight });
+            self.items.push(DisplayItem::Rect { x: text_x + start, y: y + inset, w: end - start, h: line_height, color: highlight, radius: 0.0 });
         }
         let (text, color) = match el.attr("placeholder") {
             Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
@@ -1032,7 +1049,7 @@ impl<'a> Layout<'a> {
             && self.caret_visible
             && selection.is_none()
         {
-            let caret = DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color };
+            let caret = DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color, radius: 0.0 };
             self.items.push(caret);
         }
         self.items.push(DisplayItem::Clip(outer));
@@ -1051,7 +1068,8 @@ impl<'a> Layout<'a> {
         self.clip = area.intersect(outer);
         self.items.push(DisplayItem::Clip(self.clip));
         if let Some(color) = style.background {
-            self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w: area.x1 - area.x0, h: area.y1 - area.y0, color });
+            let radius = style.radius * self.scale;
+            self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w: area.x1 - area.x0, h: area.y1 - area.y0, color, radius });
         }
         let first_link = self.links.len();
         let drawn = self.drawings.and_then(|drawings| drawings.get(&(Rc::as_ptr(el) as usize)));
@@ -1069,10 +1087,10 @@ impl<'a> Layout<'a> {
                 let (x, y, w, h) = (area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
                 let (thick, color) = (2.0 * self.scale.round().max(1.0), self.palette.focus);
                 self.items.extend([
-                    DisplayItem::Rect { x, y, w, h: thick, color },
-                    DisplayItem::Rect { x, y: y + h - thick, w, h: thick, color },
-                    DisplayItem::Rect { x, y, w: thick, h, color },
-                    DisplayItem::Rect { x: x + w - thick, y, w: thick, h, color },
+                    DisplayItem::Rect { x, y, w, h: thick, color, radius: 0.0 },
+                    DisplayItem::Rect { x, y: y + h - thick, w, h: thick, color, radius: 0.0 },
+                    DisplayItem::Rect { x, y, w: thick, h, color, radius: 0.0 },
+                    DisplayItem::Rect { x: x + w - thick, y, w: thick, h, color, radius: 0.0 },
                 ]);
             }
             if !self.clip.is_empty() {
@@ -1323,6 +1341,40 @@ mod tests {
 
         let (items, _) = layout_with_image(r#"(page :padding 0 (img :src "pic.png" :width :fill :height 10))"#);
         assert_eq!(image_boxes(&items), [(800.0, 10.0, true)], "stretched to the given height");
+    }
+
+    #[test]
+    fn radius_is_scaled_onto_boxes_and_images() {
+        let src = r##"(page :padding 0 (div :radius 6 :background "#eee" (span :radius 3 :background "#ccc" "tag")))"##;
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let (fonts, scrolls) = (Fonts::load(), HashMap::new());
+        let mut layout = Layout::new(&fonts, &Palette::LIGHT, 2.0, 600.0, &scrolls, None, true);
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 400.0);
+        let radii: Vec<f32> = layout.items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Rect { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(radii, [0.0, 12.0, 6.0], "the page, the div and the span");
+
+        let (items, _) = layout_with_image(r#"(page (img :src "pic.png" :radius 10) (img :src "pic.png"))"#);
+        let radii: Vec<f32> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Image { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(radii, [10.0, 0.0]);
+    }
+
+    #[test]
+    fn a_phrase_shares_one_background() {
+        let (items, _) = layout(r##"(page :padding 0 (p (span :background "#ccc" :radius 99 "two words")))"##, 400.0);
+        let rects = items.iter().filter(|item| matches!(item, DisplayItem::Rect { .. })).count();
+        assert_eq!(rects, 2, "the page's and the span's");
     }
 
     #[test]

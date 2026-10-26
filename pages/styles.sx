@@ -24,10 +24,17 @@
   (entry ":margin 16" "Space below a block, before whatever comes next.")
   (entry ":max-width 720" "The widest the content may be. Narrower content is centred, and the"
          " background still fills the whole box. These pages use it on " (code "page") ".")
+  (entry ":radius 8" "Rounds the corners of the element's background, or of an " (code "img") "."
+         " It's capped at half the shorter side, so a big one like " (code "999")
+         " makes a square image a circle and a wide box a pill. Click areas stay square.")
   (example
     '(div :background (light-dark "#e8f1fb" "#1f2530") :padding 16
        (p :size 20 :bold true :margin 6 "A heading of sorts")
        (p :margin 0 :color (light-dark "#555" "#aaa") "With a quieter line below.")))
+  (example
+    '(div :background (light-dark "#e8f1fb" "#1f2530") :padding 16 :radius 12
+       (p :margin 0 (span :background warm :color "#fff" :padding 8 :radius 999 :bold true "new")
+          " a pill, in a box with rounded corners.")))
 
   (section "Styles are values")
   (p "The " (code "style") " function takes attributes and returns them as a list."

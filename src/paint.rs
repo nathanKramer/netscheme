@@ -142,8 +142,13 @@ impl Renderer {
         let mut clip = screen;
         for item in &items {
             match item {
-                DisplayItem::Rect { x, y, w: rw, h: rh, color } => {
-                    fill_rect(buf, w, Clip::rect(*x, *y - dy, *rw, *rh).intersect(clip), *color)
+                DisplayItem::Rect { x, y, w: rw, h: rh, color, radius } => {
+                    let area = Clip::rect(*x, *y - dy, *rw, *rh);
+                    if *radius > 0.0 {
+                        fill_rounded_rect(buf, w, clip, area, *radius, *color)
+                    } else {
+                        fill_rect(buf, w, area.intersect(clip), *color)
+                    }
                 }
                 DisplayItem::Text { x, y, text, size, face, color } => {
                     let baseline = *y - dy;
@@ -151,11 +156,11 @@ impl Renderer {
                         self.draw_text(buf, w, clip, *x, baseline, text, *size, *face, *color)
                     }
                 }
-                DisplayItem::Image { x, y, w: iw, h: ih, image } => {
+                DisplayItem::Image { x, y, w: iw, h: ih, image, radius } => {
                     let area = Clip::rect(*x, *y - dy, *iw, *ih);
                     match image {
-                        Some(image) => self.draw_image(buf, w, clip, area, image),
-                        None => fill_rect(buf, w, area.intersect(clip), palette.button),
+                        Some(image) => self.draw_image(buf, w, clip, area, *radius, image),
+                        None => fill_rounded_rect(buf, w, clip, area, *radius, palette.button),
                     }
                 }
                 DisplayItem::Polygon { contours, color } => fill_polygon(buf, w, clip, contours, dy, *color),
@@ -182,8 +187,9 @@ impl Renderer {
         Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines }
     }
 
-    /// Draws `image` scaled to fill `area`, blending it by its transparency.
-    fn draw_image(&mut self, buf: &mut [u32], w: usize, clip: Clip, area: Clip, image: &Rc<Image>) {
+    /// Draws `image` scaled to fill `area`, blending it by its transparency,
+    /// with its corners rounded by `radius`.
+    fn draw_image(&mut self, buf: &mut [u32], w: usize, clip: Clip, area: Clip, radius: f32, image: &Rc<Image>) {
         let (x0, y0) = (area.x0.round() as i64, area.y0.round() as i64);
         let (iw, ih) = ((area.x1 - area.x0).round().max(1.0) as u32, (area.y1 - area.y0).round().max(1.0) as u32);
         let visible = Clip::rect(x0 as f32, y0 as f32, iw as f32, ih as f32).intersect(clip);
@@ -194,10 +200,16 @@ impl Renderer {
             self.scaled.clear();
         }
         let pixels = self.scaled.entry((image.id, iw, ih)).or_insert_with(|| image.scaled(iw, ih));
+        let shape = Clip::rect(x0 as f32, y0 as f32, iw as f32, ih as f32);
         for py in visible.y0.round() as i64..visible.y1.round() as i64 {
             for px in visible.x0.round() as i64..visible.x1.round() as i64 {
                 let i = (((py - y0) * iw as i64 + (px - x0)) * 4) as usize;
-                let [r, g, b, a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+                let [mut r, mut g, mut b, mut a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+                let coverage = corner_coverage(shape, radius, px, py);
+                if coverage < 1.0 {
+                    // Premultiplied, so the colours fade along with the alpha.
+                    [r, g, b, a] = [r, g, b, a].map(|c| (c as f32 * coverage).round() as u8);
+                }
                 if a == 0 {
                     continue;
                 }
@@ -244,6 +256,47 @@ fn fill_rect(buf: &mut [u32], w: usize, area: Clip, color: Color) {
     for row in y0..y1 {
         buf[row * w + x0..row * w + x1].fill(color.to_u32());
     }
+}
+
+/// Fills `area` with its corners rounded by `radius`, blending the pixels
+/// along each curve by how much of them it covers.
+fn fill_rounded_rect(buf: &mut [u32], w: usize, clip: Clip, area: Clip, radius: f32, color: Color) {
+    let visible = area.intersect(clip);
+    if visible.is_empty() {
+        return;
+    }
+    let r = radius.min((area.x1 - area.x0) / 2.0).min((area.y1 - area.y0) / 2.0);
+    // The rows between the corners are solid.
+    let (top, bottom) = ((area.y0 + r).round(), (area.y1 - r).round());
+    fill_rect(buf, w, Clip { y0: top, y1: bottom, ..area }.intersect(visible), color);
+    let (x0, x1) = (visible.x0.round() as i64, visible.x1.round() as i64);
+    let rows = (visible.y0.round() as i64..visible.y1.round() as i64).filter(|&py| (py as f32) < top || (py as f32) >= bottom);
+    for py in rows {
+        for px in x0..x1 {
+            let alpha = (corner_coverage(area, radius, px, py) * 255.0).round() as u8;
+            if alpha > 0 {
+                let dst = &mut buf[py as usize * w + px as usize];
+                *dst = blend(*dst, color, alpha);
+            }
+        }
+    }
+}
+
+/// How much of pixel (`px`, `py`) is inside `area` with its corners rounded
+/// by `radius`, at most half its shorter side: 1 away from the corners, and
+/// fading out over a pixel across each curve.
+fn corner_coverage(area: Clip, radius: f32, px: i64, py: i64) -> f32 {
+    let r = radius.min((area.x1 - area.x0) / 2.0).min((area.y1 - area.y0) / 2.0);
+    if r <= 0.0 {
+        return 1.0;
+    }
+    let (x, y) = (px as f32 + 0.5, py as f32 + 0.5);
+    // The centre of the nearest corner's circle; on a straight edge, the nearest point on the inner box.
+    let (cx, cy) = (x.clamp(area.x0 + r, area.x1 - r), y.clamp(area.y0 + r, area.y1 - r));
+    if cx == x || cy == y {
+        return 1.0;
+    }
+    (0.5 - ((x - cx).hypot(y - cy) - r)).clamp(0.0, 1.0)
 }
 
 /// Rows of samples taken in each row of pixels, to smooth a polygon's edges.
@@ -393,6 +446,41 @@ mod tests {
         assert_eq!(at(100, 11), 0xff, "and an edge");
         assert_eq!(at(199, 15), 0xff, "a shape reaches the canvas's edge");
         assert_eq!(at(150, 30), 0, "and stops there");
+    }
+
+    #[test]
+    fn rounded_boxes_blend_their_corners() {
+        let src = r##"(page :padding 0 :background "#000" (div :radius 20 :background "#fff" :padding 40))"##;
+        let buf = pixels(src, 100);
+        let at = |x: usize, y: usize| buf[y * 200 + x] & 0xff;
+        assert_eq!(at(0, 0), 0, "the corner shows the background");
+        assert_eq!(at(100, 40), 0xff, "the middle is filled");
+        assert_eq!(at(100, 0), 0xff, "and the straight edges");
+        // Its centre, (1.5, 12.5), is 19.96 px from the corner circle's, (20, 20).
+        let edge = at(1, 12);
+        assert!(edge > 0x20 && edge < 0xe0, "blended on the curve: {edge:#x}");
+
+        let square = pixels(r##"(page :padding 0 :background "#000" (div :background "#fff" :padding 40))"##, 100);
+        assert_eq!(square[0] & 0xff, 0xff, "no radius, square corners");
+        let zero = pixels(r##"(page :padding 0 :background "#000" (div :radius 0 :background "#fff" :padding 40))"##, 100);
+        assert!(zero == square, "radius 0 is the same as none");
+    }
+
+    #[test]
+    fn rounded_images_have_clear_corners() {
+        let Ok(Value::Element(page)) = lisp::run(r##"(page :padding 0 :background "#000" (img :src "pic.png" :width 40 :radius 999))"##, &crate::loader::test_context()) else { panic!("not a page") };
+        let image = Image { id: 0, width: 4, height: 4, pixels: vec![255; 4 * 4 * 4] };
+        let images = crate::loader::Images::from([("pic.png".to_string(), Ok(Rc::new(image)))]);
+        let mut buf = vec![0; 200 * 60];
+        let scroll = Scroll { page: 0.0, frames: HashMap::new() };
+        let view = View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: Some(&images), drawings: None };
+        Renderer::new().render(&page, &mut buf, 200, 60, &view);
+        let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
+        let at = |x: usize, y: usize| buf[(top + y) * 200 + x] & 0xff;
+        assert_eq!(at(0, 0), 0, "a circle's corner is clear");
+        assert_eq!(at(20, 20), 0xff, "its middle is the image");
+        let edge = at(1, 12);
+        assert!(edge > 0x20 && edge < 0xe0, "blended on the curve: {edge:#x}");
     }
 
     const TALL: &str = r#"(page :padding 0 (div :padding 500 (a :href "x.sx" "link")))"#;
