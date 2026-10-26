@@ -78,6 +78,11 @@
     '(p (img :src logo :width 24 :align "middle") " small, "
         (img :src logo :width 48 :align "middle") " medium, and "
         (img :src logo :width 96 :align "middle") " large."))
+  (p "With " (code ":width :fill") " an image is as wide as the block it's in,"
+     " and keeps its proportions as the window resizes. A " (code ":height")
+     " as well stretches it to that height:")
+  (example
+    '(div :max-width 160 (img :src logo :width :fill)))
   (p "An image inside an " (code "a") " is a link. One that can't be loaded"
      " keeps its space as an empty box, and the reason is printed to the terminal.")
   (p "Images can be files or on the web, but pages from the web can only load"

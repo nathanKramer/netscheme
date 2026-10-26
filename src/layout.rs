@@ -447,7 +447,7 @@ impl<'a> Layout<'a> {
         let bottom = match &*el.tag {
             "row" => self.row(&el.children, &style, inner_x, top, inner_w),
             "frame" => self.frame(el, inner_x, top, inner_w),
-            "pre" => self.preformatted(&el.children, &style, inner_x, top),
+            "pre" => self.preformatted(&el.children, &style, inner_x, top, inner_w),
             _ => self.flow(&el.children, &style, inner_x, top, inner_w),
         };
 
@@ -470,7 +470,7 @@ impl<'a> Layout<'a> {
         for child in children {
             match child {
                 Node::Text(text) => run.push(Segment::text(text, style)),
-                Node::Element(child) if dom::is_inline(&child.tag) => self.collect_inline(child, style, None, None, &mut run),
+                Node::Element(child) if dom::is_inline(&child.tag) => self.collect_inline(child, style, None, None, w, &mut run),
                 Node::Element(child) => {
                     cy = self.inline_run(&mut run, x, cy, w);
                     cy = self.block(child, style, x, cy, w);
@@ -482,12 +482,12 @@ impl<'a> Layout<'a> {
 
     /// Text that keeps its spaces and line breaks, as code needs. Lines
     /// don't wrap. Inline elements inside can style parts of it.
-    fn preformatted(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32) -> f32 {
+    fn preformatted(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
         let mut run = Vec::new();
         for child in children {
             match child {
                 Node::Text(text) => run.push(Segment::text(text, style)),
-                Node::Element(child) => self.collect_inline(child, style, None, None, &mut run),
+                Node::Element(child) => self.collect_inline(child, style, None, None, w, &mut run),
             }
         }
         let mut cy = y;
@@ -874,7 +874,8 @@ impl<'a> Layout<'a> {
     /// Flattens an inline element into styled segments. Inline backgrounds
     /// and actions apply to everything inside them; block elements nested in
     /// inline ones are flattened too, as this engine has no anonymous block boxes.
-    fn collect_inline(&self, el: &Rc<Element>, parent: &Style, background: Option<Color>, action: Option<Action>, out: &mut Vec<Segment>) {
+    /// `width` is the content width of the enclosing block.
+    fn collect_inline(&self, el: &Rc<Element>, parent: &Style, background: Option<Color>, action: Option<Action>, width: f32, out: &mut Vec<Segment>) {
         let mut style = Style::compute(el, parent);
         if &*el.tag == "input" {
             let style = Rc::new(style);
@@ -891,7 +892,7 @@ impl<'a> Layout<'a> {
             return;
         }
         if &*el.tag == "img" {
-            let image = self.image_box(el);
+            let image = self.image_box(el, width);
             out.push(Segment { text: "".into(), style: Rc::new(style), action, padding: 0.0, nowrap: true, embed: Some(image) });
             return;
         }
@@ -912,25 +913,28 @@ impl<'a> Layout<'a> {
                 Node::Text(text) => {
                     out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap, embed: None })
                 }
-                Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), out),
+                Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), width, out),
             }
         }
     }
 
     /// An image's picture and size. Given a `:width` or a `:height`, it
     /// keeps the image's proportions; given neither, it's its natural size.
-    fn image_box(&self, el: &Element) -> Embed {
+    /// `:width :fill` takes the containing block's content width, `width`.
+    fn image_box(&self, el: &Element, width: f32) -> Embed {
         let location = match el.attr("location") {
             Some(Value::Str(location)) => location,
             _ => "",
         };
         let image = self.images.and_then(|images| images.get(location)).and_then(|image| image.as_ref().ok()).cloned();
         let attr = |name| match el.attr(name) {
-            Some(Value::Num(n)) => Some((*n as f32).max(0.0)),
+            Some(Value::Num(n)) => Some((*n as f32).max(0.0) * self.scale),
+            Some(Value::Keyword(fill)) if name == "width" && &**fill == "fill" => Some(width),
             _ => None,
         };
         // A missing image keeps its space, or a small box's if it has no size.
         let natural = image.as_ref().map_or((24.0, 24.0), |image| (image.width as f32, image.height as f32));
+        let natural = (natural.0 * self.scale, natural.1 * self.scale);
         let (w, h) = match (attr("width"), attr("height")) {
             (Some(w), Some(h)) => (w, h),
             (Some(w), None) => (w, w * natural.1 / natural.0.max(1.0)),
@@ -941,7 +945,7 @@ impl<'a> Layout<'a> {
             Some(Value::Str(align)) if &**align == "middle" => Align::Middle,
             _ => Align::Baseline,
         };
-        Embed::Image(image, w * self.scale, h * self.scale, align)
+        Embed::Image(image, w, h, align)
     }
 
     /// Like `line_box`, but for any piece of a line.
@@ -1305,6 +1309,20 @@ mod tests {
         );
         let natural = (40.0, 20.0, true);
         assert_eq!(image_boxes(&items), [natural, (80.0, 40.0, true), (20.0, 10.0, true), (5.0, 50.0, true), (24.0, 24.0, false), (30.0, 30.0, false)]);
+    }
+
+    #[test]
+    fn filled_images_take_the_content_width() {
+        let (items, _) = layout_with_image(r#"(page :padding 0 (img :src "pic.png" :width :fill))"#);
+        assert_eq!(image_boxes(&items), [(800.0, 400.0, true)], "the whole layout width");
+
+        let (items, _) = layout_with_image(
+            r#"(page :padding 0 (div :max-width 300 (img :src "pic.png" :width :fill)) (div :padding 50 (img :src "pic.png" :width :fill)))"#,
+        );
+        assert_eq!(image_boxes(&items), [(300.0, 150.0, true), (700.0, 350.0, true)], "the narrower content width");
+
+        let (items, _) = layout_with_image(r#"(page :padding 0 (img :src "pic.png" :width :fill :height 10))"#);
+        assert_eq!(image_boxes(&items), [(800.0, 10.0, true)], "stretched to the given height");
     }
 
     #[test]
