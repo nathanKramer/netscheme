@@ -96,7 +96,10 @@ mod tests {
     #[test]
     fn more_list_functions() {
         assert_eq!(eval("(list (range 3) (range 1 4) (range 10 0 -4) (range 3 1))"), "((0 1 2) (1 2 3) (10 6 2) ())");
-        assert_eq!(eval("(list (reverse '(1 2 3)) (take '(1 2 3) 2) (drop '(1 2 3) 2) (take '(1) 5) (last '(1 2)))"), "((3 2 1) (1 2) (3) (1) 2)");
+        assert_eq!(
+            eval("(list (reverse '(1 2 3)) (take '(1 2 3) 2) (drop '(1 2 3) 2) (take '(1) 5) (last '(1 2)))"),
+            "((3 2 1) (1 2) (3) (1) 2)"
+        );
         assert_eq!(eval("(list (contains? '(1 2) 2) (contains? '(1 2) 3) (index-of '(a b) 'b) (index-of '(a) 'z))"), "(true false 1 nil)");
         assert_eq!(eval("(list (sort '(3 1 2)) (sort-by (fn (p) (nth p 1)) '((a 2) (b 1) (c 2))))"), "((1 2 3) ((b 1) (a 2) (c 2)))");
         assert_eq!(eval("(list (reduce + 0 '(1 2 3)) (apply + 1 '(2 3)) (repeat 3 'x))"), "(6 6 (x x x))");
@@ -107,10 +110,22 @@ mod tests {
 
     #[test]
     fn string_functions() {
-        assert_eq!(eval(r#"(list (join '(1 2 3) ", ") (join '("a" "b")) (split "a,b" ",") (split "hé" ""))"#), r#"("1, 2, 3" "ab" ("a" "b") ("h" "é"))"#);
-        assert_eq!(eval(r#"(list (upper "hé") (lower "AB") (trim "  x ") (substring "héllo" 1 3) (substring "abc" 1))"#), r#"("HÉ" "ab" "x" "él" "bc")"#);
-        assert_eq!(eval(r#"(list (starts-with? "abc" "ab") (ends-with? "abc" "b") (contains? "abc" "bc") (index-of "héllo" "l"))"#), "(true false true 2)");
-        assert_eq!(eval(r#"(list (take "abc" 2) (drop "abc" 2) (reverse "abc") (parse-number " -1.5") (parse-number "x"))"#), r#"("ab" "c" "cba" -1.5 nil)"#);
+        assert_eq!(
+            eval(r#"(list (join '(1 2 3) ", ") (join '("a" "b")) (split "a,b" ",") (split "hé" ""))"#),
+            r#"("1, 2, 3" "ab" ("a" "b") ("h" "é"))"#
+        );
+        assert_eq!(
+            eval(r#"(list (upper "hé") (lower "AB") (trim "  x ") (substring "héllo" 1 3) (substring "abc" 1))"#),
+            r#"("HÉ" "ab" "x" "él" "bc")"#
+        );
+        assert_eq!(
+            eval(r#"(list (starts-with? "abc" "ab") (ends-with? "abc" "b") (contains? "abc" "bc") (index-of "héllo" "l"))"#),
+            "(true false true 2)"
+        );
+        assert_eq!(
+            eval(r#"(list (take "abc" 2) (drop "abc" 2) (reverse "abc") (parse-number " -1.5") (parse-number "x"))"#),
+            r#"("ab" "c" "cba" -1.5 nil)"#
+        );
     }
 
     #[test]
@@ -119,9 +134,15 @@ mod tests {
         assert_eq!(eval(&format!("{d} d")), r#"(dict 10 "ten" "s" 3 :a 1 :b 2)"#, "keys in order, printed as code");
         assert_eq!(eval(&format!(r#"{d} (= d (dict 10 "ten" "s" 3 :a 1 :b 2))"#)), "true", "the printed form makes an equal dictionary");
         assert_eq!(eval(&format!("{d} (list (get d :a) (get d :z) (get d :z 0) (contains? d \"s\") (length d))")), "(1 nil 0 true 4)");
-        assert_eq!(eval(&format!("{d} (list (assoc d :a 5 :c 6) (dissoc d :a 10) d)")),
-                   r#"((dict 10 "ten" "s" 3 :a 5 :b 2 :c 6) (dict "s" 3 :b 2) (dict 10 "ten" "s" 3 :a 1 :b 2))"#, "copies, not changes");
-        assert_eq!(eval("(list (keys (dict :a 1)) (values (dict :a 1)) (empty? (dict)) (dict? (dict)) (assoc nil :a 1))"), "((:a) (1) true true (dict :a 1))");
+        assert_eq!(
+            eval(&format!("{d} (list (assoc d :a 5 :c 6) (dissoc d :a 10) d)")),
+            r#"((dict 10 "ten" "s" 3 :a 5 :b 2 :c 6) (dict "s" 3 :b 2) (dict 10 "ten" "s" 3 :a 1 :b 2))"#,
+            "copies, not changes"
+        );
+        assert_eq!(
+            eval("(list (keys (dict :a 1)) (values (dict :a 1)) (empty? (dict)) (dict? (dict)) (assoc nil :a 1))"),
+            "((:a) (1) true true (dict :a 1))"
+        );
         assert!(eval("(dict '(1) 2)").contains("can't be a dictionary key"));
         assert!(eval("(dict :a)").contains("in pairs"));
     }

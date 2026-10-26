@@ -27,9 +27,7 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         [x] => Ok(Value::Bool(!x.truthy())),
         _ => Err("not: expected one argument".into()),
     });
-    def(&env, "str", |args| {
-        bounded_string("str", |out| args.iter().try_for_each(|v| fmt::Write::write_fmt(out, format_args!("{v}"))))
-    });
+    def(&env, "str", |args| bounded_string("str", |out| args.iter().try_for_each(|v| fmt::Write::write_fmt(out, format_args!("{v}")))));
     // The printed form of a value, which reads back as the same value.
     def(&env, "repr", |args| match args {
         [x] => bounded_string("repr", |out| fmt::Write::write_fmt(out, format_args!("{x:#}"))),
@@ -150,7 +148,7 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         loader::fill_image(&c, &mut el);
         Ok(Value::Element(Rc::new(el)))
     });
-        // A page's code as data, without running it.
+    // A page's code as data, without running it.
     let c = ctx.clone();
     def(&env, "source", move |args| {
         let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
@@ -251,7 +249,8 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
     });
 
     library::define_all(&env);
-    PRELUDE.with(|prelude| prelude.iter().try_for_each(|form| eval::eval(form, &env).map(drop)))
+    PRELUDE
+        .with(|prelude| prelude.iter().try_for_each(|form| eval::eval(form, &env).map(drop)))
         .map_err(|e| format!("in the prelude: {e}"))?;
     Ok(env)
 }
@@ -317,4 +316,3 @@ fn fold_nums(args: &[Value], op: fn(f64, f64) -> f64) -> Result<Value, String> {
     let (first, rest) = nums.split_first().ok_or("expected at least one number")?;
     Ok(Value::Num(rest.iter().fold(*first, |acc, n| op(acc, *n))))
 }
-

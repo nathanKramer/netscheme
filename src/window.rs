@@ -101,9 +101,7 @@ impl App {
         let (x, y) = self.pointer;
         let clicks = match self.last_press {
             Some((time, (px, py), clicks))
-                if now - time < MULTI_CLICK_TIME
-                    && (x - px).abs() <= MULTI_CLICK_DISTANCE
-                    && (y - py).abs() <= MULTI_CLICK_DISTANCE =>
+                if now - time < MULTI_CLICK_TIME && (x - px).abs() <= MULTI_CLICK_DISTANCE && (y - py).abs() <= MULTI_CLICK_DISTANCE =>
             {
                 clicks + 1
             }

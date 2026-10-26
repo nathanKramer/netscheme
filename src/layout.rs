@@ -626,7 +626,14 @@ impl<'a> Layout<'a> {
         self.scroller = outer_scroller;
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
         if let Some(bar) = bar {
-            self.items.push(DisplayItem::Rect { x: bar.thumb.x0, y: bar.thumb.y0, w: bar.thumb.x1 - bar.thumb.x0, h: bar.thumb.y1 - bar.thumb.y0, color: self.palette.scrollbar, radius: 0.0 });
+            self.items.push(DisplayItem::Rect {
+                x: bar.thumb.x0,
+                y: bar.thumb.y0,
+                w: bar.thumb.x1 - bar.thumb.x0,
+                h: bar.thumb.y1 - bar.thumb.y0,
+                color: self.palette.scrollbar,
+                radius: 0.0,
+            });
         }
         self.items.push(DisplayItem::Clip(outer));
         self.scrollers.push(Scroller { id, area: self.clip, scroll, bar });
@@ -892,7 +899,15 @@ impl<'a> Layout<'a> {
     /// and actions apply to everything inside them; block elements nested in
     /// inline ones are flattened too, as this engine has no anonymous block boxes.
     /// `width` is the content width of the enclosing block.
-    fn collect_inline(&self, el: &Rc<Element>, parent: &Style, background: Option<Color>, action: Option<Action>, width: f32, out: &mut Vec<Segment>) {
+    fn collect_inline(
+        &self,
+        el: &Rc<Element>,
+        parent: &Style,
+        background: Option<Color>,
+        action: Option<Action>,
+        width: f32,
+        out: &mut Vec<Segment>,
+    ) {
         let mut style = Style::compute(el, parent);
         if &*el.tag == "input" {
             let style = Rc::new(style);
@@ -905,7 +920,14 @@ impl<'a> Layout<'a> {
             _ => action,
         };
         if &*el.tag == "spacer" {
-            out.push(Segment { text: "".into(), style: Rc::new(style), action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Spacer) });
+            out.push(Segment {
+                text: "".into(),
+                style: Rc::new(style),
+                action: None,
+                padding: 0.0,
+                nowrap: true,
+                embed: Some(Embed::Spacer),
+            });
             return;
         }
         if &*el.tag == "img" {
@@ -1010,7 +1032,14 @@ impl<'a> Layout<'a> {
         };
         let background = style.background.unwrap_or(style.palette.input);
         self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color, radius: 0.0 });
-        self.items.push(DisplayItem::Rect { x: x + border, y: y + border, w: w - 2.0 * border, h: h - 2.0 * border, color: background, radius: 0.0 });
+        self.items.push(DisplayItem::Rect {
+            x: x + border,
+            y: y + border,
+            w: w - 2.0 * border,
+            h: h - 2.0 * border,
+            color: background,
+            radius: 0.0,
+        });
 
         let value = match el.attr("value") {
             None | Some(Value::Nil) => String::new(),
@@ -1037,7 +1066,14 @@ impl<'a> Layout<'a> {
         if let Some((a, c)) = selection {
             let (start, end) = (offsets[a.min(c)], offsets[a.max(c)]);
             let highlight = style.palette.selection;
-            self.items.push(DisplayItem::Rect { x: text_x + start, y: y + inset, w: end - start, h: line_height, color: highlight, radius: 0.0 });
+            self.items.push(DisplayItem::Rect {
+                x: text_x + start,
+                y: y + inset,
+                w: end - start,
+                h: line_height,
+                color: highlight,
+                radius: 0.0,
+            });
         }
         let (text, color) = match el.attr("placeholder") {
             Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
@@ -1049,7 +1085,8 @@ impl<'a> Layout<'a> {
             && self.caret_visible
             && selection.is_none()
         {
-            let caret = DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color, radius: 0.0 };
+            let caret =
+                DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color, radius: 0.0 };
             self.items.push(caret);
         }
         self.items.push(DisplayItem::Clip(outer));
@@ -1161,10 +1198,14 @@ impl<'a> Layout<'a> {
                 (closed.then_some(points), edge)
             }
             "text" => {
-                let text: String = el.children.iter().filter_map(|child| match child {
-                    Node::Text(text) => Some(&**text),
-                    Node::Element(_) => None,
-                }).collect();
+                let text: String = el
+                    .children
+                    .iter()
+                    .filter_map(|child| match child {
+                        Node::Text(text) => Some(&**text),
+                        Node::Element(_) => None,
+                    })
+                    .collect();
                 let (x, y) = at(num("x"), num("y"));
                 let (size, face) = (style.font_size * scale, style.face());
                 if let Some(handler) = el.attr("on-click") {
@@ -1326,7 +1367,10 @@ mod tests {
                         (img :src "pic.png" :width 5 :height 50) (img :src "nope.png") (img :src "nope.png" :width 30)))"#,
         );
         let natural = (40.0, 20.0, true);
-        assert_eq!(image_boxes(&items), [natural, (80.0, 40.0, true), (20.0, 10.0, true), (5.0, 50.0, true), (24.0, 24.0, false), (30.0, 30.0, false)]);
+        assert_eq!(
+            image_boxes(&items),
+            [natural, (80.0, 40.0, true), (20.0, 10.0, true), (5.0, 50.0, true), (24.0, 24.0, false), (30.0, 30.0, false)]
+        );
     }
 
     #[test]
@@ -1350,7 +1394,8 @@ mod tests {
         let (fonts, scrolls) = (Fonts::load(), HashMap::new());
         let mut layout = Layout::new(&fonts, &Palette::LIGHT, 2.0, 600.0, &scrolls, None, true);
         layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 400.0);
-        let radii: Vec<f32> = layout.items
+        let radii: Vec<f32> = layout
+            .items
             .iter()
             .filter_map(|item| match item {
                 DisplayItem::Rect { radius, .. } => Some(*radius),
@@ -1388,14 +1433,17 @@ mod tests {
         assert!(links.iter().any(|link| link.w == 80.0 && link.h == 40.0), "the image is the link");
 
         let (items, _) = layout_with_image(r#"(page :padding 0 (p "x" (img :src "pic.png" :width 80 :align "middle")))"#);
-        let (image_top, baseline) = (items.iter().find_map(|item| match item {
-            DisplayItem::Image { y, .. } => Some(*y),
-            _ => None,
-        }), texts(&items)[0].2);
+        let (image_top, baseline) = (
+            items.iter().find_map(|item| match item {
+                DisplayItem::Image { y, .. } => Some(*y),
+                _ => None,
+            }),
+            texts(&items)[0].2,
+        );
         assert!(image_top.unwrap() + 40.0 > baseline, "centred on the text, so it reaches below the baseline");
     }
 
-        fn search(src: &str, query: &str, frames_only: bool) -> Vec<Match> {
+    fn search(src: &str, query: &str, frames_only: bool) -> Vec<Match> {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let fonts = Fonts::load();
         let scrolls = HashMap::new();
@@ -1438,13 +1486,23 @@ mod tests {
         let (items, _) = layout(src, 300.0);
         let shapes = polygons(&items);
         assert_eq!(shapes.len(), 4, "the rect, the circle's inside and edge, and the line");
-        assert_eq!(shapes[0], (&[vec![(10.0, 5.0), (30.0, 5.0), (30.0, 15.0), (10.0, 15.0)]][..], Color::parse("#123").unwrap()), "filled in the text colour");
+        assert_eq!(
+            shapes[0],
+            (&[vec![(10.0, 5.0), (30.0, 5.0), (30.0, 15.0), (10.0, 15.0)]][..], Color::parse("#123").unwrap()),
+            "filled in the text colour"
+        );
         assert_eq!((shapes[1].1, shapes[2].1), (Color::parse("red").unwrap(), Color::parse("blue").unwrap()));
         assert_eq!(shapes[2].0.len(), 2, "the edge is a ring");
         assert_eq!(shapes[3].1, Color::parse("#123").unwrap(), "a line is stroked in the text colour");
         assert!(texts(&items).contains(&("hi", 5.0, 40.0)), "text sits on its baseline at :y");
 
-        let clips: Vec<Clip> = items.iter().filter_map(|item| match item { DisplayItem::Clip(c) => Some(*c), _ => None }).collect();
+        let clips: Vec<Clip> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Clip(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
         assert_eq!(clips, [Clip::rect(0.0, 0.0, 100.0, 50.0), Clip::NONE], "shapes are clipped to the canvas");
     }
 

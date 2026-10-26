@@ -103,11 +103,7 @@ fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
             "quote" => return arg(items, 1, "quote").cloned(),
             "if" => {
                 let cond = eval(arg(items, 1, "if")?, env)?;
-                return if cond.truthy() {
-                    eval(arg(items, 2, "if")?, env)
-                } else {
-                    items.get(3).map_or(Ok(Value::Nil), |e| eval(e, env))
-                };
+                return if cond.truthy() { eval(arg(items, 2, "if")?, env) } else { items.get(3).map_or(Ok(Value::Nil), |e| eval(e, env)) };
             }
             "do" => return eval_body(&items[1..], env),
             "and" => {

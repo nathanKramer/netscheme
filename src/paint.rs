@@ -133,7 +133,8 @@ impl Renderer {
         }
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
-        let (items, mut links, mut scrollers, mut inputs, mut matches) = (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
+        let (items, mut links, mut scrollers, mut inputs, mut matches) =
+            (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
         let mut key_targets = layout.key_targets;
         let mut lines = layout.lines;
 
@@ -225,10 +226,7 @@ impl Renderer {
     fn draw_text(&mut self, buf: &mut [u32], w: usize, clip: Clip, x: f32, baseline: f32, text: &str, size: f32, face: Face, color: Color) {
         let mut pen = x;
         for c in text.chars() {
-            let (m, bitmap) = self
-                .glyphs
-                .entry((c, size.to_bits(), face))
-                .or_insert_with(|| self.fonts.get(face).rasterize(c, size));
+            let (m, bitmap) = self.glyphs.entry((c, size.to_bits(), face)).or_insert_with(|| self.fonts.get(face).rasterize(c, size));
             let gx = (pen + m.xmin as f32).round() as i32;
             let gy = (baseline - m.height as f32 - m.ymin as f32).round() as i32;
             for row in 0..m.height {
@@ -418,7 +416,24 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: scroll, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None })
+        Renderer::new().render(
+            &page,
+            &mut buf,
+            200,
+            h,
+            &View {
+                scale: 1.0,
+                scroll: &scroll,
+                focus: None,
+                key_focus: None,
+                caret_visible: true,
+                dark: false,
+                search: None,
+                selection: None,
+                images: None,
+                drawings: None,
+            },
+        )
     }
 
     /// Paints `src` into a 200 × `h` buffer, starting from black.
@@ -426,7 +441,24 @@ mod tests {
         let Ok(Value::Element(page)) = lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
         let mut buf = vec![0; 200 * h];
         let scroll = Scroll { page: 0.0, frames: HashMap::new() };
-        Renderer::new().render(&page, &mut buf, 200, h, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None });
+        Renderer::new().render(
+            &page,
+            &mut buf,
+            200,
+            h,
+            &View {
+                scale: 1.0,
+                scroll: &scroll,
+                focus: None,
+                key_focus: None,
+                caret_visible: true,
+                dark: false,
+                search: None,
+                selection: None,
+                images: None,
+                drawings: None,
+            },
+        );
         buf
     }
 
@@ -468,12 +500,28 @@ mod tests {
 
     #[test]
     fn rounded_images_have_clear_corners() {
-        let Ok(Value::Element(page)) = lisp::run(r##"(page :padding 0 :background "#000" (img :src "pic.png" :width 40 :radius 999))"##, &crate::loader::test_context()) else { panic!("not a page") };
+        let Ok(Value::Element(page)) = lisp::run(
+            r##"(page :padding 0 :background "#000" (img :src "pic.png" :width 40 :radius 999))"##,
+            &crate::loader::test_context(),
+        ) else {
+            panic!("not a page")
+        };
         let image = Image { id: 0, width: 4, height: 4, pixels: vec![255; 4 * 4 * 4] };
         let images = crate::loader::Images::from([("pic.png".to_string(), Ok(Rc::new(image)))]);
         let mut buf = vec![0; 200 * 60];
         let scroll = Scroll { page: 0.0, frames: HashMap::new() };
-        let view = View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: Some(&images), drawings: None };
+        let view = View {
+            scale: 1.0,
+            scroll: &scroll,
+            focus: None,
+            key_focus: None,
+            caret_visible: true,
+            dark: false,
+            search: None,
+            selection: None,
+            images: Some(&images),
+            drawings: None,
+        };
         Renderer::new().render(&page, &mut buf, 200, 60, &view);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
         let at = |x: usize, y: usize| buf[(top + y) * 200 + x] & 0xff;
@@ -520,7 +568,24 @@ mod tests {
         let mut buf = vec![0; 200 * 300];
         let mut render = |frames: HashMap<usize, f32>| {
             let scroll = Scroll { page: 0.0, frames };
-            renderer.render(&page, &mut buf, 200, 300, &View { scale: 1.0, scroll: &scroll, focus: None, key_focus: None, caret_visible: true, dark: false, search: None, selection: None, images: None, drawings: None })
+            renderer.render(
+                &page,
+                &mut buf,
+                200,
+                300,
+                &View {
+                    scale: 1.0,
+                    scroll: &scroll,
+                    focus: None,
+                    key_focus: None,
+                    caret_visible: true,
+                    dark: false,
+                    search: None,
+                    selection: None,
+                    images: None,
+                    drawings: None,
+                },
+            )
         };
 
         let top = render(HashMap::new());
@@ -538,4 +603,3 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
-

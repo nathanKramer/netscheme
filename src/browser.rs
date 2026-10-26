@@ -11,7 +11,10 @@ use std::{
 use crate::{
     dom::{self, Element, Node},
     layout::{Action, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
-    lisp::{self, Value, watch::{self, Touched}},
+    lisp::{
+        self, Value,
+        watch::{self, Touched},
+    },
     loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore, Wake},
     paint::{Renderer, Scroll, View},
     settings::Settings,
@@ -312,7 +315,18 @@ impl Browser {
         let dark = self.host.dark_mode.get();
         let selection = self.selection.map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b);
         let key_focus = self.key_focus;
-        let view = View { scale, scroll: &self.scroll, focus: self.focus, key_focus, caret_visible, dark, search, selection, images: Some(&images), drawings: Some(&self.drawings) };
+        let view = View {
+            scale,
+            scroll: &self.scroll,
+            focus: self.focus,
+            key_focus,
+            caret_visible,
+            dark,
+            search,
+            selection,
+            images: Some(&images),
+            drawings: Some(&self.drawings),
+        };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         drop(images);
         (self.links, self.scrollers, self.inputs, self.scroll) = (rendered.links, rendered.scrollers, rendered.inputs, rendered.scroll);
@@ -837,9 +851,10 @@ impl Browser {
         }
         let back = if self.history.is_empty() { "" } else { "&back=1" };
         let error = self.error.as_ref().map_or(String::new(), |e| format!("&error={}", loader::encode(e)));
-        let find = self.find.as_ref().map_or(String::new(), |find| {
-            format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1)
-        });
+        let find = self
+            .find
+            .as_ref()
+            .map_or(String::new(), |find| format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1));
         let repl = if self.repl { "&repl=1" } else { "" };
         let loading = if self.loading() { "&loading=1" } else { "" };
         format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}", loader::encode(&self.site))
@@ -1109,7 +1124,10 @@ fn frame_handlers(el: &Element, out: &mut Vec<Value>) {
 #[derive(Debug, PartialEq)]
 enum Edit {
     /// Move the caret, and the selection's other end.
-    Select { cursor: usize, anchor: usize },
+    Select {
+        cursor: usize,
+        anchor: usize,
+    },
     /// Change the text, with the caret at this position afterwards.
     Change(String, usize),
     Submit,
@@ -1368,10 +1386,15 @@ mod tests {
             true,
         );
         let x = |browser: &Browser| {
-            let shapes: Vec<String> = browser.drawings.values().flatten().map(|node| match node {
-                Node::Element(el) => el.to_string(),
-                Node::Text(text) => text.to_string(),
-            }).collect();
+            let shapes: Vec<String> = browser
+                .drawings
+                .values()
+                .flatten()
+                .map(|node| match node {
+                    Node::Element(el) => el.to_string(),
+                    Node::Text(text) => text.to_string(),
+                })
+                .collect();
             shapes.join(" ")
         };
         render(&mut browser);
@@ -1797,7 +1820,10 @@ mod tests {
     #[test]
     fn browsing_the_web() {
         let server = crate::test_server::TestServer::start(&[
-            ("index.sx", r#"(page :title "Remote" (p (a :href "other.sx" "other")) (frame :src "/sub/framed.sx") (p "forms: " (length (source "other.sx"))))"#),
+            (
+                "index.sx",
+                r#"(page :title "Remote" (p (a :href "other.sx" "other")) (frame :src "/sub/framed.sx") (p "forms: " (length (source "other.sx"))))"#,
+            ),
             ("other.sx", r#"(page :title "Other")"#),
             ("sub/framed.sx", r#"(page (a :href "next.sx" "next"))"#),
             ("sub/next.sx", r#"(page :title "Next")"#),
@@ -1834,13 +1860,18 @@ mod tests {
         let moon = browser.host.images.borrow().get("browser:icons/moon.png").cloned();
         assert!(moon.expect("the toolbar shows the mode switch").is_ok(), "from the browser's own folder");
 
-        let server = crate::test_server::TestServer::start(&[("index.sx", r#"(page (img :src "logo.png" :width 40) (img :src "missing.png"))"#)]);
+        let server =
+            crate::test_server::TestServer::start(&[("index.sx", r#"(page (img :src "logo.png" :width 40) (img :src "missing.png"))"#)]);
         server.add("logo.png", &std::fs::read("assets/images/logo.png").unwrap());
         let mut browser = Browser::new(server.url("index.sx"), false);
         render(&mut browser);
         let images = browser.host.images.borrow();
         assert!(images[&server.url("logo.png")].is_ok(), "downloaded relative to the page");
-        assert!(images[&server.url("missing.png")].as_ref().is_err_and(|e| e.contains("404")), "{:?}", images[&server.url("missing.png")].as_ref().err());
+        assert!(
+            images[&server.url("missing.png")].as_ref().is_err_and(|e| e.contains("404")),
+            "{:?}",
+            images[&server.url("missing.png")].as_ref().err()
+        );
         drop(images);
 
         let requests = server.requests();

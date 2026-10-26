@@ -88,7 +88,9 @@ impl Image {
                     let (x0, y0) = (fx as usize, fy as usize);
                     let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
                     let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
-                    for (sx, sy, weight) in [(x0, y0, (1.0 - tx) * (1.0 - ty)), (x1, y0, tx * (1.0 - ty)), (x0, y1, (1.0 - tx) * ty), (x1, y1, tx * ty)] {
+                    for (sx, sy, weight) in
+                        [(x0, y0, (1.0 - tx) * (1.0 - ty)), (x1, y0, tx * (1.0 - ty)), (x0, y1, (1.0 - tx) * ty), (x1, y1, tx * ty)]
+                    {
                         for (s, &c) in sum.iter_mut().zip(pixel(sx, sy)) {
                             *s += c as f32 * weight;
                         }

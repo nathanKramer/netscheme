@@ -3,11 +3,7 @@
 //! changed nothing the page read, running it again would build the same
 //! document, so the browser can skip that.
 
-use std::{
-    cell::RefCell,
-    collections::HashSet,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
 use super::value::Value;
 

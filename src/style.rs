@@ -195,7 +195,9 @@ mod tests {
 
     #[test]
     fn radius_is_read_but_not_inherited() {
-        let Ok(Value::Element(page)) = lisp::run(r#"(div :radius 8 (span "x"))"#, &crate::loader::test_context()) else { panic!("not an element") };
+        let Ok(Value::Element(page)) = lisp::run(r#"(div :radius 8 (span "x"))"#, &crate::loader::test_context()) else {
+            panic!("not an element")
+        };
         let style = Style::compute(&page, &Style::root(&Palette::LIGHT));
         assert_eq!(style.radius, 8.0);
         let crate::dom::Node::Element(span) = &page.children[0] else { panic!("no span") };

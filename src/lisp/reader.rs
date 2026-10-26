@@ -137,8 +137,7 @@ impl Reader {
             s.push(c);
             self.next();
         }
-        let looks_numeric = s.starts_with(|c: char| c.is_ascii_digit())
-            || (s.len() > 1 && s.starts_with(['-', '+', '.']));
+        let looks_numeric = s.starts_with(|c: char| c.is_ascii_digit()) || (s.len() > 1 && s.starts_with(['-', '+', '.']));
         if looks_numeric && let Ok(n) = s.parse::<f64>() {
             return Value::Num(n);
         }

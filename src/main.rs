@@ -3,8 +3,8 @@ mod canvas;
 mod dom;
 mod image;
 mod layout;
-mod loader;
 mod lisp;
+mod loader;
 mod paint;
 mod settings;
 mod style;
@@ -123,7 +123,14 @@ enum Step {
 
 /// Renders the browser's page to a PNG, after carrying out `steps` as the
 /// window would.
-fn write_screenshot(mut browser: Browser, w: usize, h: usize, scroll: f32, steps: &[Step], out: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_screenshot(
+    mut browser: Browser,
+    w: usize,
+    h: usize,
+    scroll: f32,
+    steps: &[Step],
+    out: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u32; w * h];
     browser.set_scroll(scroll);
     let keys = |text: &str| -> Vec<Key> {

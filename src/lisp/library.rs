@@ -90,9 +90,7 @@ fn lists(env: &Env) {
     // Where an item is in a list, or a substring in a string, or nil.
     def(env, "index-of", |args| match args {
         [Value::List(xs), x] => Ok(xs.iter().position(|y| y.equals(x)).map_or(Value::Nil, |i| Value::Num(i as f64))),
-        [Value::Str(s), Value::Str(sub)] => {
-            Ok(s.find(&**sub).map_or(Value::Nil, |byte| Value::Num(s[..byte].chars().count() as f64)))
-        }
+        [Value::Str(s), Value::Str(sub)] => Ok(s.find(&**sub).map_or(Value::Nil, |byte| Value::Num(s[..byte].chars().count() as f64))),
         _ => Err("index-of: expected a list or string, and what to look for".into()),
     });
     def(env, "sort", |args| sort_by("sort", list_arg("sort", args)?, |x| Ok(x.clone())));
@@ -103,9 +101,9 @@ fn lists(env: &Env) {
     });
     // (reduce f init list) calls (f acc item) for each item in turn.
     def(env, "reduce", |args| match args {
-        [f, init, list] => list_arg("reduce", std::slice::from_ref(list))?
-            .iter()
-            .try_fold(init.clone(), |acc, x| apply(f, &[acc, x.clone()])),
+        [f, init, list] => {
+            list_arg("reduce", std::slice::from_ref(list))?.iter().try_fold(init.clone(), |acc, x| apply(f, &[acc, x.clone()]))
+        }
         _ => Err("reduce: expected a function, a starting value and a list".into()),
     });
     // (apply f a b list) calls f with a, b and the list's items.
@@ -137,7 +135,9 @@ fn strings(env: &Env) {
     });
     // Splits a string at each `sep`, or into characters when `sep` is "".
     def(env, "split", |args| match args {
-        [Value::Str(s), Value::Str(sep)] if sep.is_empty() => Ok(Value::list(s.chars().map(|c| Value::Str(c.to_string().into())).collect())),
+        [Value::Str(s), Value::Str(sep)] if sep.is_empty() => {
+            Ok(Value::list(s.chars().map(|c| Value::Str(c.to_string().into())).collect()))
+        }
         [Value::Str(s), Value::Str(sep)] => Ok(Value::list(s.split(&**sep).map(|part| Value::Str(part.into())).collect())),
         _ => Err("split: expected a string and a separator".into()),
     });

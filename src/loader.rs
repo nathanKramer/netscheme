@@ -359,16 +359,8 @@ fn open_nested(location: &str, frame: Frame) -> (Rc<Element>, String) {
             (decode(k), decode(v))
         })
         .collect();
-    let ctx = Rc::new(PageContext {
-        location: location.into(),
-        params,
-        depth,
-        scale,
-        state_key,
-        store,
-        host,
-        frames_created: Cell::new(0),
-    });
+    let ctx =
+        Rc::new(PageContext { location: location.into(), params, depth, scale, state_key, store, host, frames_created: Cell::new(0) });
     (evaluate(&source.text, &ctx), source.location)
 }
 

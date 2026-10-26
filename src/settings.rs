@@ -21,11 +21,8 @@ impl Settings {
     /// The settings in the file at `path`. A missing or unreadable file is no settings.
     pub fn at(path: PathBuf) -> Settings {
         let text = fs::read_to_string(&path).unwrap_or_default();
-        let values = text
-            .lines()
-            .filter_map(|line| line.trim().split_once(' '))
-            .map(|(name, value)| (name.into(), value.trim().into()))
-            .collect();
+        let values =
+            text.lines().filter_map(|line| line.trim().split_once(' ')).map(|(name, value)| (name.into(), value.trim().into())).collect();
         Settings { path, values }
     }
 
