@@ -34,12 +34,16 @@
   (p "These are the elements there are:")
   (entry "page" "The whole document. It takes " (code ":title") ", and styles that apply to everything.")
   (entry "div, row" "Boxes that stack their children. A " (code "row")
-         " puts its children side by side, in columns of equal width.")
+         " puts its children side by side, " (code ":gap") " apart (16 unless it says)."
+         " A child with a " (code ":width") " keeps it, inline children and those with "
+         (code ":width \"fit\"") " are as wide as their content, and the rest, and any "
+         (code "spacer") ", share the room left equally. " (code ":align \"middle\"")
+         " or " (code "\"bottom\"") " lines the columns up other than at the top.")
   (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
   (entry "span, b, code, a, button, input, img, canvas" "Inline elements, which flow along a line of text and wrap with it.")
   (entry "spacer" "Takes up whatever room is left on its line, pushing what follows"
          " to the end. The toolbar uses one to put the mode switch at its right-hand end.")
-  (entry "rect, circle, line, polyline, polygon, text" "Shapes, drawn inside a " (code "canvas") ".")
+  (entry "rect, circle, line, polyline, polygon, path, text" "Shapes, drawn inside a " (code "canvas") ".")
   (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
 
   (section "Children can be anything")
@@ -108,6 +112,9 @@
      " and lines are drawn in it, so they follow dark mode. "
      (code "(polygon :points '((0 0) (40 0) (20 30)))") " joins points and fills them,"
      " and a " (code "polyline") " only draws the line through them. "
+     (code "(path :d \"M12 2 L22 22 H2 Z\")") " takes SVG path data, curves and arcs"
+     " included, so icons can be copied from SVG files; " (code ":scale") " resizes it"
+     " and " (code ":x") " and " (code ":y") " move it. "
      (code "(text :x 10 :y 20 \"hi\")") " puts text with its baseline at "
      (code ":y") ", and takes the usual text attributes. See "
      (a :href "canvas.sx" "the canvas demo") " for more.")

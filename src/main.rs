@@ -16,7 +16,7 @@ use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N | --key-down KEY | --key-up KEY]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --hover X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N | --key-down KEY | --key-up KEY]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -38,6 +38,11 @@ fn main() -> ExitCode {
             "--click" => value().and_then(|v| {
                 let (x, y) = v.split_once(',').ok_or(USAGE)?;
                 steps.push(Step::Click(x.parse().map_err(|_| USAGE)?, y.parse().map_err(|_| USAGE)?));
+                Ok(())
+            }),
+            "--hover" => value().and_then(|v| {
+                let (x, y) = v.split_once(',').ok_or(USAGE)?;
+                steps.push(Step::Hover(x.parse().map_err(|_| USAGE)?, y.parse().map_err(|_| USAGE)?));
                 Ok(())
             }),
             "--drag" => value().and_then(|v| {
@@ -104,6 +109,8 @@ fn main() -> ExitCode {
 /// Something to do to the page before taking a screenshot.
 enum Step {
     Click(f32, f32),
+    /// The pointer moves to a point, and stays there for the screenshot.
+    Hover(f32, f32),
     /// Press at one point, move to the other and release, as in selecting text.
     Drag((f32, f32), (f32, f32)),
     /// Each character is a key press; `\n` is Enter, `\t` is Tab and `\x08`
@@ -149,6 +156,9 @@ fn write_screenshot(
                 if !browser.click(*x, *y) {
                     return Err(format!("nothing to click at {x},{y}").into());
                 }
+            }
+            Step::Hover(x, y) => {
+                browser.point_at(Some((*x, *y)));
             }
             Step::Drag((x0, y0), (x1, y1)) => {
                 browser.render(&mut buf, w, h, 1.0);

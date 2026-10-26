@@ -319,7 +319,13 @@ impl ApplicationHandler<Loaded> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = (position.x as f32, position.y as f32);
                 self.update_cursor();
-                if self.browser.drag_to(self.pointer.0, self.pointer.1) {
+                let hover_changed = self.browser.point_at(Some(self.pointer));
+                if self.browser.drag_to(self.pointer.0, self.pointer.1) || hover_changed {
+                    self.redraw();
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.browser.point_at(None) {
                     self.redraw();
                 }
             }

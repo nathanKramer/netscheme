@@ -13,15 +13,34 @@
   (p "Elements are styled with attributes. There are no stylesheets and no"
      " selectors: each element says how it looks.")
   (entry ":color \"#5b3ab8\"" "Text colour, as " (code "#rgb") ", " (code "#rrggbb")
-         " or one of a few names like " (code "red") ". Children inherit it.")
+         " or one of a few names like " (code "red") ". Children inherit it. "
+         (code "#rgba") " and " (code "#rrggbbaa") " are see-through: " (code "#ffffff10")
+         " lightens whatever is behind it a little.")
   (entry ":background \"#f3eef7\"" "Fills the element's box.")
   (entry ":size 20" "Font size in pixels. Inherited.")
-  (entry ":bold true" "Bold text. Inherited.")
+  (entry ":font \"Open Sans\"" "The typeface. The default is Liberation Sans, which "
+         (code "\"system-ui\"") " and " (code "\"sans-serif\"") " also name. Open Sans"
+         " comes with the browser too. Inherited.")
+  (entry ":weight 800" "How heavy the text is, from 100 to 900, where 400 is regular."
+         " Open Sans has 400, 500, 600, 700 and 800, and Liberation 400 and 700; other"
+         " weights use the nearest. Inherited.")
+  (entry ":bold true" "Weight 700, or 400 for " (code "false") ". Inherited.")
   (entry ":mono true" "Monospaced text, as in " (code "code") ". Inherited.")
   (entry ":underline true" "Underlined text. Inherited.")
+  (entry ":line-height 1.5" "The height of a line, as a multiple of the font size. The"
+         " default is 1.3. Inherited.")
   (entry ":padding 12" "Space inside the box, on every side. On inline elements, on the left and right.")
-  (entry ":padding-left 24" "Space inside on the left only, after " (code ":padding") ".")
-  (entry ":margin 16" "Space below a block, before whatever comes next.")
+  (entry ":padding-left 24" "Space inside on one side, after " (code ":padding") "."
+         " " (code ":padding-top") ", " (code ":padding-right") " and " (code ":padding-bottom")
+         " are the others; inline elements only use the left.")
+  (entry ":margin 16" "Space below a block, before whatever comes next. "
+         (code ":margin-bottom") " is the same.")
+  (entry ":margin-top 16" "Space above a block.")
+  (entry ":width 300" "How wide a block is, instead of the width it's in. "
+         (code "\"fit\"") " makes it as wide as its content. Then " (code ":align \"right\"")
+         " or " (code "\"center\"") " places it.")
+  (entry ":border \"#d0c8dc\"" "A line just inside the box's edge, which follows "
+         (code ":radius") ". " (code ":border-width") " sets how thick, 1 by default.")
   (entry ":max-width 720" "The widest the content may be. Narrower content is centred, and the"
          " background still fills the whole box. These pages use it on " (code "page") ".")
   (entry ":radius 8" "Rounds the corners of the element's background, or of an " (code "img") "."
@@ -32,9 +51,23 @@
        (p :size 20 :bold true :margin 6 "A heading of sorts")
        (p :margin 0 :color (light-dark "#555" "#aaa") "With a quieter line below.")))
   (example
+    '(div :width "fit" :align "right" :border (light-dark "#d0c8dc" "#4a4454") :radius 8 :padding 12
+       (p :margin 0 :font "Open Sans" :weight 800 :size 20 "Shrunk to fit, on the right")))
+  (example
     '(div :background (light-dark "#e8f1fb" "#1f2530") :padding 16 :radius 12
        (p :margin 0 (span :background warm :color "#fff" :padding 8 :radius 999 :bold true "new")
           " a pill, in a box with rounded corners.")))
+
+  (section "Hover")
+  (p (code ":hover") " takes a style that a block has while the pointer is over it."
+     " A block that's a " (code ":group") " gives its children their "
+     (code ":group-hover") " styles while it's hovered, so a card can change its"
+     " title as well as its border:")
+  (example
+    '(div :group true :border (light-dark "#d0c8dc" "#4a4454") :radius 8 :padding 12
+          :hover (style :border warm)
+       (p :margin 0 :bold true :group-hover (style :color warm) "Point at this card")
+       (p :margin 0 "Its border and its title change colour.")))
 
   (section "Styles are values")
   (p "The " (code "style") " function takes attributes and returns them as a list."

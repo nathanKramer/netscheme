@@ -8,7 +8,7 @@ use crate::lisp::{Value, check_length, write_quoted};
 /// `frame` is defined separately, as it loads a page when called.
 pub const TAGS: &[&str] = &[
     "page", "div", "row", "h1", "h2", "h3", "p", "pre", "span", "b", "code", "a", "button", "input", "img", "spacer", "canvas", "rect",
-    "circle", "line", "polyline", "polygon", "text",
+    "circle", "line", "polyline", "polygon", "path", "text",
 ];
 
 /// Tags laid out within a line of text rather than as their own block.

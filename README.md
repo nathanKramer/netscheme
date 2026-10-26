@@ -87,7 +87,7 @@ is started from a launcher.
 | `src/` | The browser: the Lisp interpreter in `src/lisp/`, then loading, styling, layout, painting and the window |
 | `ui/` | The browser's own pages, at `browser:` locations: the toolbar, view source, and the prelude |
 | `pages/` | The guide and demos |
-| `assets/` | The logo and the bundled Liberation fonts |
+| `assets/` | The logo and the bundled Liberation and Open Sans fonts |
 
 ## Roadmap
 
@@ -96,5 +96,7 @@ is started from a launcher.
 
 ## License
 
-MIT, in `LICENSE`. The bundled Liberation fonts are under the SIL Open Font
-License, in `assets/fonts/LICENSE-Liberation`.
+MIT, in `LICENSE`. The bundled Liberation and Open Sans fonts are under the
+SIL Open Font License, in `assets/fonts/LICENSE-Liberation` and
+`assets/fonts/LICENSE-OpenSans`. Open Sans Medium is an instance of the
+variable Open Sans, made with fontTools.

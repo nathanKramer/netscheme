@@ -10,37 +10,44 @@ use crate::{
     image::Image,
     layout::{Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
     loader::Images,
-    style::{Color, Face, Palette, Style},
+    style::{Color, Face, Family, Palette, Style},
 };
 
 /// How many scaled copies of images to keep before starting afresh.
 const MAX_SCALED_IMAGES: usize = 64;
 
+/// The bundled fonts, by family and weight.
 pub struct Fonts {
-    regular: Font,
-    bold: Font,
-    mono: Font,
-    mono_bold: Font,
+    faces: Vec<(Family, u16, Font)>,
 }
 
 impl Fonts {
     pub fn load() -> Fonts {
         let load = |bytes: &[u8]| Font::from_bytes(bytes, FontSettings::default()).expect("bundled font");
-        Fonts {
-            regular: load(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf")),
-            bold: load(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf")),
-            mono: load(include_bytes!("../assets/fonts/LiberationMono-Regular.ttf")),
-            mono_bold: load(include_bytes!("../assets/fonts/LiberationMono-Bold.ttf")),
-        }
+        let faces = vec![
+            (Family::Sans, 400, load(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf"))),
+            (Family::Sans, 700, load(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf"))),
+            (Family::Mono, 400, load(include_bytes!("../assets/fonts/LiberationMono-Regular.ttf"))),
+            (Family::Mono, 700, load(include_bytes!("../assets/fonts/LiberationMono-Bold.ttf"))),
+            (Family::OpenSans, 400, load(include_bytes!("../assets/fonts/OpenSans-Regular.ttf"))),
+            (Family::OpenSans, 500, load(include_bytes!("../assets/fonts/OpenSans-Medium.ttf"))),
+            (Family::OpenSans, 600, load(include_bytes!("../assets/fonts/OpenSans-SemiBold.ttf"))),
+            (Family::OpenSans, 700, load(include_bytes!("../assets/fonts/OpenSans-Bold.ttf"))),
+            (Family::OpenSans, 800, load(include_bytes!("../assets/fonts/OpenSans-ExtraBold.ttf"))),
+        ];
+        Fonts { faces }
     }
 
+    /// The font in `face`'s family nearest its weight. Between two as near,
+    /// a weight under 500 takes the lighter one, as CSS does.
     pub fn get(&self, face: Face) -> &Font {
-        match (face.mono, face.bold) {
-            (false, false) => &self.regular,
-            (false, true) => &self.bold,
-            (true, false) => &self.mono,
-            (true, true) => &self.mono_bold,
-        }
+        let distance = |weight: u16| {
+            let d = (weight as i32 - face.weight as i32).abs() * 2;
+            // Break ties: the side CSS prefers is a little nearer.
+            if (weight < face.weight) == (face.weight < 500) { d - 1 } else { d }
+        };
+        let family = self.faces.iter().filter(|(family, ..)| *family == face.family);
+        family.min_by_key(|(_, weight, _)| distance(*weight)).map(|(.., font)| font).expect("every family has a font")
     }
 
     pub fn measure(&self, text: &str, size: f32, face: Face) -> f32 {
@@ -75,6 +82,8 @@ pub struct View<'a> {
     pub images: Option<&'a Images>,
     /// What canvases' `:draw` functions returned.
     pub drawings: Option<&'a Drawings>,
+    /// Where the mouse pointer is in the window, for `:hover` styles.
+    pub pointer: Option<(f32, f32)>,
 }
 
 pub struct Rendered {
@@ -94,6 +103,8 @@ pub struct Rendered {
     pub matches: Vec<Match>,
     /// Every line of text, in window coordinates.
     pub lines: Vec<TextLine>,
+    /// The visible parts of elements with hover styles, in window coordinates.
+    pub hover_areas: Vec<Clip>,
 }
 
 pub struct Renderer {
@@ -131,14 +142,18 @@ impl Renderer {
         if let Some(id) = view.key_focus {
             layout.focus_keys(id);
         }
+        // The page is laid out before it's scrolled.
+        if let Some((x, y)) = view.pointer {
+            layout.point(x, y + view.scroll.page.max(0.0));
+        }
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs, mut matches) =
             (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
         let mut key_targets = layout.key_targets;
-        let mut lines = layout.lines;
+        let (mut lines, mut hover_areas) = (layout.lines, layout.hover_areas);
 
-        buf.fill(page_background.to_u32());
+        buf.fill(blend(palette.page.to_u32(), page_background, 255));
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
         let mut clip = screen;
         for item in &items {
@@ -150,6 +165,9 @@ impl Renderer {
                     } else {
                         fill_rect(buf, w, area.intersect(clip), *color)
                     }
+                }
+                DisplayItem::Border { x, y, w: bw, h: bh, width, color, radius } => {
+                    stroke_rounded_rect(buf, w, clip, Clip::rect(*x, *y - dy, *bw, *bh), *radius, *width, *color)
                 }
                 DisplayItem::Text { x, y, text, size, face, color } => {
                     let baseline = *y - dy;
@@ -177,6 +195,7 @@ impl Renderer {
         }
         let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
         let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area)).chain(key_targets.iter_mut().map(|k| &mut k.area));
+        let areas = areas.chain(hover_areas.iter_mut());
         for area in areas.chain(lines.iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             area.y0 -= dy;
             area.y1 -= dy;
@@ -185,7 +204,7 @@ impl Renderer {
             scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
         }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
-        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines }
+        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines, hover_areas }
     }
 
     /// Draws `image` scaled to fill `area`, blending it by its transparency,
@@ -252,7 +271,12 @@ fn fill_rect(buf: &mut [u32], w: usize, area: Clip, color: Color) {
     let (x0, x1) = (area.x0.round() as usize, area.x1.round() as usize);
     let (y0, y1) = (area.y0.round() as usize, area.y1.round() as usize);
     for row in y0..y1 {
-        buf[row * w + x0..row * w + x1].fill(color.to_u32());
+        let pixels = &mut buf[row * w + x0..row * w + x1];
+        if color.is_opaque() {
+            pixels.fill(color.to_u32());
+        } else {
+            pixels.iter_mut().for_each(|dst| *dst = blend(*dst, color, 255));
+        }
     }
 }
 
@@ -272,6 +296,41 @@ fn fill_rounded_rect(buf: &mut [u32], w: usize, clip: Clip, area: Clip, radius: 
     for py in rows {
         for px in x0..x1 {
             let alpha = (corner_coverage(area, radius, px, py) * 255.0).round() as u8;
+            if alpha > 0 {
+                let dst = &mut buf[py as usize * w + px as usize];
+                *dst = blend(*dst, color, alpha);
+            }
+        }
+    }
+}
+
+/// Draws the edge of `area`, `width` thick just inside it, with its
+/// corners rounded by `radius`.
+fn stroke_rounded_rect(buf: &mut [u32], w: usize, clip: Clip, area: Clip, radius: f32, width: f32, color: Color) {
+    let visible = area.intersect(clip);
+    if visible.is_empty() || width <= 0.0 {
+        return;
+    }
+    let inner = Clip { x0: area.x0 + width, y0: area.y0 + width, x1: area.x1 - width, y1: area.y1 - width };
+    let inner_radius = (radius - width).max(0.0);
+    // Well inside the inner edge, where there's nothing to draw.
+    let hollow = Clip {
+        x0: inner.x0 + inner_radius + 1.0,
+        y0: inner.y0 + inner_radius + 1.0,
+        x1: inner.x1 - inner_radius - 1.0,
+        y1: inner.y1 - inner_radius - 1.0,
+    };
+    for py in visible.y0.round() as i64..visible.y1.round() as i64 {
+        for px in visible.x0.round() as i64..visible.x1.round() as i64 {
+            let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+            if hollow.contains(cx, cy) {
+                continue;
+            }
+            let inside = match inner.contains(cx, cy) {
+                true => corner_coverage(inner, inner_radius, px, py),
+                false => 0.0,
+            };
+            let alpha = ((corner_coverage(area, radius, px, py) - inside).max(0.0) * 255.0).round() as u8;
             if alpha > 0 {
                 let dst = &mut buf[py as usize * w + px as usize];
                 *dst = blend(*dst, color, alpha);
@@ -372,7 +431,7 @@ fn fill_polygon(buf: &mut [u32], w: usize, clip: Clip, contours: &[Contour], dy:
             let alpha = (covered / SAMPLES as f32 * 255.0).round().min(255.0) as u8;
             match alpha {
                 0 => {}
-                255 => *dst = color.to_u32(),
+                255 if color.is_opaque() => *dst = color.to_u32(),
                 _ => *dst = blend(*dst, color, alpha),
             }
         }
@@ -401,8 +460,9 @@ fn cover(coverage: &mut [f32], a: f32, b: f32) {
     }
 }
 
+/// Mixes `src` into `dst` by `alpha` and by `src`'s own opacity.
 fn blend(dst: u32, src: Color, alpha: u8) -> u32 {
-    let a = alpha as u32;
+    let a = alpha as u32 * src.3 as u32 / 255;
     let mix = |s: u8, shift: u32| (s as u32 * a + ((dst >> shift) & 0xff) * (255 - a)) / 255;
     mix(src.0, 16) << 16 | mix(src.1, 8) << 8 | mix(src.2, 0)
 }
@@ -432,6 +492,7 @@ mod tests {
                 selection: None,
                 images: None,
                 drawings: None,
+                pointer: None,
             },
         )
     }
@@ -457,6 +518,7 @@ mod tests {
                 selection: None,
                 images: None,
                 drawings: None,
+                pointer: None,
             },
         );
         buf
@@ -521,6 +583,7 @@ mod tests {
             selection: None,
             images: Some(&images),
             drawings: None,
+            pointer: None,
         };
         Renderer::new().render(&page, &mut buf, 200, 60, &view);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
@@ -584,6 +647,7 @@ mod tests {
                     selection: None,
                     images: None,
                     drawings: None,
+                    pointer: None,
                 },
             )
         };

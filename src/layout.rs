@@ -16,6 +16,8 @@ use crate::{
 pub enum DisplayItem {
     /// A rectangle whose corners are rounded by `radius`, at most half its shorter side.
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color, radius: f32 },
+    /// The edge of a box, `width` thick just inside it, with rounded corners like `Rect`'s.
+    Border { x: f32, y: f32, w: f32, h: f32, width: f32, color: Color, radius: f32 },
     /// An image scaled to `w` × `h`, or an empty box if it couldn't be loaded.
     Image { x: f32, y: f32, w: f32, h: f32, image: Option<Rc<Image>>, radius: f32 },
     /// `y` is the text baseline.
@@ -356,6 +358,45 @@ pub struct Layout<'a> {
     /// How many frames deep layout is, and the fixed-height frame it's in.
     frame_depth: usize,
     scroller: Option<usize>,
+    /// Where the mouse pointer is, for `:hover` styles.
+    pointer: Option<(f32, f32)>,
+    /// The element being laid out with its `:hover` style, by address, and
+    /// how many hovered `:group`s layout is inside, for `:group-hover` styles.
+    hovered: Option<usize>,
+    group_hover: usize,
+    /// The visible parts of elements with hover styles, so the browser can
+    /// draw again when the pointer moves onto or off one.
+    pub hover_areas: Vec<Clip>,
+    /// Set while measuring how wide content is, with the right edge of
+    /// the content so far: spacers don't stretch then.
+    fitting: bool,
+    right: f32,
+}
+
+/// How much layout has produced, to go back to after laying something out
+/// only to measure it.
+struct Marks {
+    items: usize,
+    links: usize,
+    scrollers: usize,
+    inputs: usize,
+    next_input_id: usize,
+    matches: usize,
+    key_targets: usize,
+    next_key_target_id: usize,
+    lines: usize,
+    next_char: usize,
+    paragraph: usize,
+    next_frame_id: usize,
+    hover_areas: usize,
+}
+
+/// How a row decides the width of one of its columns.
+enum Column {
+    /// The child's `:width`, or the width of its content.
+    Sized(f32),
+    /// A share of the room the sized columns leave.
+    Fill,
 }
 
 impl<'a> Layout<'a> {
@@ -397,7 +438,74 @@ impl<'a> Layout<'a> {
             paragraph: 0,
             frame_depth: 0,
             scroller: None,
+            pointer: None,
+            hovered: None,
+            group_hover: 0,
+            hover_areas: Vec::new(),
+            fitting: false,
+            right: 0.0,
         }
+    }
+
+    /// Lays out elements under (`x`, `y`) with their `:hover` styles.
+    pub fn point(&mut self, x: f32, y: f32) {
+        self.pointer = Some((x, y));
+    }
+
+    fn marks(&self) -> Marks {
+        Marks {
+            items: self.items.len(),
+            links: self.links.len(),
+            scrollers: self.scrollers.len(),
+            inputs: self.inputs.len(),
+            next_input_id: self.next_input_id,
+            matches: self.matches.len(),
+            key_targets: self.key_targets.len(),
+            next_key_target_id: self.next_key_target_id,
+            lines: self.lines.len(),
+            next_char: self.next_char,
+            paragraph: self.paragraph,
+            next_frame_id: self.next_frame_id,
+            hover_areas: self.hover_areas.len(),
+        }
+    }
+
+    /// Forgets everything laid out since `marks`.
+    fn rewind(&mut self, marks: Marks) {
+        self.items.truncate(marks.items);
+        self.links.truncate(marks.links);
+        self.scrollers.truncate(marks.scrollers);
+        self.inputs.truncate(marks.inputs);
+        self.next_input_id = marks.next_input_id;
+        self.matches.truncate(marks.matches);
+        self.key_targets.truncate(marks.key_targets);
+        self.next_key_target_id = marks.next_key_target_id;
+        self.lines.truncate(marks.lines);
+        (self.next_char, self.paragraph) = (marks.next_char, marks.paragraph);
+        self.next_frame_id = marks.next_frame_id;
+        self.hover_areas.truncate(marks.hover_areas);
+    }
+
+    /// `el`'s style, with its `:hover` style if it's hovered and its
+    /// `:group-hover` style if a group it's in is.
+    fn style(&self, el: &Element, parent: &Style) -> Style {
+        let mut style = Style::compute(el, parent);
+        let mut extra = |name| {
+            if let Some(Value::List(attrs)) = el.attr(name) {
+                let pairs = attrs.as_chunks::<2>().0.iter().filter_map(|[name, value]| match name {
+                    Value::Keyword(name) => Some((&**name, value)),
+                    _ => None,
+                });
+                style.apply(pairs);
+            }
+        };
+        if self.group_hover > 0 {
+            extra("group-hover");
+        }
+        if self.hovered == Some(el as *const Element as usize) {
+            extra("hover");
+        }
+        style
     }
 
     pub fn images(&mut self, images: &'a Images) {
@@ -430,10 +538,57 @@ impl<'a> Layout<'a> {
         lisp::grow_stack(|| self.block_on_stack(el, parent, x, y, w))
     }
 
+    /// Lays out `el` once, or for an element with a `:hover` style or that
+    /// is a `:group`, again with its hover styles if the pointer is over it.
     fn block_on_stack(&mut self, el: &Element, parent: &Style, x: f32, y: f32, w: f32) -> f32 {
-        let style = Rc::new(Style::compute(el, parent));
-        let (pad, pad_left) = (style.padding * self.scale, style.padding_left * self.scale);
-        let (mut inner_x, mut inner_w) = (x + pad_left, (w - pad - pad_left).max(0.0));
+        let group = el.attr("group").is_some_and(Value::truthy);
+        if !group && el.attr("hover").is_none() {
+            return self.block_box(el, self.style(el, parent), x, y, w).0;
+        }
+        let marks = self.marks();
+        let (bottom, area) = self.block_box(el, self.style(el, parent), x, y, w);
+        let visible = area.intersect(self.clip);
+        if !self.pointer.is_some_and(|(px, py)| visible.contains(px, py)) {
+            self.hover_areas.push(visible);
+            return bottom;
+        }
+        self.rewind(marks);
+        let outer = self.hovered.replace(el as *const Element as usize);
+        self.group_hover += group as usize;
+        let (bottom, area) = self.block_box(el, self.style(el, parent), x, y, w);
+        self.group_hover -= group as usize;
+        self.hovered = outer;
+        self.hover_areas.push(area.intersect(self.clip));
+        bottom
+    }
+
+    /// Lays out `el`, in `style`, in a box of width `w` at (`x`, `y`).
+    /// Given a `:width`, a number or "fit" to shrink to its content, the box
+    /// is that wide, and sits at the left, or as `:align` says. Returns the
+    /// y below it, including its bottom margin, and the box.
+    fn block_box(&mut self, el: &Element, style: Style, x: f32, y: f32, w: f32) -> (f32, Clip) {
+        let style = Rc::new(style);
+        let y = y + style.margin_top * self.scale;
+        let width = match el.attr("width") {
+            Some(Value::Num(n)) => Some((*n as f32 * self.scale).max(0.0)),
+            Some(Value::Str(fit)) if &**fit == "fit" => Some(self.fit_width(el, &style, w)),
+            _ => None,
+        };
+        let (x, w) = match width {
+            Some(width) => {
+                let room = (w - width).max(0.0);
+                let shift = match el.attr("align") {
+                    Some(Value::Str(align)) if &**align == "right" => room,
+                    Some(Value::Str(align)) if &**align == "center" => room / 2.0,
+                    _ => 0.0,
+                };
+                (x + shift, width)
+            }
+            None => (x, w),
+        };
+        let (top, right, bottom, left) = style.insets();
+        let (top, right, bottom, left) = (top * self.scale, right * self.scale, bottom * self.scale, left * self.scale);
+        let (mut inner_x, mut inner_w) = (x + left, (w - left - right).max(0.0));
         // `:max-width` narrows the content, centred, while the background keeps the full width.
         if let Some(Value::Num(max)) = el.attr("max-width") {
             let max = (*max as f32 * self.scale).max(0.0);
@@ -444,24 +599,59 @@ impl<'a> Layout<'a> {
         }
         let background_index = self.items.len();
 
-        let top = y + pad;
-        let bottom = match &*el.tag {
-            "row" => self.row(&el.children, &style, inner_x, top, inner_w),
-            "frame" => self.frame(el, inner_x, top, inner_w),
-            "pre" => self.preformatted(&el.children, &style, inner_x, top, inner_w),
-            _ => self.flow(&el.children, &style, inner_x, top, inner_w),
-        };
+        let outer_right = std::mem::replace(&mut self.right, inner_x);
+        let content_bottom = self.contents(el, &style, inner_x, y + top, inner_w);
+        let content_right = if width.is_some() { x + w } else { self.right + right };
+        self.right = outer_right.max(content_right);
 
-        let h = bottom + pad - y;
+        let h = content_bottom + bottom - y;
+        let radius = style.radius * self.scale;
+        if let Some(color) = style.border
+            && style.border_width > 0.0
+        {
+            let width = style.border_width * self.scale;
+            self.items.insert(background_index, DisplayItem::Border { x, y, w, h, width, color, radius });
+        }
         if let Some(color) = style.background {
-            let radius = style.radius * self.scale;
             self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color, radius });
         }
         // After the children's, so a click on a child's own handler or link wins.
         if let Some(handler) = el.attr("on-click") {
             self.push_link(Clip::rect(x, y, w, h), Action::Run(handler.clone()));
         }
-        y + h + style.margin * self.scale
+        (y + h + style.margin * self.scale, Clip::rect(x, y, w, h))
+    }
+
+    /// Lays out what's inside `el`'s box.
+    fn contents(&mut self, el: &Element, style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
+        match &*el.tag {
+            "row" => self.row(el, style, x, y, w),
+            "frame" => self.frame(el, x, y, w),
+            "pre" => self.preformatted(&el.children, style, x, y, w),
+            _ => self.flow(&el.children, style, x, y, w),
+        }
+    }
+
+    /// How wide `el`'s box needs to be for its content, up to `w`.
+    fn fit_width(&mut self, el: &Element, style: &Rc<Style>, w: f32) -> f32 {
+        let (_, right, _, left) = style.insets();
+        let (right, left) = (right * self.scale, left * self.scale);
+        self.measure_width(w, |layout| {
+            layout.right = left;
+            layout.contents(el, style, left, 0.0, (w - left - right).max(0.0));
+            layout.right + right
+        })
+    }
+
+    /// How wide what `lay_out` lays out is, at most `w`; it returns the right
+    /// edge of its content. Then forgets it.
+    fn measure_width(&mut self, w: f32, lay_out: impl FnOnce(&mut Self) -> f32) -> f32 {
+        let marks = self.marks();
+        let outer = (std::mem::replace(&mut self.fitting, true), self.right);
+        let width = lay_out(self);
+        self.rewind(marks);
+        (self.fitting, self.right) = outer;
+        width.clamp(0.0, w)
     }
 
     /// Normal flow: consecutive text and inline elements form one inline
@@ -523,17 +713,74 @@ impl<'a> Layout<'a> {
         cy
     }
 
-    /// Equal-width columns, one per child. Returns the bottom of the tallest.
-    fn row(&mut self, children: &[Node], style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
-        let gap = 16.0 * self.scale;
+    /// Columns side by side, one per child, `:gap` apart. A child with a
+    /// numeric `:width` keeps it, and inline children and those with
+    /// `:width "fit"` are as wide as their content. The other children, and
+    /// spacers, share the room left equally. `:align` lines the columns up
+    /// at the "top", "middle" or "bottom". Returns the bottom of the tallest.
+    fn row(&mut self, el: &Element, style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
+        let children = &el.children;
+        let gap = match el.attr("gap") {
+            Some(Value::Num(n)) => (*n as f32).max(0.0) * self.scale,
+            _ => 16.0 * self.scale,
+        };
         let n = children.len().max(1) as f32;
-        let column_w = ((w - gap * (n - 1.0)) / n).max(0.0);
+        let gaps = gap * (n - 1.0);
+        let columns: Vec<Column> = children.iter().map(|child| self.column(child, style, w)).collect();
+        let sized: f32 = columns.iter().map(|c| if let Column::Sized(w) = c { *w } else { 0.0 }).sum();
+        let fills = columns.iter().filter(|c| matches!(c, Column::Fill)).count().max(1) as f32;
+        let share = ((w - gaps - sized) / fills).max(0.0);
+        let widths: Vec<f32> = columns.iter().map(|c| if let Column::Sized(w) = c { *w } else { share }).collect();
+        let xs: Vec<f32> = widths.iter().scan(x, |next, w| Some(std::mem::replace(next, *next + w + gap))).collect();
+
+        let column = |layout: &mut Self, i: usize, y: f32| layout.flow(std::slice::from_ref(&children[i]), style, xs[i], y, widths[i]);
+        let align = match el.attr("align") {
+            Some(Value::Str(align)) if matches!(&**align, "middle" | "center") => 0.5,
+            Some(Value::Str(align)) if &**align == "bottom" => 1.0,
+            _ => 0.0,
+        };
+        // Lined up other than at the top, the columns are measured first.
+        let mut heights = vec![0.0; children.len()];
+        if align > 0.0 {
+            let marks = self.marks();
+            for (i, height) in heights.iter_mut().enumerate() {
+                *height = column(self, i, y) - y;
+            }
+            self.rewind(marks);
+        }
+        let tallest = heights.iter().copied().fold(0.0, f32::max);
         let mut bottom = y;
-        for (i, child) in children.iter().enumerate() {
-            let column_x = x + i as f32 * (column_w + gap);
-            bottom = bottom.max(self.flow(std::slice::from_ref(child), style, column_x, y, column_w));
+        for (i, height) in heights.iter().enumerate() {
+            bottom = bottom.max(column(self, i, y + (tallest - height) * align));
         }
         bottom
+    }
+
+    /// How a row sizes the column for `child`, in a row `w` wide. While
+    /// fitting, every column is as wide as its content.
+    fn column(&mut self, child: &Node, style: &Rc<Style>, w: f32) -> Column {
+        let Node::Element(el) = child else {
+            return if self.fitting { self.content_column(child, style, w) } else { Column::Fill };
+        };
+        match el.attr("width") {
+            Some(Value::Num(n)) => return Column::Sized((*n as f32).max(0.0) * self.scale),
+            Some(Value::Str(fit)) if &**fit == "fit" => return self.content_column(child, style, w),
+            _ => {}
+        }
+        match (&*el.tag, dom::is_inline(&el.tag)) {
+            ("spacer", _) if !self.fitting => Column::Fill,
+            (_, true) => self.content_column(child, style, w),
+            _ if self.fitting => self.content_column(child, style, w),
+            _ => Column::Fill,
+        }
+    }
+
+    fn content_column(&mut self, child: &Node, style: &Rc<Style>, w: f32) -> Column {
+        Column::Sized(self.measure_width(w, |layout| {
+            layout.right = 0.0;
+            layout.flow(std::slice::from_ref(child), style, 0.0, 0.0, w);
+            layout.right
+        }))
     }
 
     /// An embedded page, drawn at its `:scale` with a 1px border unless
@@ -595,21 +842,9 @@ impl<'a> Layout<'a> {
         self.next_frame_id += 1;
 
         // Measure the page first, to know how far it can scroll.
-        let marks = (self.items.len(), self.links.len(), self.scrollers.len(), self.inputs.len(), self.next_input_id, self.matches.len());
-        let key_marks = (self.key_targets.len(), self.next_key_target_id);
-        let text_marks = (self.lines.len(), self.next_char, self.paragraph);
+        let marks = self.marks();
         let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
-        self.items.truncate(marks.0);
-        self.links.truncate(marks.1);
-        self.scrollers.truncate(marks.2);
-        self.inputs.truncate(marks.3);
-        self.next_input_id = marks.4;
-        self.matches.truncate(marks.5);
-        self.key_targets.truncate(key_marks.0);
-        self.next_key_target_id = key_marks.1;
-        self.lines.truncate(text_marks.0);
-        (self.next_char, self.paragraph) = (text_marks.1, text_marks.2);
-        self.next_frame_id = id + 1;
+        self.rewind(marks);
 
         let max_scroll = (content_bottom - area.y1).max(0.0);
         let scroll = self.frame_scrolls.get(&id).copied().unwrap_or(0.0).clamp(0.0, max_scroll).round();
@@ -618,7 +853,7 @@ impl<'a> Layout<'a> {
         self.clip = area.intersect(outer);
         self.items.push(DisplayItem::Clip(self.clip));
         // The page's background fills the frame, even below its content.
-        let background = Style::compute(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
+        let background = self.style(page, &Style::root(self.palette)).background.unwrap_or(self.palette.page);
         let (w, h) = (area.x1 - area.x0, area.y1 - area.y0);
         self.items.push(DisplayItem::Rect { x: area.x0, y: area.y0, w, h, color: background, radius: 0.0 });
         let outer_scroller = self.scroller.replace(id);
@@ -650,7 +885,9 @@ impl<'a> Layout<'a> {
             let space_segment = word.space_segment.unwrap_or(word.pieces[0].segment);
             let mut space_w = self.measure(" ", &run[space_segment].style);
             if !line.is_empty() && line_w + space_w + word.width > w {
-                stretch(&mut line, run, w - line_w);
+                if !self.fitting {
+                    stretch(&mut line, run, w - line_w);
+                }
                 cy = self.line(&line, run, x, cy);
                 line.clear();
                 line_w = 0.0;
@@ -667,7 +904,9 @@ impl<'a> Layout<'a> {
             line_w += word.width;
         }
         if !line.is_empty() {
-            stretch(&mut line, run, w - line_w);
+            if !self.fitting {
+                stretch(&mut line, run, w - line_w);
+            }
             cy = self.line(&line, run, x, cy);
         }
         run.clear();
@@ -751,6 +990,8 @@ impl<'a> Layout<'a> {
             below = below.max(height - baseline);
         }
         let baseline_y = y + above;
+        let content = line.iter().filter(|piece| !matches!(run[piece.segment].embed, Some(Embed::Spacer)));
+        self.right = content.map(|piece| x + piece.x + piece.w).fold(self.right, f32::max);
 
         // Backgrounds first so neighbouring text is never painted over.
         // Consecutive pieces of one segment share a background, so rounded
@@ -908,7 +1149,7 @@ impl<'a> Layout<'a> {
         width: f32,
         out: &mut Vec<Segment>,
     ) {
-        let mut style = Style::compute(el, parent);
+        let mut style = self.style(el, parent);
         if &*el.tag == "input" {
             let style = Rc::new(style);
             out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Input(el.clone())) });
@@ -945,7 +1186,7 @@ impl<'a> Layout<'a> {
             return;
         }
         style.background = style.background.or(background);
-        let (padding, nowrap) = (style.padding, matches!(&*el.tag, "button" | "code"));
+        let (padding, nowrap) = (style.padding_left, matches!(&*el.tag, "button" | "code"));
         let style = Rc::new(style);
         for child in &el.children {
             match child {
@@ -1005,7 +1246,7 @@ impl<'a> Layout<'a> {
 
     /// Space between an input's edge and its text: padding plus a 1px border.
     fn input_inset(&self, style: &Style) -> f32 {
-        (style.padding + 1.0) * self.scale
+        (style.padding_left + 1.0) * self.scale
     }
 
     fn input_width(&self, input: &Element) -> f32 {
@@ -1142,7 +1383,7 @@ impl<'a> Layout<'a> {
     /// are filled with `:fill` and outlined with `:stroke`, and given
     /// neither, filled in the text colour; lines are always stroked.
     fn shape(&mut self, el: &Element, parent: &Style, origin: Point) {
-        let style = Style::compute(el, parent);
+        let style = self.style(el, parent);
         let scale = self.scale;
         let num = |name| match el.attr(name) {
             Some(Value::Num(n)) => *n as f32,
@@ -1162,14 +1403,14 @@ impl<'a> Layout<'a> {
             _ => scale,
         };
 
-        let (outline, edge): (Option<Contour>, Vec<Contour>) = match &*el.tag {
+        let (outline, edge): (Option<Vec<Contour>>, Vec<Contour>) = match &*el.tag {
             "rect" => {
                 let (a, b) = (at(num("x"), num("y")), at(num("x") + num("w"), num("y") + num("h")));
-                (Some(canvas::rect(a, b)), canvas::rect_outline(a, b, width))
+                (Some(vec![canvas::rect(a, b)]), canvas::rect_outline(a, b, width))
             }
             "circle" => {
                 let (centre, r) = (at(num("x"), num("y")), num("r").max(0.0) * scale);
-                (Some(canvas::circle(centre, r)), canvas::circle_outline(centre, r, width))
+                (Some(vec![canvas::circle(centre, r)]), canvas::circle_outline(centre, r, width))
             }
             "line" => {
                 fill = None;
@@ -1195,7 +1436,21 @@ impl<'a> Layout<'a> {
                     fill = None;
                 }
                 let edge = canvas::stroke(&points, closed, width);
-                (closed.then_some(points), edge)
+                (closed.then(|| vec![points]), edge)
+            }
+            "path" => {
+                let d = match el.attr("d") {
+                    Some(Value::Str(d)) => d.clone(),
+                    _ => "".into(),
+                };
+                let zoom = match el.attr("scale") {
+                    Some(Value::Num(n)) => *n as f32,
+                    _ => 1.0,
+                };
+                let (dx, dy) = (num("x"), num("y"));
+                let subpaths = canvas::path(&d, zoom * scale, |(x, y)| at(dx + x * zoom, dy + y * zoom));
+                let edge = subpaths.iter().flat_map(|(points, closed)| canvas::stroke(points, *closed, width)).collect();
+                (Some(subpaths.into_iter().map(|(points, _)| points).collect()), edge)
             }
             "text" => {
                 let text: String = el
@@ -1232,7 +1487,7 @@ impl<'a> Layout<'a> {
             items.push(DisplayItem::Polygon { contours, color });
         };
         if let (Some(outline), Some(color)) = (outline, fill) {
-            draw(&mut self.items, vec![outline], color);
+            draw(&mut self.items, outline, color);
         }
         if let Some(color) = stroke
             && width > 0.0
@@ -1248,7 +1503,7 @@ impl<'a> Layout<'a> {
     fn line_box(&self, style: &Style) -> (f32, f32) {
         let size = style.font_size * self.scale;
         let metrics = self.fonts.get(style.face()).horizontal_line_metrics(size).expect("horizontal font");
-        let height = size * 1.3;
+        let height = size * style.line_height;
         (height, (height - (metrics.ascent - metrics.descent)) / 2.0 + metrics.ascent)
     }
 
@@ -1260,6 +1515,7 @@ impl<'a> Layout<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::Family;
 
     fn layout(src: &str, width: f32) -> (Vec<DisplayItem>, Vec<Link>) {
         let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
@@ -1286,7 +1542,7 @@ mod tests {
         let fonts = Fonts::load();
         let texts = texts(&items);
         let [("Hello,", ..), ("world", world_x, y1), ("!", bang_x, y2)] = texts[..] else { panic!("{texts:?}") };
-        assert_eq!(bang_x, world_x + fonts.measure("world", 16.0, Face { bold: true, mono: false }));
+        assert_eq!(bang_x, world_x + fonts.measure("world", 16.0, Face { family: Family::Sans, weight: 700 }));
         assert_eq!(y1, y2);
     }
 
@@ -1305,7 +1561,7 @@ mod tests {
         let (first, third) = (texts[0].2, texts[1].2);
         assert!(third - first > 2.0 * 14.0, "a blank line between them");
         assert_eq!(texts[2].2, third, "styled text continues the line");
-        let mono = Fonts::load().measure("  c", 14.0, Face { bold: false, mono: true });
+        let mono = Fonts::load().measure("  c", 14.0, Face { family: Family::Mono, weight: 400 });
         assert_eq!(texts[2].1, mono, "in the monospaced font");
     }
 
@@ -1527,5 +1783,182 @@ mod tests {
         assert!(!links.is_empty() && links.iter().all(|l| matches!(&l.action, Action::Go { href, .. } if &**href == "x.sx")));
         assert!(links[0].contains(links[0].x + 1.0, links[0].y + 1.0));
         assert!(!links[0].contains(1.0, 1.0), "the unlinked 'see' is not clickable");
+    }
+
+    fn rects(items: &[DisplayItem]) -> Vec<(f32, f32, f32, f32)> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Rect { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fonts_and_weights_are_inherited() {
+        let (items, _) =
+            layout(r#"(page :font "Open Sans" (p "a" (b "b") (span :weight 500 "c")) (h1 :weight 800 "d") (p :mono true "e"))"#, 800.0);
+        let faces: Vec<Face> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text { face, .. } => Some(*face),
+                _ => None,
+            })
+            .collect();
+        let open = |weight| Face { family: Family::OpenSans, weight };
+        assert_eq!(faces, [open(400), open(700), open(500), open(800), Face { family: Family::Mono, weight: 400 }]);
+    }
+
+    #[test]
+    fn fonts_fall_back_to_the_nearest_weight() {
+        let fonts = Fonts::load();
+        let width = |family, weight| fonts.measure("Wide words", 20.0, Face { family, weight });
+        assert_eq!(width(Family::Sans, 800), width(Family::Sans, 700));
+        assert_eq!(width(Family::Sans, 500), width(Family::Sans, 400), "500 takes the lighter of two as near");
+        assert_eq!(width(Family::Sans, 600), width(Family::Sans, 700));
+        assert_ne!(width(Family::OpenSans, 500), width(Family::OpenSans, 400), "Open Sans has a medium weight");
+    }
+
+    #[test]
+    fn line_height_spaces_lines() {
+        let (items, _) = layout(r#"(page :padding 0 (p :margin 0 :line-height 2 "a") (p "b"))"#, 800.0);
+        let texts = texts(&items);
+        // The extra 32 - 20.8 is shared above and below the first line's text.
+        assert!((texts[1].2 - texts[0].2 - (20.8 + 11.2 / 2.0)).abs() < 0.01, "{texts:?}");
+    }
+
+    #[test]
+    fn rows_give_widths_and_gaps_and_share_the_rest() {
+        let (items, _) = layout(
+            r##"(page :padding 0 (row :gap 10 (div :width 100 :background "#111" "a") (div :background "#222" "b") (div :background "#333" "c")))"##,
+            410.0,
+        );
+        let rects = rects(&items);
+        let xs_ws: Vec<(f32, f32)> = rects[1..].iter().filter(|r| r.2 > 50.0).map(|r| (r.0, r.2)).collect();
+        assert_eq!(xs_ws, [(0.0, 100.0), (110.0, 145.0), (265.0, 145.0)]);
+    }
+
+    #[test]
+    fn rows_fit_inline_children_and_spacers_fill() {
+        let fonts = Fonts::load();
+        let (items, _) = layout(r#"(page :padding 0 (row :gap 0 (b "left") (spacer) (b "right")))"#, 400.0);
+        let texts = texts(&items);
+        let right = fonts.measure("right", 16.0, Face { family: Family::Sans, weight: 700 });
+        assert_eq!(texts[0].1, 0.0);
+        assert!((texts[1].1 + right - 400.0).abs() < 0.01, "pushed to the end: {texts:?}");
+    }
+
+    #[test]
+    fn rows_can_centre_their_columns() {
+        let (items, _) =
+            layout_with_image(r#"(page :padding 0 (row :align "middle" (img :src "pic.png" :width 120) (div (p :margin 0 "title"))))"#);
+        let image = items.iter().find_map(|item| match item {
+            DisplayItem::Image { x, y, h, .. } => Some((*x, *y, *h)),
+            _ => None,
+        });
+        assert_eq!(image, Some((0.0, 0.0, 60.0)));
+        let (_, x, baseline) = texts(&items)[0];
+        assert_eq!(x, 136.0, "after the image and the gap");
+        assert!(baseline > 20.0 && baseline < 45.0, "the text is centred against the image: {baseline}");
+    }
+
+    #[test]
+    fn blocks_can_shrink_to_fit_and_sit_on_the_right() {
+        let fonts = Fonts::load();
+        let text = fonts.measure("Home", 16.0, Face::default());
+        let (items, _) = layout(r##"(page :padding 0 (div :width "fit" :align "right" :padding 10 :background "#222" "Home"))"##, 400.0);
+        let (x, _, w, h) = rects(&items)[1];
+        assert!((w - (text + 20.0)).abs() < 0.01, "as wide as its text and padding: {w}");
+        assert!((x + w - 400.0).abs() < 0.01, "at the right edge: {x}");
+        assert!((h - (16.0 * 1.3 + 20.0)).abs() < 0.01, "with padding above and below");
+
+        let (items, _) = layout(r##"(page :padding 0 (div :width 100 :align "center" :background "#222" "x"))"##, 400.0);
+        assert_eq!(rects(&items)[1].0, 150.0);
+    }
+
+    #[test]
+    fn fitting_a_row_adds_up_its_columns() {
+        let fonts = Fonts::load();
+        let words = fonts.measure("Home", 14.0, Face::default()) + fonts.measure("Blog", 14.0, Face::default());
+        let (items, _) =
+            layout(r##"(page :padding 0 (div :width "fit" :background "#222" :size 14 (row :gap 32 (a "Home") (a "Blog"))))"##, 400.0);
+        let w = rects(&items)[1].2;
+        assert!((w - (words + 32.0)).abs() < 0.01, "{w} vs {}", words + 32.0);
+        let texts = texts(&items);
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0].2, texts[1].2, "on one line");
+    }
+
+    #[test]
+    fn margins_and_padding_on_each_side() {
+        let (items, _) = layout(
+            r##"(page :padding 0 (div :margin-top 20 :padding-top 5 :padding-bottom 7 :padding-left 3 :background "#222" (p :margin 0 "x")))"##,
+            400.0,
+        );
+        let (x, y, _, h) = rects(&items)[1];
+        assert_eq!((x, y), (0.0, 20.0));
+        assert!((h - (5.0 + 16.0 * 1.3 + 7.0)).abs() < 0.01);
+        assert_eq!(texts(&items)[0].1, 3.0);
+    }
+
+    #[test]
+    fn borders_are_drawn_inside_the_box_and_push_the_content_in() {
+        let (items, _) = layout(r##"(page :padding 0 (div :border "#f15125" :border-width 2 :radius 8 "x"))"##, 400.0);
+        let border = items.iter().find_map(|item| match item {
+            DisplayItem::Border { x, y, w, width, color, radius, .. } => Some((*x, *y, *w, *width, *color, *radius)),
+            _ => None,
+        });
+        assert_eq!(border, Some((0.0, 0.0, 400.0, 2.0, Color(0xf1, 0x51, 0x25, 255), 8.0)));
+        assert_eq!(texts(&items)[0].1, 2.0);
+    }
+
+    fn layout_pointing(src: &str, pointer: (f32, f32)) -> Layout<'static> {
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let fonts = Box::leak(Box::new(Fonts::load()));
+        let scrolls = Box::leak(Box::new(HashMap::new()));
+        let mut layout = Layout::new(fonts, &Palette::LIGHT, 1.0, 600.0, scrolls, None, true);
+        layout.point(pointer.0, pointer.1);
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 400.0);
+        layout
+    }
+
+    /// The colours of the border, the title, and the text below.
+    fn colours(items: &[DisplayItem]) -> Vec<Color> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text { color, text, .. } if text == "title" || text == "below" => Some(*color),
+                DisplayItem::Border { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hover_styles_apply_under_the_pointer() {
+        let src = r##"(page :padding 0
+                        (div :group true :border "#333" :hover (list :border "#f15125")
+                          (p :margin 0 "not the heading")
+                          (p :margin 0 :group-hover (list :color "#f15125") "title"))
+                        (p "below"))"##;
+        let (red, grey, ink) = (Color::parse("#f15125").unwrap(), Color::parse("#333").unwrap(), Palette::LIGHT.text);
+        let away = layout_pointing(src, (10.0, 500.0));
+        assert_eq!(colours(&away.items), [grey, ink, ink]);
+        assert_eq!(away.hover_areas.len(), 1, "the div can be hovered");
+
+        let over = layout_pointing(src, (10.0, 5.0));
+        assert_eq!(colours(&over.items), [red, red, ink], "the border and the title change");
+        assert_eq!(over.hover_areas.len(), 1);
+        assert_eq!(over.lines.len(), away.lines.len(), "laid out once, in the end");
+    }
+
+    #[test]
+    fn paths_draw_svg_path_data() {
+        let src = r##"(page :padding 0 (p (canvas :width 48 :height 48 (path :scale 2 :x 1 :d "M0 0 H10 V10 H0 Z" :fill "#123"))))"##;
+        let (items, _) = layout(src, 300.0);
+        let shapes = polygons(&items);
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].0, [vec![(1.0, 0.0), (21.0, 0.0), (21.0, 20.0), (1.0, 20.0)]], "scaled, at :x");
     }
 }

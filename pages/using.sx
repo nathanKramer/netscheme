@@ -93,6 +93,7 @@ cargo run -- http://localhost:8000/hello.sx")
     --width 800 --height 600 --scroll 200")
   (p "These act on the page first, in the order they're given:")
   (entry "--click X,Y, --drag X,Y,X,Y" "Click, or drag from one point to another.")
+  (entry "--hover X,Y" "Leave the pointer at a point, to show " (code ":hover") " styles.")
   (entry "--type TEXT" "Type into whatever has focus. " (code "\\n") " is Enter, "
          (code "\\t") " is Tab and " (code "\\b") " is Backspace.")
   (entry "--find TEXT" "Open the find bar, as Ctrl+F does, and type.")

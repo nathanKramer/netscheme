@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     dom::{self, Element, Node},
-    layout::{Action, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{Action, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
     lisp::{
         self, Value,
         watch::{self, Touched},
@@ -171,6 +171,9 @@ pub struct Browser {
     bar: Option<Scrollbar>,
     matches: Vec<Match>,
     lines: Vec<TextLine>,
+    hover_areas: Vec<Clip>,
+    /// Where the mouse pointer is, while it's in the window.
+    pointer: Option<(f32, f32)>,
     /// Height and scale of the window.
     viewport: (f32, f32),
 }
@@ -231,6 +234,8 @@ impl Browser {
             bar: None,
             matches: Vec::new(),
             lines: Vec::new(),
+            hover_areas: Vec::new(),
+            pointer: None,
             viewport: (0.0, 1.0),
         }
     }
@@ -326,6 +331,7 @@ impl Browser {
             selection,
             images: Some(&images),
             drawings: Some(&self.drawings),
+            pointer: self.pointer,
         };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view);
         drop(images);
@@ -337,6 +343,7 @@ impl Browser {
             self.held.clear();
         }
         (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
+        self.hover_areas = rendered.hover_areas;
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -667,6 +674,16 @@ impl Browser {
         self.selection = None;
         self.set_focus(Focus { id, cursor, anchor });
         true
+    }
+
+    /// The mouse pointer moved to a point, or out of the window. Returns
+    /// whether it moved onto or off an element with a hover style, so that
+    /// the page needs drawing again.
+    pub fn point_at(&mut self, pointer: Option<(f32, f32)>) -> bool {
+        let over = |area: &Clip, pointer: Option<(f32, f32)>| pointer.is_some_and(|(x, y)| area.contains(x, y));
+        let changed = self.hover_areas.iter().any(|area| over(area, self.pointer) != over(area, pointer));
+        self.pointer = pointer;
+        changed
     }
 
     /// The mouse moved to a point. Returns whether that scrolled or changed the selection.
