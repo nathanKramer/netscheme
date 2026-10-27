@@ -133,7 +133,7 @@
         (a :href "browser:reload" (icon "refresh" "Reload"))
         (map (fn (b) (bookmark-link b 10)) (take (bookmarks) bookmarks-shown))
         (more-bookmarks))
-      (input :value typed :width :fill :select-on-focus true
+      (input :value typed :width :fill :radius 32 :padding-left 12 :padding-right 12 :select-on-focus true
              :on-input (fn (text) (set! typed text))
              :on-submit (fn (text) (go text)))
       (row :width 300 :gap 12 :align "middle"

@@ -391,6 +391,14 @@ struct Segment {
 }
 
 /// Something in a line of text that isn't text.
+/// Space inside each edge of a box.
+struct Insets {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
 enum Embed {
     /// A text input, this wide.
     Input(Rc<Element>, f32),
@@ -1585,7 +1593,7 @@ impl<'a> Layout<'a> {
         match segment.embed {
             Some(Embed::Input(..)) => {
                 let inset = self.input_inset(&segment.style);
-                (height + 2.0 * inset, baseline + inset)
+                (height + inset.top + inset.bottom, baseline + inset.top)
             }
             Some(Embed::Image(_, _, h, Align::Baseline)) | Some(Embed::Canvas(_, _, h)) => (h, h),
             // Lowercase letters are about half the font size tall.
@@ -1595,9 +1603,15 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// Space between an input's edge and its text: padding plus a 1px border.
-    fn input_inset(&self, style: &Style) -> f32 {
-        (style.padding_left + 1.0) * self.scale
+    /// Space between an input's edges and its text, on each side: padding plus a 1px border.
+    fn input_inset(&self, style: &Style) -> Insets {
+        let side = |padding: f32| (padding + 1.0) * self.scale;
+        Insets {
+            top: side(style.padding_top),
+            right: side(style.padding_right),
+            bottom: side(style.padding_bottom),
+            left: side(style.padding_left),
+        }
     }
 
     /// An input's `:width`, or 240. `:width :fill` takes the containing
@@ -1625,14 +1639,16 @@ impl<'a> Layout<'a> {
             None => (thin, style.palette.border),
         };
         let background = style.background.unwrap_or(style.palette.input);
-        self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color, radius: 0.0 });
+        // The background's corners follow the border's curve, inside it.
+        let radius = style.radius * self.scale;
+        self.items.push(DisplayItem::Rect { x, y, w, h, color: border_color, radius });
         self.items.push(DisplayItem::Rect {
             x: x + border,
             y: y + border,
             w: w - 2.0 * border,
             h: h - 2.0 * border,
             color: background,
-            radius: 0.0,
+            radius: (radius - border).max(0.0),
         });
 
         let value = match el.attr("value") {
@@ -1641,7 +1657,7 @@ impl<'a> Layout<'a> {
         };
         let (size, face) = (style.font_size * self.scale, style.face());
         let inset = self.input_inset(style);
-        let (inner_x, inner_w) = (x + inset, (w - 2.0 * inset).max(0.0));
+        let (inner_x, inner_w) = (x + inset.left, (w - inset.left - inset.right).max(0.0));
         let (line_height, baseline) = self.line_box(style);
 
         let mut offsets = vec![0.0];
@@ -1662,7 +1678,7 @@ impl<'a> Layout<'a> {
             let highlight = style.palette.selection;
             self.items.push(DisplayItem::Rect {
                 x: text_x + start,
-                y: y + inset,
+                y: y + inset.top,
                 w: end - start,
                 h: line_height,
                 color: highlight,
@@ -1673,14 +1689,14 @@ impl<'a> Layout<'a> {
             Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
             _ => (value.clone(), style.color),
         };
-        self.items.push(DisplayItem::Text { x: text_x, y: y + inset + baseline, text, size, face, color });
+        self.items.push(DisplayItem::Text { x: text_x, y: y + inset.top + baseline, text, size, face, color });
         // Like most text fields, no caret while there's a selection.
         if let Some(c) = cursor
             && self.caret_visible
             && selection.is_none()
         {
             let caret =
-                DisplayItem::Rect { x: text_x + offsets[c], y: y + inset, w: thin, h: line_height, color: style.color, radius: 0.0 };
+                DisplayItem::Rect { x: text_x + offsets[c], y: y + inset.top, w: thin, h: line_height, color: style.color, radius: 0.0 };
             self.items.push(caret);
         }
         self.items.push(DisplayItem::Clip(outer));
@@ -2215,6 +2231,36 @@ mod tests {
         let right = fonts.measure("right", 16.0, Face { family: Family::Sans, weight: 700 });
         assert_eq!(texts[0].1, 0.0);
         assert!((texts[1].1 + right - 400.0).abs() < 0.01, "pushed to the end: {texts:?}");
+    }
+
+    #[test]
+    fn inputs_can_have_rounded_corners() {
+        let (items, _) = layout(r#"(page :padding 0 (p (input :radius 8)))"#, 300.0);
+        let radii: Vec<f32> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Rect { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        assert!(radii.ends_with(&[8.0, 7.0]), "the border's corners, and the background's just inside them: {radii:?}");
+    }
+
+    #[test]
+    fn inputs_are_padded_on_each_side() {
+        let (plain, _) = layout(r#"(page :padding 0 (p :margin 0 (input :value "x")))"#, 300.0);
+        let (padded, _) = layout(r#"(page :padding 0 (p :margin 0 (input :value "x" :padding-left 12)))"#, 300.0);
+        let text_x = |items: &[DisplayItem]| texts(items)[0].1;
+        assert_eq!(text_x(&plain), 6.0, "5px of padding and a 1px border");
+        assert_eq!(text_x(&padded), 13.0, "12px of padding on the left");
+        // The input's box is the last rectangle drawn, as it has no selection or caret.
+        let height = |items: &[DisplayItem]| {
+            items.iter().rev().find_map(|item| match item {
+                DisplayItem::Rect { h, .. } => Some(*h),
+                _ => None,
+            })
+        };
+        assert_eq!(height(&plain), height(&padded), "and no taller");
     }
 
     #[test]

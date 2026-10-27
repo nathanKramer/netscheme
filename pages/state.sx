@@ -138,7 +138,9 @@
      " has focus, where the caret is, and what's selected.")
   (p "Inputs have " (code ":placeholder") " text for when they're empty, and a"
      " " (code ":width") " in pixels, or " (code ":width :fill") " to be as wide as"
-     " the block it's in, or its share of a " (code "row") ". Click one to focus it. Arrow keys, Home, End,"
+     " the block it's in, or its share of a " (code "row") ". " (code ":radius")
+     " rounds their corners, and " (code ":padding-left") " and the other sides set"
+     " the space around their text. Click one to focus it. Arrow keys, Home, End,"
      " Backspace and Delete edit; Tab moves to the next input; Escape, or a click"
      " somewhere else, leaves it.")
   (p "To select text in an input, drag across it, double-click a word,"

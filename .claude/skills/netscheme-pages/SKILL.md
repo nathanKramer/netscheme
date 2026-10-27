@@ -243,7 +243,9 @@ in a `:group` and use `:group-hover`.
 - `:on-click (fn () ...)` works on any element, not only `button`.
 - **Inputs are controlled:**
   `(input :value draft :placeholder "..." :width 320 :on-input (fn (text) (set! draft text)) :on-submit (fn (text) ...))`.
-  `:width :fill` makes it as wide as its block, or its share of a `row`.
+  `:width :fill` makes it as wide as its block, or its share of a `row`, and
+  `:radius` rounds its corners. `:padding-left` and the other sides set the
+  space around its text.
   Without `:on-input`, typing changes nothing. There are also `:autofocus`,
   `:select-on-focus`, `:on-escape` and `:on-shift-submit`.
 - `(go "other.sx")` navigates after the handler finishes, and
