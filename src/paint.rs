@@ -12,7 +12,10 @@ use crate::{
     damage::{self, Blit, Changes, Frame},
     dom::Element,
     image::Image,
-    layout::{Anchor, Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{
+        Anchor, Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Overlay, Scrollbar, Scroller, Search,
+        TextLine,
+    },
     loader::Images,
     style::{Color, Face, Family, Palette, Style},
 };
@@ -113,6 +116,8 @@ pub struct Rendered {
     pub lines: Vec<TextLine>,
     /// The visible parts of elements with hover styles, in window coordinates.
     pub hover_areas: Vec<Clip>,
+    /// Overlays, topmost last, in window coordinates.
+    pub overlays: Vec<Overlay>,
     /// The parts of the window that were painted, or `None` for all of it.
     pub damage: Option<Vec<Clip>>,
 }
@@ -163,12 +168,15 @@ impl Renderer {
             layout.point(x, y + view.scroll.page.max(0.0));
         }
         layout.ctrl(view.ctrl);
+        // Overlays are placed in the part of the page the window shows. The
+        // page can't be measured first, so they go by the scroll asked for.
+        layout.view(Clip::rect(0.0, view.scroll.page.max(0.0).round(), w as f32, h as f32));
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs, mut matches) =
             (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
         let (mut key_targets, mut anchors) = (layout.key_targets, layout.anchors);
-        let (mut lines, mut hover_areas) = (layout.lines, layout.hover_areas);
+        let (mut lines, mut hover_areas, mut overlays) = (layout.lines, layout.hover_areas, layout.overlays);
 
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
         // Each frame's content moves up by how far it's scrolled, and by how
@@ -200,6 +208,7 @@ impl Renderer {
         let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
         let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area)).chain(key_targets.iter_mut().map(|k| &mut k.area));
         let areas = areas.chain(hover_areas.iter_mut()).chain(anchors.iter_mut().map(|a| &mut a.area));
+        let areas = areas.chain(overlays.iter_mut().map(|o| &mut o.area));
         for area in areas.chain(lines.iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             area.y0 -= dy;
             area.y1 -= dy;
@@ -225,6 +234,7 @@ impl Renderer {
             anchors,
             lines,
             hover_areas,
+            overlays,
             damage,
         }
     }
@@ -754,6 +764,39 @@ mod tests {
     }
 
     #[test]
+    fn overlays_go_over_the_page_without_taking_room() {
+        let page = r##"(page :padding 0
+                         (div :padding 10 (p :margin 0 "anchor") (overlay :at "below" :width 50 :background "#c33" "menu"))
+                         (p :margin 0 "after"))"##;
+        let rendered = render(page, 100, 0.0);
+        assert_eq!(rendered.overlays.len(), 1);
+        let menu = rendered.overlays[0].area;
+        assert_eq!((menu.x0, menu.x1), (0.0, 50.0), "as wide as it says");
+        assert!(menu.y0 > 30.0, "below its anchor: {menu:?}");
+        assert_eq!(
+            rendered.lines[1].area,
+            render(r#"(page :padding 0 (div :padding 10 (p :margin 0 "anchor")) (p :margin 0 "after"))"#, 100, 0.0).lines[1].area
+        );
+    }
+
+    #[test]
+    fn overlays_stay_in_the_window() {
+        // Near the bottom, a menu opens upwards instead.
+        let low = r##"(page :padding 0 (div :padding-top 80 (div (p :margin 0 "anchor") (overlay :background "#c33" (p :margin 0 "a") (p :margin 0 "b")))))"##;
+        let menu = render(low, 100, 0.0).overlays[0].area;
+        assert!(menu.y1 <= 80.5, "above its anchor: {menu:?}");
+        // One fixed in the window stays put as the page scrolls.
+        let fixed = |scroll| render(&TALL.replace("(page", r#"(page (overlay :at "bottom-right" "toast")"#), 100, scroll).overlays[0].area;
+        let (top, scrolled) = (fixed(0.0), fixed(300.0));
+        let edges = |c: Clip| [c.x0, c.y0, c.x1, c.y1];
+        assert!(edges(top).iter().zip(edges(scrolled)).all(|(a, b)| (a - b).abs() < 0.01), "{top:?} {scrolled:?}");
+        assert!(fixed(0.0).y1 <= 100.0 && fixed(0.0).x1 <= 200.0);
+        // A backdrop covers the whole window.
+        let modal = render(r##"(page (overlay :at "center" :backdrop "#0008" "sure?"))"##, 100, 0.0).overlays[0].area;
+        assert_eq!(modal, Clip::rect(0.0, 0.0, 200.0, 100.0));
+    }
+
+    #[test]
     fn links_move_with_the_page() {
         let (top, scrolled) = (render(TALL, 100, 0.0), render(TALL, 100, 300.0));
         assert_eq!(scrolled.links[0].y, top.links[0].y - 300.0);
@@ -838,7 +881,8 @@ mod tests {
             r##"(page :padding 6
                   (div :group true :border "#888" :radius 4 :padding 4 :hover (style :border "#f15125" :background "#ffffff20")
                     (p :margin 0 :group-hover (style :color "#f15125") "a card in the frame"))
-                  (map (fn (i) (p :margin 4 "line " i " of the framed page")) (range 30)))"##,
+                  (map (fn (i) (p :margin 4 "line " i " of the framed page")) (range 30))
+                  (overlay :at "top-right" :background "#c33" :padding 2 "pinned"))"##,
         )
         .unwrap();
         let ctx = std::rc::Rc::new(crate::loader::PageContext {
@@ -858,7 +902,8 @@ mod tests {
                           (p :margin 0 :group-hover (style :color "#f15125" :bold true) "card title")
                           (p :margin 0 (canvas :width 60 :height 30 (rect :x 5 :y 5 :w 30 :h 20 :fill "#36c") (circle :x 40 :y 15 :r 12 :fill "#c63"))))
                         (frame :src "long.sx" :height 160 :margin 0)
-                        (map (fn (i) (p "paragraph " i " below the frame")) (range 40)))"##;
+                        (map (fn (i) (p "paragraph " i " below the frame")) (range 40))
+                        (overlay :at "bottom-right" :background "#333" :color "#fff" :padding 4 "toast"))"##;
         let Ok(Value::Element(page)) = lisp::run(src, &ctx) else { panic!("not a page") };
         let (w, h) = (300, 400);
         let render = |renderer: &mut Renderer, buf: &mut [u32], moment: Moment, age: u8| {

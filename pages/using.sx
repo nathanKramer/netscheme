@@ -21,8 +21,9 @@ cargo run -- http://localhost:8000/hello.sx")
          " state, so the address bar shows where you are.")
   (entry "F5, Ctrl+R" "Reloads: downloads the page again, reloads its images, and"
          " starts its state over.")
-  (entry "Escape" "While a web page downloads, stops going there. The page you're"
-         " on stays up until the next one arrives, with Loading… in the toolbar.")
+  (entry "Escape" "Dismisses the page's topmost overlay, if it has an "
+         (code ":on-dismiss") " handler. While a web page downloads, stops going there."
+         " The page you're on stays up until the next one arrives, with Loading… in the toolbar.")
   (entry "View source" "Shows the current page's code, coloured and indented. Ctrl+click"
          " a name to go to its definition, in the page, a page it reads with "
          (code "source") ", or the prelude.")

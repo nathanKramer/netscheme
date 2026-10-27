@@ -63,6 +63,43 @@
          (text :x 12 :y 30 (if (empty? held) "Nothing held" (join (map repr held) " ")))))))
 (eval keys-code)
 
+(define menu-code
+  '(do
+     (define-state menu-open false)
+     (define-state fruit "nothing yet")
+     (define (fruit-menu)
+       (div
+         (div :width "fit" :margin 8
+           (button :on-click (fn () (set! menu-open (not menu-open))) "Choose a fruit")
+           (if menu-open
+               (overlay :at "below" :margin-top 4 :padding 8 :radius 6
+                        :background paper :border rule-colour
+                        :on-dismiss (fn () (set! menu-open false))
+                 (map (fn (f)
+                        (p :margin 2 (a :on-click (fn () (set! fruit f) (set! menu-open false)) f)))
+                      '("Apple" "Banana" "Cherry")))))
+         (p :margin 0 "You chose " (b fruit) ".")))))
+(eval menu-code)
+
+(define dialog-code
+  '(do
+     (define-state asking false)
+     (define-state answer "nothing yet")
+     (define (dialog)
+       (div
+         (p :margin 8 (button :on-click (fn () (set! asking true)) "Ask a question"))
+         (p :margin 0 "The answer: " (b answer))
+         (if asking
+             (overlay :at "center" :width 300 :backdrop "#0006"
+                      :background paper :border rule-colour :padding 16 :radius 8
+                      :on-dismiss (fn () (set! asking false))
+               (p "Is this a good time?")
+               (p :margin 0
+                  (button :on-click (fn () (set! answer "yes") (set! asking false)) "Yes")
+                  " "
+                  (button :on-click (fn () (set! answer "no") (set! asking false)) "No"))))))))
+(eval dialog-code)
+
 (define (live code view)
   (div :margin 18
     (show-code code)
@@ -184,6 +221,29 @@
      " and when you follow a link or go back.")
   (p "Keys with Ctrl, Alt or Super, and function keys like F5, still go to the"
      " browser. " (a :href "snake.sx" "Snake") " puts keys and animation together.")
+
+  (section "Overlays")
+  (p "An " (code "overlay") " is drawn over the page instead of taking up room in"
+     " it, for menus, tooltips, dialogs and notices. It's anchored to the block it's"
+     " written in, and " (code ":at") " puts it " (code "\"below\"") " that block, which"
+     " is the default, " (code "\"above\"") ", or to its " (code "\"left\"") " or "
+     (code "\"right\"") ". If there's more room on the other side, it goes there"
+     " instead, so a menu near the bottom of the window opens upwards. Without a "
+     (code ":width") ", it's as wide as its content.")
+  (live menu-code (fruit-menu))
+  (p "At " (code "\"center\"") ", " (code "\"top\"") ", " (code "\"bottom\"")
+     ", or a corner like " (code "\"bottom-right\"") ", an overlay is placed in the"
+     " window instead, and stays put as the page scrolls. A " (code ":backdrop")
+     " colour covers the page beneath it, and a " (code ":margin") " keeps it off the"
+     " window's edges.")
+  (live dialog-code (dialog))
+  (p "Clicks on an overlay go to it, not to what's under it. An overlay with an "
+     (code ":on-dismiss") " handler is told when there's a click outside it, or"
+     " Escape is pressed, and the click does nothing else, so clicking away from a"
+     " menu closes it rather than following a link that was under the pointer."
+     " The handler usually sets the state that shows the overlay to false.")
+  (p "An overlay is laid out with the page it's on, after the rest of it, so later"
+     " overlays go over earlier ones, and one in a frame stays inside the frame.")
 
   (section "Where state lives")
   (p "State belongs to the page and lasts while you're on it. Each "

@@ -1,7 +1,7 @@
 //! Block layout with inline formatting contexts. Produces a flat display
 //! list, plus link hit boxes, in physical pixels.
 
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, ops::Range, rc::Rc};
 
 use crate::{
     canvas::{self, Contour, Point},
@@ -348,6 +348,35 @@ impl Link {
     }
 }
 
+/// An `overlay`, drawn over the page rather than in its flow.
+pub struct Overlay {
+    /// What it covers, which clicks don't go through: its box, or with a
+    /// `:backdrop`, the whole view.
+    pub area: Clip,
+    /// Its `:on-dismiss` handler.
+    pub dismiss: Option<Value>,
+    /// What it laid out, by index into the links, inputs, key targets and lines.
+    pub links: Range<usize>,
+    pub inputs: Range<usize>,
+    pub key_targets: Range<usize>,
+    pub lines: Range<usize>,
+}
+
+/// An overlay waiting for its page to finish, with the box it's anchored to
+/// and the style and `:group-hover` it inherits from where it was written.
+#[derive(Clone)]
+struct PendingOverlay {
+    el: Rc<Element>,
+    parent: Rc<Style>,
+    anchor: Clip,
+    group_hover: usize,
+}
+
+/// Whether `node` is an overlay, which takes no room where it's written.
+fn is_overlay(node: &Node) -> bool {
+    matches!(node, Node::Element(el) if &*el.tag == "overlay")
+}
+
 /// A run of text with a single style, from a text node in an inline context.
 struct Segment {
     text: Rc<str>,
@@ -486,6 +515,12 @@ pub struct Layout<'a> {
     /// How far the frames layout is inside are scrolled, in all. Their
     /// content is laid out as if they weren't, and painting moves it.
     scrolled: f32,
+    /// The visible part of the page being laid out, that overlays are kept
+    /// inside and placed in. `None` is the page's own box.
+    view: Option<Clip>,
+    /// Overlays waiting for the page they're on to be laid out.
+    pending: Vec<PendingOverlay>,
+    pub overlays: Vec<Overlay>,
 }
 
 /// How much layout has produced, to go back to after laying something out
@@ -505,6 +540,8 @@ struct Marks {
     paragraph: usize,
     next_frame_id: usize,
     hover_areas: usize,
+    pending: usize,
+    overlays: usize,
 }
 
 /// How a row decides the width of one of its columns.
@@ -563,12 +600,20 @@ impl<'a> Layout<'a> {
             fitting: false,
             right: 0.0,
             scrolled: 0.0,
+            view: None,
+            pending: Vec::new(),
+            overlays: Vec::new(),
         }
     }
 
     /// Lays out elements under (`x`, `y`) with their `:hover` styles.
     pub fn point(&mut self, x: f32, y: f32) {
         self.pointer = Some((x, y));
+    }
+
+    /// Places overlays in `view`, the part of the page the window shows.
+    pub fn view(&mut self, view: Clip) {
+        self.view = Some(view);
     }
 
     /// Lays out links with `:ctrl-click` as links, underlined, if `held`.
@@ -592,6 +637,8 @@ impl<'a> Layout<'a> {
             paragraph: self.paragraph,
             next_frame_id: self.next_frame_id,
             hover_areas: self.hover_areas.len(),
+            pending: self.pending.len(),
+            overlays: self.overlays.len(),
         }
     }
 
@@ -610,6 +657,8 @@ impl<'a> Layout<'a> {
         (self.next_char, self.paragraph) = (marks.next_char, marks.paragraph);
         self.next_frame_id = marks.next_frame_id;
         self.hover_areas.truncate(marks.hover_areas);
+        self.pending.truncate(marks.pending);
+        self.overlays.truncate(marks.overlays);
     }
 
     /// Moves the links, text lines and other areas recorded since `marks`
@@ -627,6 +676,8 @@ impl<'a> Layout<'a> {
         let areas = areas.chain(self.anchors[marks.anchors..].iter_mut().map(|a| &mut a.area));
         let areas = areas.chain(self.key_targets[marks.key_targets..].iter_mut().map(|k| &mut k.area));
         let areas = areas.chain(self.hover_areas[marks.hover_areas..].iter_mut());
+        let areas = areas.chain(self.pending[marks.pending..].iter_mut().map(|p| &mut p.anchor));
+        let areas = areas.chain(self.overlays[marks.overlays..].iter_mut().map(|o| &mut o.area));
         for area in areas.chain(self.lines[marks.lines..].iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             *area = area.shifted(dy);
         }
@@ -714,6 +765,7 @@ impl<'a> Layout<'a> {
     /// y below it, including its bottom margin, and the box.
     fn block_box(&mut self, el: &Element, style: Style, x: f32, y: f32, w: f32) -> (f32, Clip) {
         let style = Rc::new(style);
+        let page_overlays = self.pending.len();
         let y = y + style.margin_top * self.scale;
         let width = match el.attr("width") {
             Some(Value::Num(n)) => Some((*n as f32 * self.scale).max(0.0)),
@@ -768,7 +820,132 @@ impl<'a> Layout<'a> {
         if let Some(Value::Str(id)) = el.attr("id") {
             self.anchors.push(Anchor { id: id.clone(), area: Clip::rect(x, y, w, h), frame: self.scroller });
         }
+        self.queue_overlays(el, &style, Clip::rect(x, y, w, h));
+        // A page's overlays go over all of it, so they're laid out last.
+        if &*el.tag == "page" {
+            self.lay_out_overlays(page_overlays, Clip::rect(x, y, w, h));
+        }
         (y + h + style.margin * self.scale, Clip::rect(x, y, w, h))
+    }
+
+    /// Queues the overlays in `el`, including those inside its inline
+    /// elements, anchored to its box.
+    fn queue_overlays(&mut self, el: &Element, style: &Rc<Style>, anchor: Clip) {
+        for child in &el.children {
+            let Node::Element(child) = child else { continue };
+            if &*child.tag == "overlay" {
+                let group_hover = self.group_hover;
+                self.pending.push(PendingOverlay { el: child.clone(), parent: style.clone(), anchor, group_hover });
+            } else if dom::is_inline(&child.tag) {
+                self.queue_overlays(child, &Rc::new(self.style(child, style)), anchor);
+            }
+        }
+    }
+
+    /// Lays out the overlays queued since `start`, in order, and those
+    /// they queue in turn, over the page whose box is `page`.
+    fn lay_out_overlays(&mut self, start: usize, page: Clip) {
+        let mut i = start;
+        while i < self.pending.len() {
+            let pending = self.pending[i].clone();
+            self.overlay(&pending, self.view.unwrap_or(page));
+            i += 1;
+        }
+        self.pending.truncate(start);
+    }
+
+    /// Lays out an overlay where its `:at` says, keeping it in `view` where
+    /// it can. Next to its anchor, it's "below" (the default), "above",
+    /// "left" or "right" of it, moving to the other side if there's more room
+    /// there. In the view, it's at the "center", "top", "bottom",
+    /// "top-left", "top-right", "bottom-left" or "bottom-right". It's as
+    /// wide as its content unless it has a `:width`. A `:backdrop` colour
+    /// covers the view beneath it.
+    fn overlay(&mut self, pending: &PendingOverlay, view: Clip) {
+        let PendingOverlay { el, parent, anchor, group_hover } = pending;
+        let at = match el.attr("at") {
+            Some(Value::Str(at)) => at.clone(),
+            _ => "below".into(),
+        };
+        let style = Rc::new(Style::compute(el, parent));
+        let (margin_top, margin) = (style.margin_top * self.scale, style.margin * self.scale);
+        let in_view = matches!(&*at, "center" | "top" | "bottom" | "top-left" | "top-right" | "bottom-left" | "bottom-right");
+        let room = view.x1 - view.x0 - if in_view { 2.0 * margin } else { 0.0 };
+        let w = match el.attr("width") {
+            Some(Value::Num(n)) => (*n as f32 * self.scale).max(0.0),
+            _ => self.fit_width(el, &style, room.max(0.0)),
+        };
+        let outer_group_hover = std::mem::replace(&mut self.group_hover, *group_hover);
+        // Measured first, to know where it fits.
+        let marks = self.marks();
+        let h = self.block(el, parent, 0.0, 0.0, w);
+        self.rewind(marks);
+
+        let fits_x = |x: f32| x.min(view.x1 - w).max(view.x0);
+        let fits_y = |y: f32| y.min(view.y1 - h).max(view.y0);
+        let (x, y) = match &*at {
+            "above" | "below" => {
+                let (above, below) = (anchor.y0 - h, anchor.y1);
+                let more_room_above = anchor.y0 - view.y0 > view.y1 - anchor.y1;
+                let y = match &*at {
+                    "above" if above < view.y0 && !more_room_above => below,
+                    "above" => above,
+                    _ if below + h > view.y1 && more_room_above => above,
+                    _ => below,
+                };
+                (fits_x(anchor.x0), y)
+            }
+            "left" | "right" => {
+                let (left, right) = (anchor.x0 - margin - w, anchor.x1 + margin);
+                let more_room_left = anchor.x0 - view.x0 > view.x1 - anchor.x1;
+                let x = match &*at {
+                    "left" if left < view.x0 && !more_room_left => right,
+                    "left" => left,
+                    _ if right + w > view.x1 && more_room_left => left,
+                    _ => right,
+                };
+                (x, fits_y(anchor.y0 - margin_top))
+            }
+            _ => {
+                let x = match &*at {
+                    "top-left" | "bottom-left" => view.x0 + margin,
+                    "top-right" | "bottom-right" => view.x1 - margin - w,
+                    _ => view.x0 + (view.x1 - view.x0 - w) / 2.0,
+                };
+                let y = match &*at {
+                    "top" | "top-left" | "top-right" => view.y0,
+                    "bottom" | "bottom-left" | "bottom-right" => view.y1 - h,
+                    _ => view.y0 + (view.y1 - view.y0 - h) / 2.0,
+                };
+                (x, y)
+            }
+        };
+        // Whole pixels, so one fixed in the view stays exactly put as the page scrolls.
+        let (x, y) = (x.round(), y.round());
+
+        let backdrop = match el.attr("backdrop") {
+            Some(Value::Str(color)) => Some(style::parse_color(color, self.palette.page)),
+            _ => None,
+        };
+        if let Some(color) = backdrop {
+            let (vw, vh) = (view.x1 - view.x0, view.y1 - view.y0);
+            self.items.push(DisplayItem::Rect { x: view.x0, y: view.y0, w: vw, h: vh, color, radius: 0.0 });
+        }
+        let starts = (self.links.len(), self.inputs.len(), self.key_targets.len(), self.lines.len());
+        let bottom = self.block(el, parent, x, y, w);
+        self.group_hover = outer_group_hover;
+        let area = match backdrop {
+            Some(_) => view,
+            None => Clip { x0: x, y0: y + margin_top, x1: x + w, y1: bottom - margin },
+        };
+        self.overlays.push(Overlay {
+            area: area.intersect(self.clip),
+            dismiss: el.attr("on-dismiss").filter(|handler| handler.truthy()).cloned(),
+            links: starts.0..self.links.len(),
+            inputs: starts.1..self.inputs.len(),
+            key_targets: starts.2..self.key_targets.len(),
+            lines: starts.3..self.lines.len(),
+        });
     }
 
     /// Lays out what's inside `el`'s box.
@@ -811,6 +988,7 @@ impl<'a> Layout<'a> {
         for child in children {
             match child {
                 Node::Text(text) => run.push(Segment::text(text, style)),
+                Node::Element(child) if &*child.tag == "overlay" => {}
                 Node::Element(child) if dom::is_inline(&child.tag) => self.collect_inline(child, style, None, None, w, &mut run),
                 Node::Element(child) => {
                     cy = self.inline_run(&mut run, x, cy, w);
@@ -828,6 +1006,7 @@ impl<'a> Layout<'a> {
         for child in children {
             match child {
                 Node::Text(text) => run.push(Segment::text(text, style)),
+                Node::Element(child) if &*child.tag == "overlay" => {}
                 Node::Element(child) => self.collect_inline(child, style, None, None, w, &mut run),
             }
         }
@@ -868,7 +1047,7 @@ impl<'a> Layout<'a> {
     /// spacers, share the room left equally. `:align` lines the columns up
     /// at the "top", "middle" or "bottom". Returns the bottom of the tallest.
     fn row(&mut self, el: &Element, style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
-        let children = &el.children;
+        let children: Vec<&Node> = el.children.iter().filter(|child| !is_overlay(child)).collect();
         let gap = match el.attr("gap") {
             Some(Value::Num(n)) => (*n as f32).max(0.0) * self.scale,
             _ => 16.0 * self.scale,
@@ -882,7 +1061,7 @@ impl<'a> Layout<'a> {
         let widths: Vec<f32> = columns.iter().map(|c| if let Column::Sized(w) = c { *w } else { share }).collect();
         let xs: Vec<f32> = widths.iter().scan(x, |next, w| Some(std::mem::replace(next, *next + w + gap))).collect();
 
-        let column = |layout: &mut Self, i: usize, y: f32| layout.flow(std::slice::from_ref(&children[i]), style, xs[i], y, widths[i]);
+        let column = |layout: &mut Self, i: usize, y: f32| layout.flow(std::slice::from_ref(children[i]), style, xs[i], y, widths[i]);
         let align = match el.attr("align") {
             Some(Value::Str(align)) if matches!(&**align, "middle" | "center") => 0.5,
             Some(Value::Str(align)) if &**align == "bottom" => 1.0,
@@ -1009,14 +1188,15 @@ impl<'a> Layout<'a> {
         // painting moves; so the clip and pointer move the other way.
         let outer_scroller = self.scroller.replace(id);
         let marks = self.marks();
-        let saved = (self.clip, self.pointer, self.scrolled);
+        let saved = (self.clip, self.pointer, self.scrolled, self.view);
         self.clip = self.clip.shifted(scroll);
+        self.view = Some(area.shifted(scroll));
         self.pointer = self.pointer.map(|(x, y)| (x, y + scroll));
         self.scrolled += scroll;
         self.items.push(DisplayItem::Layer(Some(id)));
         self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
         self.items.push(DisplayItem::Layer(outer_scroller));
-        (self.clip, self.pointer, self.scrolled) = saved;
+        (self.clip, self.pointer, self.scrolled, self.view) = saved;
         self.scroller = outer_scroller;
         self.shift_since(&marks, -scroll);
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
@@ -1360,6 +1540,7 @@ impl<'a> Layout<'a> {
                 Node::Text(text) => {
                     out.push(Segment { text: text.clone(), style: style.clone(), action: action.clone(), padding, nowrap, embed: None })
                 }
+                Node::Element(child) if &*child.tag == "overlay" => {}
                 Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), width, out),
             }
         }

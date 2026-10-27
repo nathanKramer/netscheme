@@ -45,6 +45,8 @@
          " to the end. The toolbar uses one to put the mode switch at its right-hand end.")
   (entry "rect, circle, line, polyline, polygon, path, text" "Shapes, drawn inside a " (code "canvas") ".")
   (entry "frame" "Another page, shown inside this one. See " (a :href "code-as-data.sx" "Code is data") ".")
+  (entry "overlay" "Drawn over the page, next to the block it's in or fixed in the"
+         " window, for menus and dialogs. See " (a :href "state.sx" "State and events") ".")
 
   (section "Children can be anything")
   (p "Numbers become text. " (code "nil") " is skipped, so an " (code "if")

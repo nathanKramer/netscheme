@@ -4,13 +4,14 @@
 
 use std::{
     collections::HashMap,
+    ops::Range,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use crate::{
     dom::{self, Element, Node},
-    layout::{Action, Anchor, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{Action, Anchor, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Overlay, Scrollbar, Scroller, Search, TextLine},
     lisp::{
         self, Value,
         watch::{self, Touched},
@@ -177,6 +178,10 @@ pub struct Browser {
     lines: Vec<TextLine>,
     hover_areas: Vec<Clip>,
     anchors: Vec<Anchor>,
+    overlays: Vec<Overlay>,
+    /// Whether the mouse button went down outside an overlay and dismissed
+    /// it, so letting go of it does nothing else.
+    dismissed: bool,
     /// Where the mouse pointer is, while it's in the window.
     pointer: Option<(f32, f32)>,
     /// Whether Ctrl is held, which links with `:ctrl-click` need.
@@ -243,6 +248,8 @@ impl Browser {
             matches: Vec::new(),
             lines: Vec::new(),
             hover_areas: Vec::new(),
+            overlays: Vec::new(),
+            dismissed: false,
             anchors: Vec::new(),
             pointer: None,
             ctrl: false,
@@ -359,7 +366,7 @@ impl Browser {
             self.held.clear();
         }
         (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
-        (self.hover_areas, self.anchors) = (rendered.hover_areas, rendered.anchors);
+        (self.hover_areas, self.anchors, self.overlays) = (rendered.hover_areas, rendered.anchors, rendered.overlays);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -486,7 +493,7 @@ impl Browser {
             Hover::Text
         } else if self.link_at(x, y).is_some() {
             Hover::Link
-        } else if self.lines.iter().any(|line| line.visible.contains(x, y)) {
+        } else if self.under(x, y, &self.lines, |o| &o.lines).iter().any(|line| line.visible.contains(x, y)) {
             Hover::Text
         } else {
             Hover::Nothing
@@ -494,7 +501,32 @@ impl Browser {
     }
 
     fn key_target_at(&self, x: f32, y: f32) -> Option<&KeyTarget> {
-        self.key_targets.iter().find(|target| target.area.contains(x, y))
+        self.under(x, y, &self.key_targets, |o| &o.key_targets).iter().find(|target| target.area.contains(x, y))
+    }
+
+    /// The topmost overlay at a point, if there's one there.
+    fn overlay_at(&self, x: f32, y: f32) -> Option<&Overlay> {
+        self.overlays.iter().rfind(|overlay| overlay.area.contains(x, y))
+    }
+
+    /// Those of `all` that can be pointed at at a point: what the topmost
+    /// overlay there laid out, or anything if there's no overlay there.
+    fn under<'a, T>(&self, x: f32, y: f32, all: &'a [T], laid_out: impl Fn(&Overlay) -> &Range<usize>) -> &'a [T] {
+        match self.overlay_at(x, y) {
+            Some(overlay) => &all[laid_out(overlay).clone()],
+            None => all,
+        }
+    }
+
+    /// The `:on-dismiss` handler of the topmost overlay that has one, unless
+    /// a point is inside it or an overlay above it.
+    fn dismissal(&self, outside: Option<(f32, f32)>) -> Option<Value> {
+        let i = self.overlays.iter().rposition(|overlay| overlay.dismiss.is_some())?;
+        let above = &self.overlays[i..];
+        if outside.is_some_and(|(x, y)| above.iter().any(|overlay| overlay.area.contains(x, y))) {
+            return None;
+        }
+        self.overlays[i].dismiss.clone()
     }
 
     /// Whether a canvas has the keyboard, so keys go to it rather than the browser.
@@ -544,11 +576,12 @@ impl Browser {
     }
 
     fn input_at(&self, x: f32, y: f32) -> Option<&InputBox> {
-        self.inputs.iter().find(|input| input.area.contains(x, y))
+        self.under(x, y, &self.inputs, |o| &o.inputs).iter().find(|input| input.area.contains(x, y))
     }
 
     fn link_at(&self, x: f32, y: f32) -> Option<&Link> {
-        self.links.iter().find(|link| link.contains(x, y) && (self.ctrl || !link.needs_ctrl()))
+        let links = self.under(x, y, &self.links, |o| &o.links);
+        links.iter().find(|link| link.contains(x, y) && (self.ctrl || !link.needs_ctrl()))
     }
 
     /// Ctrl went down or up. Links that need it are only links, and
@@ -563,7 +596,8 @@ impl Browser {
             let v = line.visible;
             ((v.y0 - y).max(y - v.y1).max(0.0), (v.x0 - x).max(x - v.x1).max(0.0))
         };
-        let lines = self.lines.iter().filter(|line| line.frame == frame && !line.visible.is_empty());
+        let lines = self.under(x, y, &self.lines, |o| &o.lines).iter();
+        let lines = lines.filter(|line| line.frame == frame && !line.visible.is_empty());
         lines.min_by(|a, b| distance(a).partial_cmp(&distance(b)).expect("distances are numbers"))
     }
 
@@ -689,6 +723,13 @@ impl Browser {
     /// release. Returns whether the press was on an input,
     /// or on a canvas that listens for keys.
     pub fn press(&mut self, x: f32, y: f32, clicks: u32) -> bool {
+        // Pressing outside an overlay that can be dismissed dismisses it, and does nothing else.
+        if let Some(handler) = self.dismissal(Some((x, y))) {
+            self.dismissed = true;
+            self.focus = None;
+            self.run(&handler, &[]);
+            return false;
+        }
         // On a scrollbar, the thumb can be dragged. Pressing elsewhere on its
         // track jumps there, with the thumb centred on the pointer.
         if let Some((target, bar)) = self.scrollbar_at(x, y) {
@@ -761,6 +802,9 @@ impl Browser {
     /// The mouse button came up: follows a link or runs a click handler,
     /// unless the press was in an input. Returns whether anything was clicked.
     pub fn release(&mut self, x: f32, y: f32) -> bool {
+        if std::mem::take(&mut self.dismissed) {
+            return true;
+        }
         if self.scroll_drag.take().is_some() {
             return true;
         }
@@ -823,6 +867,12 @@ impl Browser {
                 return self.reload();
             }
             Key::Escape if self.key_focus.is_some() => return self.focus_keys(None),
+            Key::Escape
+                if self.focus.is_none()
+                    && let Some(handler) = self.dismissal(None) =>
+            {
+                return self.run(&handler, &[]);
+            }
             // Stops going to another site, and stays on this one.
             Key::Escape if self.focus.is_none() && self.navigating.is_some() => {
                 self.stop();
@@ -1500,6 +1550,57 @@ mod tests {
     fn render(browser: &mut Browser) {
         let mut buf = vec![0; 900 * 600];
         browser.render(&mut buf, 900, 600, 1.0, 0);
+    }
+
+    #[test]
+    fn overlays_take_clicks_and_can_be_dismissed() {
+        let (mut browser, dir) = browse(
+            "overlay",
+            r#"(define-state open true)
+               (define-state picked "nothing")
+               (page :padding 0
+                 (div (p :margin 0 (a :on-click (fn () (set! picked "under")) "a link under the menu, and long enough to reach out from it"))
+                   (if open (overlay :at "above" :margin 0 :on-dismiss (fn () (set! open false))
+                              (p :margin 0 (a :on-click (fn () (set! picked "menu")) "menu item")))))
+                 (div :padding-top 200)
+                 (p :margin 0 "picked " picked " open " open))"#,
+            false,
+        );
+        render(&mut browser);
+        let shown = |browser: &Browser| browser.page.to_string();
+        // The page is short, so the menu goes below the link rather than off the top.
+        let menu = browser.overlays[0].area;
+        let link = browser.links.iter().find(|link| !menu.contains(link.x + 1.0, link.y + 1.0)).map(|l| (l.x, l.y)).unwrap();
+        browser.click(menu.x0 + 2.0, menu.y0 + 2.0);
+        render(&mut browser);
+        assert!(shown(&browser).contains(r#""picked " "menu""#), "the overlay's link, not the one under it");
+
+        // A click outside only dismisses it, and Escape does too.
+        browser.click(link.0 + 300.0, link.1 + 2.0);
+        render(&mut browser);
+        assert!(shown(&browser).contains(r#""picked " "menu" " open " "false""#), "{}", shown(&browser));
+        assert!(browser.overlays.is_empty());
+        browser.click(link.0 + 300.0, link.1 + 2.0);
+        render(&mut browser);
+        assert!(shown(&browser).contains(r#""picked " "under""#), "with it gone, the link works");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn escape_dismisses_the_topmost_overlay() {
+        let (mut browser, dir) = browse(
+            "overlay-escape",
+            r#"(define-state shown '(1 2))
+               (page (map (fn (n) (overlay :at "center" :on-dismiss (fn () (set! shown (without n shown))) "overlay " n)) shown)
+                     (p "shown " (length shown)))"#,
+            false,
+        );
+        press(&mut browser, [Key::Escape]);
+        assert!(browser.page.to_string().contains(r#"(p "shown " "1")"#));
+        assert!(browser.page.to_string().contains(r#""overlay " "1""#), "the last one went first");
+        press(&mut browser, [Key::Escape, Key::Escape]);
+        assert!(browser.page.to_string().contains(r#"(p "shown " "0")"#));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn press(browser: &mut Browser, keys: impl IntoIterator<Item = Key>) {
