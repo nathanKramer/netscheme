@@ -55,12 +55,14 @@ Choose **View source** in the toolbar on any page to read it.
 
 Demos, including a canvas, Snake, and a Game of Life, are linked from the home page.
 
-## Writing pages with Claude
+## Writing pages with coding agents
 
-`.claude/skills/netscheme-pages` is a [Claude Code](https://claude.com/claude-code)
-skill that teaches Claude the page language: its elements, styles, state, and
-how to screenshot a page to check it. Claude Code picks it up when it's
-working in this repository. To use it anywhere, link it into your own skills:
+`.claude/skills/netscheme-pages` is an [Agent Skill](https://agentskills.io)
+that helps coding agents write Netscheme pages. It covers the page language's
+elements, styles and state, and how to screenshot a page to check it. Claude
+Code picks it up when it's working in this repository. Other agents that
+support skills can use it too: link it into wherever that agent looks for
+skills. For Claude Code, outside this repository:
 
 ```sh
 ln -s "$PWD/.claude/skills/netscheme-pages" ~/.claude/skills/netscheme-pages
@@ -105,7 +107,7 @@ is started from a launcher.
 | `ui/` | The browser's own pages, at `browser:` locations: the toolbar, view source, and the prelude |
 | `pages/` | The guide and demos |
 | `assets/` | The logo and the bundled Liberation and Open Sans fonts |
-| `.claude/` | The Claude Code skill for writing pages; see [Writing pages with Claude](#writing-pages-with-claude) |
+| `.claude/` | The agent skill for writing pages; see [Writing pages with coding agents](#writing-pages-with-coding-agents) |
 
 ## Roadmap
 
