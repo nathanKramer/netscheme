@@ -19,6 +19,9 @@ pub const MAX_LENGTH: usize = 1_000_000;
 
 thread_local! {
     static STEPS: Cell<u64> = const { Cell::new(0) };
+    /// The step count that ends the run, or the part of it under `limited`,
+    /// and how many steps that part was allowed.
+    static LIMIT: Cell<(u64, u64)> = const { Cell::new((MAX_STEPS, MAX_STEPS)) };
     static DEPTH: Cell<u32> = const { Cell::new(0) };
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
@@ -36,6 +39,7 @@ pub fn metered<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         }
     }
     STEPS.set(0);
+    LIMIT.set((MAX_STEPS, MAX_STEPS));
     DEPTH.set(0);
     ACTIVE.set(true);
     let _run = Run;
@@ -65,10 +69,28 @@ pub fn step() -> Result<(), String> {
     }
     let steps = STEPS.get() + 1;
     STEPS.set(steps);
-    if steps > MAX_STEPS {
-        return Err(format!("stopped after {MAX_STEPS} evaluation steps. Is there an infinite loop?"));
+    let (limit, allowed) = LIMIT.get();
+    if steps > limit {
+        return Err(format!("stopped after {allowed} evaluation steps. Is there an infinite loop?"));
     }
     Ok(())
+}
+
+/// Runs `f` with at most half the steps the run has left, so that if it
+/// fails for taking too many, the run still has steps to carry on with.
+pub fn limited<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    struct Restore((u64, u64));
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LIMIT.set(self.0);
+        }
+    }
+    let outer = LIMIT.get();
+    let steps = STEPS.get();
+    let allowed = outer.0.saturating_sub(steps) / 2;
+    let _restore = Restore(outer);
+    LIMIT.set((steps + allowed, allowed));
+    f()
 }
 
 /// One level of nesting; see `enter`.

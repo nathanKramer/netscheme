@@ -154,6 +154,11 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         loader::fill_image(&c, &mut el);
         Ok(Value::Element(Rc::new(el)))
     });
+    // Code in a string, as data: a list of its forms.
+    def(&env, "read-all", |args| match args {
+        [Value::Str(code)] => Ok(Value::list(reader::read_all(code)?)),
+        _ => Err("read-all: expected a string".into()),
+    });
     // A page's code as data, without running it. Given a fallback, that's
     // what a page that can't be read gives, unless it's still downloading.
     let c = ctx.clone();

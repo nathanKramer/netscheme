@@ -17,6 +17,7 @@
 (define panel (light-dark "#f4f1f8" "#25222b"))
 (define rule-colour (light-dark "#e3dfe8" "#36323d"))
 (define code-paper (light-dark "#f4f1f8" "#211e26"))
+(define error-colour (light-dark "#b3261e" "#ff8a80"))
 
 ; The browser's logo, relative to the pages that load this file.
 (define logo "../assets/images/logo.png")
@@ -258,11 +259,66 @@
         (interpose "\n\n" (map (fn (f) (pretty f 0)) (rest form)))
         (pretty form 0))))
 
-; Code, and below it what the code makes when it runs.
-(define (example form)
+; The text of what `pretty` and the other printers make: the text in a
+; string, a list, or an element and its children.
+(define (text-of x)
+  (cond ((string? x) x)
+        ((list? x) (join (map text-of x)))
+        (else (text-of (children x)))))
+
+; A form as text, laid out as `show-code` shows it.
+(define (code-text form)
+  (text-of (if (and (list? form) (= (first form) 'do))
+               (interpose "\n\n" (map (fn (f) (pretty f 0)) (rest form)))
+               (pretty form 0))))
+
+; What some code makes when it runs, or why it couldn't run.
+(define (run-code text)
+  (try (div (eval `(do ,@(read-all text))))
+       (fn (error) (p :margin 0 :mono true :size 14 :color error-colour error))))
+
+; An editor for code, as a playground and an example being edited show it.
+; It grows to fit the code.
+(define (code-editor text edit)
+  (textarea :code :netscheme :width :fill :size 14 :padding 12 :background code-paper :color ink
+            :rows (max 3 (inc (length (split text "\n"))))
+            :value text :on-input edit))
+
+; The box below code that shows what it makes, with a heading, and an
+; action on the right of the heading if there's one: a label and a handler.
+(define (result-box heading action & body)
+  (div :background rule-colour :padding 1
+    (div :background paper :padding 16
+      (p :margin 8 :size 12 :bold true :color faint heading
+         (if action
+             (list (spacer)
+                   (span :color accent :on-click (nth action 1) :hover (style :underline true)
+                         (first action)))))
+      body)))
+
+; Code to edit, and below it what the code makes, which changes as it's
+; typed. The page keeps the code in state, as with any input: `code` is
+; its text, and `edit` is called with the new text. Code that fails shows
+; why instead, and the editor stays usable to fix it.
+(define (playground code edit)
   (div :margin 18
-    (show-code form)
-    (div :background rule-colour :padding 1
-      (div :background paper :padding 16
-        (p :margin 8 :size 12 :bold true :color faint "RESULT")
-        (eval form)))))
+    (code-editor code edit)
+    (result-box "RESULT" nil (run-code code))))
+
+; The examples on a page that are being edited, from each example's form,
+; as printed, to its text.
+(define-state edits (dict))
+
+; Code, and below it what the code makes when it runs. Choosing Edit turns
+; it into a playground, starting from the code as printed, until Reset.
+(define (example form)
+  (let ((key (repr form))
+        (edited (get edits key)))
+    (div :margin 18
+      (if edited
+          (list (code-editor edited (fn (text) (set! edits (assoc edits key text))))
+                (result-box "RESULT" (list "RESET" (fn () (set! edits (dissoc edits key))))
+                  (run-code edited)))
+          (list (show-code form)
+                (result-box "RESULT" (list "EDIT" (fn () (set! edits (assoc edits key (code-text form)))))
+                  (eval form)))))))

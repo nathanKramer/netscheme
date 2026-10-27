@@ -9,6 +9,14 @@
        body)))
 (eval card-code)
 
+; The code in the playground below, as it's edited.
+(define-state tour-code
+"; Change anything here, and the result below changes as you type.
+(define (greet name)
+  (b :color \"#b8336a\" \"Hello, \" name \"!\"))
+
+(p (greet \"world\") \"  6 × 7 = \" (* 6 7))")
+
 (chapter "tour.sx"
   (section "A page is a program")
   (p "A Netscheme page is a file of Lisp code, usually ending in " (code ".sx")
@@ -23,6 +31,17 @@
   (p \"This is a whole page.\"))")
   (p "Save that as " (code "greetings.sx") " and open it with "
      (code "cargo run -- greetings.sx") ", or type its path into the address bar.")
+
+  (section "Try it")
+  (p "This is a " (b "playground") ": code you can edit, with what it makes below it."
+     " Click into the code and change it, and the result follows as you type. If"
+     " the code is unfinished or wrong, the result says why until it's fixed.")
+  (playground tour-code (fn (text) (set! tour-code text)))
+  (p "Every page in this guide is made the same way, so anything a page can do"
+     " works here too. The guide's examples, like the ones below, become"
+     " playgrounds as well: choose " (b "Edit") " beside an example's result to"
+     " change its code, and " (b "Reset") " to put it back. "
+     (a :href "code-as-data.sx" "Code is data") " shows how the playground works.")
 
   (section "Elements are functions")
   (p "Each element is an ordinary function. Its arguments are attributes,"

@@ -1524,6 +1524,71 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn playgrounds_run_code_as_it_is_typed_and_keep_its_state() {
+        let (mut browser, dir) = browse(
+            "playground",
+            r#"(eval `(do ,@(source "../../pages/site.sx")))
+               (define-state code "(define-state taps 0)\n(button :on-click (fn () (set! taps (inc taps))) \"Tapped \" taps)")
+               (page :padding 0 (playground code (fn (text) (set! code text))))"#,
+            false,
+        );
+        let mut buf = vec![0; 600 * 400];
+        let mut render = |browser: &mut Browser| browser.render(&mut buf, 600, 400, 1.0, 0);
+        render(&mut browser);
+        let tap = |browser: &mut Browser| {
+            let link = browser.links.iter().find(|link| matches!(link.action, Action::Run(_))).expect("the button");
+            let (x, y) = (link.x + 2.0, link.y + 2.0);
+            browser.click(x, y);
+        };
+        tap(&mut browser);
+        tap(&mut browser);
+        render(&mut browser);
+        assert!(browser.page.to_string().contains(r#""Tapped " "2""#), "{}", browser.page);
+
+        // Editing the code runs it again, and its state stays.
+        let area = browser.inputs[0].area;
+        browser.click(area.x0 + 14.0, area.y0 + 14.0);
+        browser.key(Key::Text("; edited\n".into()), false, (0.0, 0.0));
+        render(&mut browser);
+        assert!(browser.inputs[0].value.starts_with("; edited\n(define-state taps 0)"), "{}", browser.inputs[0].value);
+        assert!(browser.page.to_string().contains(r#""Tapped " "2""#), "{}", browser.page);
+
+        // Broken code shows why, and the editor is still there to fix it.
+        browser.key(Key::Text("(".into()), false, (0.0, 0.0));
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("unclosed"), "{}", browser.page);
+        assert_eq!(browser.inputs.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_example_in_the_guide_can_be_edited_as_it_was_printed() {
+        let pages = ["hello", "tour", "styles", "state", "language", "library", "code-as-data", "using", "internals"];
+        let (browser, dir) = browse(
+            "examples",
+            &format!(
+                r#"(eval `(do ,@(source "../../pages/site.sx")))
+                   ; The forms given to (example 'form) in some code.
+                   (define (examples form)
+                     (cond ((not (list? form)) (list))
+                           ((and (= (first form) 'example) (= (length form) 2)) (list (nth (nth form 1) 1)))
+                           (else (concat (map examples form)))))
+                   (define (forms-of form) (if (and (list? form) (= (first form) 'do)) (rest form) (list form)))
+                   (define all (concat (map (fn (page) (concat (map examples (source (str "../../pages/" page ".sx")))))
+                                            '({}))))
+                   (define broken (filter (fn (form) (not (= (read-all (code-text form)) (forms-of form)))) all))
+                   (page (p "examples: " (length all)) (map (fn (form) (p "broken: " (code-text form))) broken))"#,
+                pages.map(|page| format!("{page:?}")).join(" ")
+            ),
+            false,
+        );
+        let printed = browser.page.to_string();
+        assert!(!printed.contains("broken"), "{printed}");
+        assert!(printed.contains(r#""examples: " "28""#), "{printed}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A browser showing `src`, with or without the chrome. The page is in
     /// `target`, as the chrome takes locations starting with `/` to be in
     /// the working directory.

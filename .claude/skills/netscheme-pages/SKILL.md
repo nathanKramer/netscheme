@@ -73,7 +73,9 @@ Clojure spellings:
 | `(get d :k)`, `(assoc d :k v)` | `hash-ref`, `assq` |
 
 The special forms are only `quote`, `quasiquote`, `if`, `do`, `and`, `or`,
-`cond`, `let`, `define`, `define-state`, `set!`, `fn` and `eval`. There are no
+`cond`, `let`, `define`, `define-state`, `set!`, `fn`, `eval` and `try`.
+`(try x (fn (error) ...))` gives `x`, or if evaluating it fails, calls the
+function with the error message; `x` gets at most half the steps left. There are no
 macros and no loops: iterate with `map`, `filter`, `reduce`, `range` and
 `repeat`, or recurse. A **tail call**, one that's the last thing a function
 does, doesn't nest, so a function can loop by calling itself last:
@@ -99,7 +101,7 @@ repeat reverse take drop contains? index-of map filter reduce sort sort-by
 apply str repr join split upper lower trim substring starts-with? ends-with?
 parse-number url-encode dict get assoc dissoc keys values list? string?
 number? symbol? keyword? fn? dict? style dark-mode light-dark param go source
-tag attr children`. The prelude adds `pi inc dec sum product concat without
+read-all tag attr children`. The prelude adds `pi inc dec sum product concat without
 toggle any? all? interpose chunk map-indexed update plural`. Nothing else
 exists, so define anything missing yourself.
 

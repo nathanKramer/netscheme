@@ -52,6 +52,30 @@
      " " (code "eval") " runs that right where the line is, so every definition"
      " becomes part of the page.")
 
+  (subsection "How the playground works")
+  (p "The " (a :href "tour.sx" "playgrounds") " in this guide are built from the"
+     " same pieces. A " (code "textarea") " keeps the code in state, as text."
+     " " (code "read-all") " turns text into a list of forms, as " (code "source")
+     " does for a file, and " (code "eval") " runs them:")
+  (example
+    '(let ((text "(define n 6) (b \"six times seven is \" (* n 7))"))
+       (div (p :margin 6 "The forms: " (code (repr (read-all text))))
+            (p :margin 0 "Run: " (eval `(do ,@(read-all text)))))))
+  (p "Code being typed is often broken, so the playground runs it inside "
+     (code "try") ". If running it fails, " (code "try") " calls a function with"
+     " the error instead, and the playground shows that:")
+  (example
+    '(try (eval `(do ,@(read-all "(p (undefined-thing")))
+          (fn (error) (p "Couldn't run it: " error))))
+  (p "The code in a " (code "try") " only gets half the evaluation steps the page has"
+     " left, so even an infinite loop typed into a playground leaves the page enough"
+     " to show the error.")
+  (p "Examples like the ones on this page are quoted forms, which the page prints"
+     " and runs. Choosing " (b "Edit") " prints the form as text instead, to start"
+     " a playground from. A page keeps every example being edited in one"
+     " dictionary in state, from the example's form to its text, so " (b "Reset")
+     " only has to take the example out of it.")
+
   (section "Pages inside pages")
   (p "A " (code "frame") " shows another page inside this one. The framed page"
      " runs separately, with its own state, and clicks inside it go to it.")

@@ -10,6 +10,13 @@
           "  Clicked " (b (plural clicks "time")) "."))))
 (eval counter-code)
 
+; The code in the playground in "Live code with state", as it's edited.
+(define-state state-playground-code
+"(define-state taps 0)
+
+(p (button :on-click (fn () (set! taps (inc taps))) \"Tap\")
+   \"  Tapped \" (b taps) \" times.\")")
+
 (define greeting-code
   '(do
      (define-state name "")
@@ -164,6 +171,13 @@
   (subsection "A to-do list")
   (p "Put state, inputs and lists together and you have an app:")
   (live list-code (todo))
+
+  (subsection "Live code with state")
+  (p "Code in a playground can have state and handlers too. Tap the button a few"
+     " times, then change the code: say, the button's label, or " (code "inc")
+     " to " (code "(fn (n) (* 2 (inc n)))") ". The count is kept, because state"
+     " outlasts the page running again, and that's all an edit does.")
+  (playground state-playground-code (fn (text) (set! state-playground-code text)))
 
   (section "Animation")
   (p "An " (code ":on-frame") " handler is called sixty times a second, with the"

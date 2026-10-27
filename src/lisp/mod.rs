@@ -69,6 +69,25 @@ mod tests {
     }
 
     #[test]
+    fn try_catches_errors_and_read_all_reads_code() {
+        assert_eq!(eval("(try (+ 1 2) (fn (e) e))"), "3");
+        assert_eq!(eval("(try (nope) (fn (e) (str \"caught: \" e)))"), "\"caught: undefined symbol: nope\"");
+        assert_eq!(eval(r#"(read-all "(p :x 1) ; hi\n'y")"#), "((p :x 1) (quote y))");
+        assert_eq!(eval(r#"(try (read-all "(p") (fn (e) e))"#), "\"line 1: unclosed '('\"");
+        assert_eq!(eval(r#"(eval `(do ,@(read-all "(define x 2) (* x 21)")))"#), "42");
+    }
+
+    #[test]
+    fn a_runaway_inside_try_leaves_the_page_steps_to_carry_on() {
+        let src = "(define (spin) (spin)) (define (count n) (if (= n 0) 'done (count (- n 1))))
+                   (list (try (spin) (fn (e) e)) (count 10000))";
+        let result = eval(src);
+        assert!(result.starts_with("(\"stopped after 4999"), "about half the steps: {result}");
+        assert!(result.ends_with(" done)"), "{result}");
+        assert!(eval("(define (spin) (spin)) (spin)").contains("stopped after 1000000 evaluation steps"));
+    }
+
+    #[test]
     fn special_forms() {
         assert_eq!(eval("(let ((x 2) (y (* x 3))) (+ x y))"), "8");
         assert_eq!(eval("(cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))"), "b");

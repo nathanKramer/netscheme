@@ -91,6 +91,7 @@
   (entry "(go location)" "Goes to another page once the current event handler finishes.")
   (entry "(source location), (source location fallback)" "Another page's code, as a list of forms,"
          " without running it. With a fallback, that's what a page that can't be read gives.")
+  (entry "(read-all text)" "The code in a string, as a list of forms, without running it.")
   (entry "(resolve base location)" "Where a link to location goes from the page at base.")
   (entry "(tag el), (attr el :name), (children el)" "What's inside an element: its tag,"
          " an attribute's value, and its children.")

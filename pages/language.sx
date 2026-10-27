@@ -49,6 +49,9 @@
          " part, and " (code ",@") " evaluates a list and splices it in. See"
          " " (a :href "code-as-data.sx" "Code is data") ".")
   (entry "(eval x)" "Evaluates " (code "x") ", then evaluates the result as code.")
+  (entry "(try x handler)" "Evaluates " (code "x") ", or if that fails, calls"
+         " " (code "handler") " with the error message and gives what it returns."
+         " " (code "x") " gets at most half the evaluation steps left.")
 
   (section "Functions")
   (p "Functions close over the variables around them, so a function can make"
@@ -79,7 +82,8 @@
   (p "An error while a page loads, like calling something that isn't a function"
      " or misspelling a name, replaces the page with a message saying what went"
      " wrong. An error in an event handler shows in a banner below the toolbar,"
-     " and the page stays as it was.")
+     " and the page stays as it was. " (code "try") " catches an error, so a page"
+     " can show it, or something else, and carry on.")
   (p "Pages also have limits on how much work they can do, so a mistake can't"
      " freeze the browser:")
   (div :padding-left 18 :margin 12

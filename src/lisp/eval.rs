@@ -167,6 +167,15 @@ fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Step, String> {
             "quasiquote" => return done(quasiquote(arg(items, 1, "quasiquote")?, env)?),
             // Code is data: evaluate the argument, then evaluate the result as code.
             "eval" => return tail(&eval(arg(items, 1, "eval")?, env)?),
+            // Evaluates the first argument, or if that fails, calls the second
+            // with the error. The first only gets half the steps left.
+            "try" => {
+                let handler = eval(arg(items, 2, "try")?, env)?;
+                return match budget::limited(|| eval(arg(items, 1, "try")?, env)) {
+                    Ok(value) => done(value),
+                    Err(e) => done(apply(&handler, &[Value::Str(e.into())])?),
+                };
+            }
             "define" => return done(eval_define(items, env)?),
             "define-state" => return done(eval_define_state(items, env)?),
             "set!" => {
