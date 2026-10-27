@@ -93,6 +93,8 @@ pub struct View<'a> {
     pub pointer: Option<(f32, f32)>,
     /// Whether Ctrl is held, which underlines links with `:ctrl-click`.
     pub ctrl: bool,
+    /// Where the link under the pointer goes, shown in a box at the bottom of the window.
+    pub status: Option<&'a str>,
 }
 
 pub struct Rendered {
@@ -202,6 +204,9 @@ impl Renderer {
             let (x, y, w, h) = (bar.thumb.x0, bar.thumb.y0, bar.thumb.x1 - bar.thumb.x0, bar.thumb.y1 - bar.thumb.y0);
             items.push(DisplayItem::Rect { x, y, w, h, color: palette.scrollbar, radius: 0.0 });
         }
+        if let Some(status) = view.status {
+            items.extend(self.status_box(status, screen, view, palette));
+        }
         for link in &mut links {
             link.y -= dy;
         }
@@ -237,6 +242,37 @@ impl Renderer {
             overlays,
             damage,
         }
+    }
+
+    /// A box at the bottom-left of the window showing `text`, as browsers
+    /// show where the link under the pointer goes. It moves to the right if
+    /// the pointer is over it, and long text is cut short to half the window.
+    fn status_box(&self, text: &str, screen: Clip, view: &View, palette: &Palette) -> Vec<DisplayItem> {
+        let (size, face) = (13.0 * view.scale, Face { family: Family::Sans, weight: 400 });
+        let (padding, height) = ((8.0 * view.scale).round(), (22.0 * view.scale).round());
+        let room = (screen.x1 / 2.0 - 2.0 * padding).max(0.0);
+        let mut text = text.to_string();
+        if self.fonts.measure(&text, size, face) > room {
+            while !text.is_empty() && self.fonts.measure(&text, size, face) + self.fonts.measure("…", size, face) > room {
+                text.pop();
+            }
+            text.push('…');
+        }
+        let w = (self.fonts.measure(&text, size, face) + 2.0 * padding).ceil();
+        let y = screen.y1 - height;
+        let left = Clip::rect(0.0, y, w, height);
+        let x = match view.pointer {
+            Some((px, py)) if left.contains(px, py) => screen.x1 - w,
+            _ => 0.0,
+        };
+        let border = view.scale.round().max(1.0);
+        vec![
+            DisplayItem::Clip(screen),
+            DisplayItem::Layer(None),
+            DisplayItem::Rect { x, y, w, h: height, color: palette.button, radius: 0.0 },
+            DisplayItem::Border { x, y, w, h: height, width: border, color: palette.border, radius: 0.0 },
+            DisplayItem::Text { x: x + padding, y: y + (height + size * 0.7) / 2.0, text, size, face, color: palette.text },
+        ]
     }
 
     /// Paints `frame` over `background`, or just the parts of it that differ
@@ -648,6 +684,7 @@ mod tests {
                 drawings: None,
                 pointer: None,
                 ctrl: false,
+                status: None,
             },
             0,
         )
@@ -676,6 +713,7 @@ mod tests {
                 drawings: None,
                 pointer: None,
                 ctrl: false,
+                status: None,
             },
             0,
         );
@@ -698,6 +736,54 @@ mod tests {
         assert_eq!(at(100, 11), 0xff, "and an edge");
         assert_eq!(at(199, 15), 0xff, "a shape reaches the canvas's edge");
         assert_eq!(at(150, 30), 0, "and stops there");
+    }
+
+    #[test]
+    fn the_status_box_is_cut_short_and_keeps_out_of_the_pointers_way() {
+        let renderer = Renderer::new();
+        let scroll = Scroll { page: 0.0, frames: HashMap::new() };
+        let view = |pointer| View {
+            scale: 1.0,
+            scroll: &scroll,
+            focus: None,
+            key_focus: None,
+            caret_visible: true,
+            dark: false,
+            search: None,
+            selection: None,
+            images: None,
+            drawings: None,
+            pointer,
+            ctrl: false,
+            status: None,
+        };
+        let screen = Clip::rect(0.0, 0.0, 400.0, 300.0);
+        let placed = |items: &[DisplayItem]| {
+            items.iter().find_map(|item| match item {
+                DisplayItem::Rect { x, y, w, .. } => Some((*x, *y, *w)),
+                _ => None,
+            })
+        };
+        let text = |items: &[DisplayItem]| {
+            items.iter().find_map(|item| match item {
+                DisplayItem::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+        };
+
+        let items = renderer.status_box("pages/tour.sx", screen, &view(None), &Palette::LIGHT);
+        let (x, y, w) = placed(&items).unwrap();
+        assert_eq!((x, y + 22.0), (0.0, 300.0), "at the bottom-left");
+        assert_eq!(text(&items).unwrap(), "pages/tour.sx");
+
+        let long = "https://example.com/".to_string() + &"a".repeat(200);
+        let items = renderer.status_box(&long, screen, &view(None), &Palette::LIGHT);
+        let (_, _, long_w) = placed(&items).unwrap();
+        assert!(long_w <= 200.0, "no wider than half the window: {long_w}");
+        assert!(text(&items).unwrap().ends_with('…'));
+
+        let items = renderer.status_box("pages/tour.sx", screen, &view(Some((5.0, 290.0))), &Palette::LIGHT);
+        assert_eq!(placed(&items).unwrap().0, 400.0 - w, "moved to the right, out from under the pointer");
     }
 
     #[test]
@@ -743,6 +829,7 @@ mod tests {
             drawings: None,
             pointer: None,
             ctrl: false,
+            status: None,
         };
         Renderer::new().render(&page, &mut buf, 200, 60, &view, 0);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
@@ -841,6 +928,7 @@ mod tests {
                     drawings: None,
                     pointer: None,
                     ctrl: false,
+                    status: None,
                 },
                 0,
             )
@@ -921,6 +1009,7 @@ mod tests {
                 drawings: None,
                 pointer: moment.pointer,
                 ctrl: false,
+                status: None,
             };
             renderer.render(&page, buf, w, h, &view, age)
         };
@@ -991,6 +1080,7 @@ mod tests {
                 drawings: None,
                 pointer,
                 ctrl: false,
+                status: None,
             };
             renderer.render(&page, &mut buf, 200, 200, &view, age)
         };

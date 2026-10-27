@@ -159,6 +159,8 @@ fn write_screenshot(
                 }
             }
             Step::Hover(x, y) => {
+                // Laid out first, so it knows what's at that point.
+                browser.render(&mut buf, w, h, 1.0, 0);
                 browser.point_at(Some((*x, *y)));
             }
             Step::Drag((x0, y0), (x1, y1)) => {

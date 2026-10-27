@@ -63,7 +63,7 @@
 (define bookmark-text (style :underline false :size 13 :color (light-dark "#3a2f4a" "#ded8e8")))
 
 (define (bookmark-link b n)
-  (a bookmark-text :on-click (fn () (go (get b :location))) (shorten (get b :title) n)))
+  (a bookmark-text :href (get b :location) (shorten (get b :title) n)))
 
 (define (more-bookmarks)
   (define more (drop (bookmarks) bookmarks-shown))

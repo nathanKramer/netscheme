@@ -348,6 +348,7 @@ impl Browser {
         let dark = self.host.dark_mode.get();
         let selection = self.selection.map(|(a, b)| (a.min(b), a.max(b))).filter(|(a, b)| a < b);
         let key_focus = self.key_focus;
+        let status = self.status();
         let view = View {
             scale,
             scroll: &self.scroll,
@@ -361,6 +362,7 @@ impl Browser {
             drawings: Some(&self.drawings),
             pointer: self.pointer,
             ctrl: self.ctrl,
+            status: status.as_deref(),
         };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view, age);
         drop(images);
@@ -774,13 +776,27 @@ impl Browser {
     }
 
     /// The mouse pointer moved to a point, or out of the window. Returns
-    /// whether it moved onto or off an element with a hover style, so that
-    /// the page needs drawing again.
+    /// whether it moved onto or off an element with a hover style, or a
+    /// link, so that the page needs drawing again.
     pub fn point_at(&mut self, pointer: Option<(f32, f32)>) -> bool {
         let over = |area: &Clip, pointer: Option<(f32, f32)>| pointer.is_some_and(|(x, y)| area.contains(x, y));
         let changed = self.hover_areas.iter().any(|area| over(area, self.pointer) != over(area, pointer));
+        let status = self.status();
         self.pointer = pointer;
-        changed
+        changed || self.status() != status
+    }
+
+    /// Where the link under the pointer goes, to show at the bottom of the
+    /// window. The toolbar's links to the browser itself, like ← and View
+    /// source, don't say; its bookmarks do.
+    fn status(&self) -> Option<String> {
+        let (x, y) = self.pointer?;
+        let Action::Go { href, base, .. } = &self.link_at(x, y)?.action else { return None };
+        if self.chrome && base.is_none() && href.starts_with("browser:") {
+            return None;
+        }
+        let from = base.as_deref().map_or_else(|| self.location(), String::from);
+        Some(loader::resolve(&from, href))
     }
 
     /// The mouse moved to a point. Returns whether that scrolled or changed the selection.
@@ -1962,6 +1978,28 @@ mod tests {
     }
 
     #[test]
+    fn pointing_at_a_link_shows_where_it_goes() {
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        render(&mut browser);
+        let at = |browser: &Browser, href: &str| {
+            let link = browser.links.iter().find(|l| matches!(&l.action, Action::Go { href: h, .. } if &**h == href)).unwrap();
+            (link.x + 1.0, link.y + 1.0)
+        };
+        assert!(browser.point_at(Some(at(&browser, "tour.sx"))), "moving onto a link draws again");
+        assert_eq!(browser.status().as_deref(), Some("pages/tour.sx"), "resolved against the site");
+        assert!(browser.point_at(Some((1.0, 400.0))), "and moving off one");
+        assert_eq!(browser.status(), None, "nothing off a link");
+        browser.point_at(Some(at(&browser, "browser:reload")));
+        assert_eq!(browser.status(), None, "the toolbar's links to the browser itself don't say");
+
+        browser.host.bookmarks.borrow_mut().push(Bookmark { location: "pages/state.sx".into(), title: "State".into() });
+        browser.reload();
+        render(&mut browser);
+        browser.point_at(Some(at(&browser, "pages/state.sx")));
+        assert_eq!(browser.status().as_deref(), Some("pages/state.sx"), "but its bookmarks do");
+    }
+
+    #[test]
     fn bookmarks_outlast_the_browser() {
         let dir = std::env::temp_dir().join(format!("toy-browser-bookmarks-test-{}", std::process::id()));
         let file = dir.join("netscheme").join("settings");
@@ -1976,11 +2014,10 @@ mod tests {
         browser.keep_settings(Settings::at(file));
         render(&mut browser);
         assert!(browser.page.to_string().contains("Welcome"), "the next run shows it in the toolbar");
-        // Now the bookmark comes first.
-        click_button(&mut browser, 0);
+        click_link(&mut browser, to("pages/hello.sx"));
         assert_eq!(browser.site, "pages/hello.sx", "and it goes there");
 
-        click_button(&mut browser, 1);
+        click_button(&mut browser, 0);
         assert!(browser.host.bookmarks.borrow().is_empty(), "the filled star removes it");
         assert_eq!(saved(), "");
         std::fs::remove_dir_all(dir).unwrap();
@@ -1998,12 +2035,12 @@ mod tests {
         assert!(page.contains(r#""Threefold…""#), "shortened to fit: {page}");
         assert!(!page.contains("Four"), "the rest wait for the menu");
 
-        // The three bookmarks come first, then the menu's button.
-        click_button(&mut browser, 3);
+        // The menu's button is the toolbar's first, before the star.
+        click_button(&mut browser, 0);
         let page = browser.page.to_string();
         assert!(page.contains("Four") && page.contains("Five"), "{page}");
         let four =
-            browser.links.iter().find(|link| matches!(link.action, Action::Run(_)) && link.y > 40.0).expect("the menu, below the toolbar");
+            browser.links.iter().find(|link| to("pages/tour.sx")(&link.action) && link.y > 40.0).expect("the menu, below the toolbar");
         let (x, y) = (four.x + 1.0, four.y + 1.0);
         assert!(browser.click(x, y));
         render(&mut browser);
