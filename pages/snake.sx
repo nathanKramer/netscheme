@@ -5,18 +5,20 @@
 
 (eval `(do ,@(source "site.sx")))
 
-(define cols 20)
-(define rows 14)
-(define cell 20)
+; The board is as wide as the panel it's in, which the site's 720px column
+; and the panel's padding leave 672px for.
+(define cols 21)
+(define rows 13)
+(define cell 32)
 (define step-ms 110)
 
-(define start-snake (list (list 6 7) (list 5 7) (list 4 7)))
+(define start-snake (list (list 6 6) (list 5 6) (list 4 6)))
 
 (define-state snake start-snake)
 (define-state heading (list 1 0))
 ; Turns waiting to happen, so that two quick presses between steps both count.
 (define-state turns (list))
-(define-state food (list 14 7))
+(define-state food (list 14 6))
 (define-state seed 2024)
 (define-state since 0)
 (define-state playing false)
@@ -56,7 +58,7 @@
   (set! snake start-snake)
   (set! heading (list 1 0))
   (set! turns (list))
-  (set! food (list 14 7))
+  (set! food (list 14 6))
   (set! since 0)
   (set! score 0)
   (set! over false)
@@ -112,9 +114,10 @@
   (rect :x (+ (* cell (first c)) inset) :y (+ (* cell (nth c 1)) inset)
         :w (- cell (* 2 inset)) :h (- cell (* 2 inset)) :fill colour))
 
-(define (message words)
+; `x` centres the words, as text is drawn from its left end.
+(define (message words x)
   (list (rect :x 0 :y 0 :w (* cols cell) :h (* rows cell) :fill panel)
-        (text :x 70 :y 145 :size 18 :bold true words)))
+        (text :x x :y (+ (/ (* rows cell) 2) 8) :size 22 :bold true words)))
 
 ; What's on the board. The canvas calls this itself, rather than the page
 ; drawing the board as it runs, so that when a frame only moves the snake,
@@ -125,8 +128,8 @@
             :r (/ cell 2.5) :fill pink)
     (map (fn (c) (square c green 1)) (rest snake))
     (square (first snake) head-green 0)
-    (cond (over (message "Game over. Space to play again."))
-          ((not playing) (message "Click here, then press an arrow key.")))))
+    (cond (over (message "Game over. Space to play again." 170))
+          ((not playing) (message "Click here, then press an arrow key." 150)))))
 
 (define board
   (canvas :width (* cols cell) :height (* rows cell) :background panel
@@ -137,7 +140,7 @@
 
 (demo "Snake"
   "A game, drawn on a canvas that listens for keys and moves on every frame."
-  (div :background panel :padding 16 :margin 16 board)
+  (div :background panel :padding 24 :margin 16 board)
   (p (b "Score: " score) "   " (span muted "Best: " best))
   (p small "Held keys: " (if (empty? held) "none" (join (map repr held) ", ")))
   (p muted "Arrow keys or WASD steer, and Space starts again. The edges wrap around,"
