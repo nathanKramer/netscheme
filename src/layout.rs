@@ -295,6 +295,15 @@ pub struct Match {
     pub frame: Option<usize>,
 }
 
+/// Where an element with an `:id` was laid out, for a location that ends
+/// in `#` and the id to scroll to.
+pub struct Anchor {
+    pub id: Rc<str>,
+    pub area: Clip,
+    /// The innermost fixed-height frame the element is in, as for `Match`.
+    pub frame: Option<usize>,
+}
+
 /// A frame with a fixed height, which scrolls its page independently.
 pub struct Scroller {
     /// Identifies the frame across renders of the same page: frames with a
@@ -322,6 +331,8 @@ pub enum Action {
         href: Rc<str>,
         /// Location of the framed page the link is on, if it isn't the top-level page.
         base: Option<Rc<str>>,
+        /// Whether only a Ctrl+click follows it: `(a :ctrl-click true ...)`.
+        ctrl: bool,
     },
     /// Call this function with no arguments.
     Run(Value),
@@ -330,6 +341,10 @@ pub enum Action {
 impl Link {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+
+    pub fn needs_ctrl(&self) -> bool {
+        matches!(self.action, Action::Go { ctrl: true, .. })
     }
 }
 
@@ -443,6 +458,7 @@ pub struct Layout<'a> {
     images: Option<&'a Images>,
     drawings: Option<&'a Drawings>,
     pub matches: Vec<Match>,
+    pub anchors: Vec<Anchor>,
     /// The selected range of text positions, start first, and every line of text.
     selection: Option<(usize, usize)>,
     pub lines: Vec<TextLine>,
@@ -479,6 +495,7 @@ struct Marks {
     inputs: usize,
     next_input_id: usize,
     matches: usize,
+    anchors: usize,
     key_targets: usize,
     next_key_target_id: usize,
     lines: usize,
@@ -529,6 +546,7 @@ impl<'a> Layout<'a> {
             images: None,
             drawings: None,
             matches: Vec::new(),
+            anchors: Vec::new(),
             selection: None,
             lines: Vec::new(),
             next_char: 0,
@@ -558,6 +576,7 @@ impl<'a> Layout<'a> {
             inputs: self.inputs.len(),
             next_input_id: self.next_input_id,
             matches: self.matches.len(),
+            anchors: self.anchors.len(),
             key_targets: self.key_targets.len(),
             next_key_target_id: self.next_key_target_id,
             lines: self.lines.len(),
@@ -576,6 +595,7 @@ impl<'a> Layout<'a> {
         self.inputs.truncate(marks.inputs);
         self.next_input_id = marks.next_input_id;
         self.matches.truncate(marks.matches);
+        self.anchors.truncate(marks.anchors);
         self.key_targets.truncate(marks.key_targets);
         self.next_key_target_id = marks.next_key_target_id;
         self.lines.truncate(marks.lines);
@@ -596,6 +616,7 @@ impl<'a> Layout<'a> {
         }
         let areas = self.inputs[marks.inputs..].iter_mut().map(|input| &mut input.area);
         let areas = areas.chain(self.matches[marks.matches..].iter_mut().map(|m| &mut m.area));
+        let areas = areas.chain(self.anchors[marks.anchors..].iter_mut().map(|a| &mut a.area));
         let areas = areas.chain(self.key_targets[marks.key_targets..].iter_mut().map(|k| &mut k.area));
         let areas = areas.chain(self.hover_areas[marks.hover_areas..].iter_mut());
         for area in areas.chain(self.lines[marks.lines..].iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
@@ -735,6 +756,9 @@ impl<'a> Layout<'a> {
         // After the children's, so a click on a child's own handler or link wins.
         if let Some(handler) = el.attr("on-click") {
             self.push_link(Clip::rect(x, y, w, h), Action::Run(handler.clone()));
+        }
+        if let Some(Value::Str(id)) = el.attr("id") {
+            self.anchors.push(Anchor { id: id.clone(), area: Clip::rect(x, y, w, h), frame: self.scroller });
         }
         (y + h + style.margin * self.scale, Clip::rect(x, y, w, h))
     }
@@ -1285,7 +1309,10 @@ impl<'a> Layout<'a> {
         }
         let action = match (el.attr("on-click"), el.attr("href")) {
             (Some(handler), _) => Some(Action::Run(handler.clone())),
-            (None, Some(Value::Str(href))) if &*el.tag == "a" => Some(Action::Go { href: href.clone(), base: self.base.clone() }),
+            (None, Some(Value::Str(href))) if &*el.tag == "a" => {
+                let ctrl = el.attr("ctrl-click").is_some_and(Value::truthy);
+                Some(Action::Go { href: href.clone(), base: self.base.clone(), ctrl })
+            }
             _ => action,
         };
         if &*el.tag == "spacer" {

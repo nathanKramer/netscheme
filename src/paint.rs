@@ -12,7 +12,7 @@ use crate::{
     damage::{self, Blit, Changes, Frame},
     dom::Element,
     image::Image,
-    layout::{Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{Anchor, Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Scrollbar, Scroller, Search, TextLine},
     loader::Images,
     style::{Color, Face, Family, Palette, Style},
 };
@@ -105,6 +105,8 @@ pub struct Rendered {
     pub bar: Option<Scrollbar>,
     /// Where the search matched, in window coordinates.
     pub matches: Vec<Match>,
+    /// Elements with an `:id`, in window coordinates.
+    pub anchors: Vec<Anchor>,
     /// Every line of text, in window coordinates.
     pub lines: Vec<TextLine>,
     /// The visible parts of elements with hover styles, in window coordinates.
@@ -162,7 +164,7 @@ impl Renderer {
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs, mut matches) =
             (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
-        let mut key_targets = layout.key_targets;
+        let (mut key_targets, mut anchors) = (layout.key_targets, layout.anchors);
         let (mut lines, mut hover_areas) = (layout.lines, layout.hover_areas);
 
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
@@ -194,7 +196,7 @@ impl Renderer {
         }
         let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
         let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area)).chain(key_targets.iter_mut().map(|k| &mut k.area));
-        let areas = areas.chain(hover_areas.iter_mut());
+        let areas = areas.chain(hover_areas.iter_mut()).chain(anchors.iter_mut().map(|a| &mut a.area));
         for area in areas.chain(lines.iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             area.y0 -= dy;
             area.y1 -= dy;
@@ -209,7 +211,19 @@ impl Renderer {
         let background = blend(palette.page.to_u32(), page_background, 255);
         let background = Color((background >> 16) as u8, (background >> 8) as u8, background as u8, 255);
         let damage = self.paint(buf, w, Frame { items, layers, screen }, background, age, palette);
-        Rendered { links, scrollers, inputs, key_targets, scroll: Scroll { page: dy, frames }, bar, matches, lines, hover_areas, damage }
+        Rendered {
+            links,
+            scrollers,
+            inputs,
+            key_targets,
+            scroll: Scroll { page: dy, frames },
+            bar,
+            matches,
+            anchors,
+            lines,
+            hover_areas,
+            damage,
+        }
     }
 
     /// Paints `frame` over `background`, or just the parts of it that differ

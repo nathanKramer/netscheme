@@ -1,10 +1,12 @@
 ; View source, written as an ordinary page. `source` reads another page's
 ; code as a list of forms without running it, and the functions below turn
-; those forms into elements.
+; those forms into elements. Ctrl+clicking a name goes to its definition:
+; in the page, a page it reads with `source`, or the prelude.
 ;
 ; Usage: browser:view-source?page=pages/hello.sx
 
 (define target (or (param "page") "browser:view-source"))
+(define forms (source target))
 
 (define (atom? x) (not (list? x)))
 
@@ -24,17 +26,66 @@
       xs
       (cons (first xs) (cons " " (spaced (rest xs))))))
 
+; The name a form defines, if it's (define name ...), (define (name ...) ...)
+; or (define-state name ...).
+(define (defined-name form)
+  (if (and (list? form) (contains? '(define define-state) (first form)))
+      (let ((head (nth form 1)))
+        (cond ((symbol? head) (str head))
+              ((and (list? head) (symbol? (first head))) (str (first head)))
+              (else nil)))
+      nil))
+
+; The locations a form reads with (source "location"), as a page does to use
+; another's definitions. Quoted code is only data, so it reads nothing.
+(define (sources form)
+  (cond ((atom? form) (list))
+        ((= (first form) 'quote) (list))
+        ((and (= (length form) 2) (= (first form) 'source) (string? (nth form 1)))
+         (list (nth form 1)))
+        (else (concat (map sources form)))))
+
+; Adds the names `forms` define to `table`, a dictionary from names to the
+; location of the page defining them, along with the names in the pages
+; they read. Later definitions win, as they do when the page runs.
+; `reading` is the pages being read, so a page that reads itself stops.
+(define (add-definitions table location forms reading)
+  (reduce (fn (table form)
+            (let ((table (reduce (fn (table href) (add-page table (resolve location href) reading))
+                                 table
+                                 (sources form)))
+                  (name (defined-name form)))
+              (if name (assoc table name location) table)))
+          table
+          forms))
+
+(define (add-page table location reading)
+  (if (contains? reading location)
+      table
+      (add-definitions table location (source location (list)) (cons location reading))))
+
+; Every page runs after the prelude, so its definitions come first.
+(define definitions
+  (add-definitions (add-page (dict) "browser:prelude" (list)) target forms (list target)))
+
+; The source of the page at `location`, scrolled to where it defines `name`.
+(define (definition-link location name)
+  (str "browser:view-source?page=" (url-encode location) "#" name))
+
 (define string-style (style :color (light-dark "#2a7a3a" "#7fd38c")))
 (define keyword-style (style :color (light-dark "#8a3ab8" "#d29bff")))
 (define number-style (style :color (light-dark "#b85a1a" "#f0a66a")))
 (define symbol-style (style :color (light-dark "#1a5fb4" "#8ab4f8")))
 
 (define (token x)
-  (span (cond ((string? x) string-style)
-              ((keyword? x) keyword-style)
-              ((number? x) number-style)
-              (else symbol-style))
-        (repr x)))
+  (let ((location (and (symbol? x) (get definitions (str x)))))
+    (if location
+        (a :href (definition-link location (str x)) :ctrl-click true symbol-style :underline false (repr x))
+        (span (cond ((string? x) string-style)
+                    ((keyword? x) keyword-style)
+                    ((number? x) number-style)
+                    (else symbol-style))
+              (repr x)))))
 
 ; A form on a single line.
 (define (inline x)
@@ -62,4 +113,8 @@
   (h1 :size 24 "Source of " (span symbol-style target))
   (p (a :href target "Open the page") " · "
      (a :href "browser:view-source?page=browser:view-source" "View the source of this viewer"))
-  (map (fn (form) (block form 0)) (source target)))
+  ; Definitions have their name as an :id, for links to scroll to.
+  (map (fn (form)
+         (let ((name (defined-name form)))
+           (if name (div :id name (block form 0)) (block form 0))))
+       forms))

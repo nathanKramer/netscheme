@@ -398,7 +398,11 @@ impl ApplicationHandler<Loaded> for App {
                 }
                 self.redraw();
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+                self.browser.set_ctrl(self.modifiers.control_key());
+                self.update_cursor();
+            }
             WindowEvent::ThemeChanged(theme) if !self.browser.dark_mode_chosen() => {
                 self.browser.set_dark_mode(theme == Theme::Dark);
                 self.redraw();

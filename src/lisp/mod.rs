@@ -158,6 +158,16 @@ mod tests {
     }
 
     #[test]
+    fn reading_other_pages() {
+        assert_eq!(
+            eval(r#"(list (resolve "pages/a.sx" "b.sx") (resolve "pages/a.sx" "/b.sx") (resolve "browser:x" "b.sx"))"#),
+            r#"("pages/b.sx" "b.sx" "b.sx")"#
+        );
+        assert_eq!(eval(r#"(source "no-such-page.sx" 'none)"#), "none", "the fallback for a page that can't be read");
+        assert!(eval(r#"(source "no-such-page.sx")"#).contains("source: couldn't read no-such-page.sx"));
+    }
+
+    #[test]
     fn only_browser_pages_search() {
         assert!(eval(r#"(set-find "x")"#).contains("only browser: pages"));
         assert!(eval("(find-next)").contains("only browser: pages"));

@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     dom::{self, Element, Node},
-    layout::{Action, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
+    layout::{Action, Anchor, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Scrollbar, Scroller, Search, TextLine},
     lisp::{
         self, Value,
         watch::{self, Touched},
@@ -149,6 +149,10 @@ pub struct Browser {
     find: Option<Find>,
     /// Whether to scroll the current match into view after the next render.
     reveal: bool,
+    /// Whether to scroll to the element the site's location names after
+    /// `#` after the next render, as it does on first opening the site and
+    /// after following a link there.
+    reveal_anchor: bool,
     /// Whether the REPL is open.
     repl: bool,
     /// Inputs with `:autofocus` in the last render, which are only focused
@@ -172,8 +176,11 @@ pub struct Browser {
     matches: Vec<Match>,
     lines: Vec<TextLine>,
     hover_areas: Vec<Clip>,
+    anchors: Vec<Anchor>,
     /// Where the mouse pointer is, while it's in the window.
     pointer: Option<(f32, f32)>,
+    /// Whether Ctrl is held, which links with `:ctrl-click` need.
+    ctrl: bool,
     /// Height and scale of the window.
     viewport: (f32, f32),
 }
@@ -220,6 +227,7 @@ impl Browser {
             scroll_drag: None,
             find: None,
             reveal: false,
+            reveal_anchor: true,
             repl: false,
             autofocused: Vec::new(),
             refocus: false,
@@ -235,7 +243,9 @@ impl Browser {
             matches: Vec::new(),
             lines: Vec::new(),
             hover_areas: Vec::new(),
+            anchors: Vec::new(),
             pointer: None,
+            ctrl: false,
             viewport: (0.0, 1.0),
         }
     }
@@ -309,7 +319,8 @@ impl Browser {
         let mut damage = self.render_once(buf, w, h, scale, age);
         // Finding text can mean drawing again: once the chrome has been told
         // how many matches there are, or to scroll the current one into view.
-        if self.after_search() {
+        // Both, so neither waits for the other.
+        if self.after_search() | self.after_arrival() {
             let again = self.render_once(buf, w, h, scale, 1);
             damage = damage.zip(again).map(|(first, second)| first.into_iter().chain(second).collect());
         }
@@ -347,7 +358,7 @@ impl Browser {
             self.held.clear();
         }
         (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
-        self.hover_areas = rendered.hover_areas;
+        (self.hover_areas, self.anchors) = (rendered.hover_areas, rendered.anchors);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -377,20 +388,47 @@ impl Browser {
     /// Scrolls whatever the match is in so that it's in view. Returns whether that scrolled.
     fn reveal_match(&mut self, i: usize) -> bool {
         let Some(m) = self.matches.get(i).copied() else { return false };
-        let (top, bottom, scroll) = match m.frame.and_then(|id| self.scrollers.iter().find(|s| s.id == id)) {
-            Some(s) => (s.area.y0, s.area.y1, s.scroll),
-            None => (0.0, self.viewport.0, self.scroll.page),
-        };
+        let (top, bottom, _) = self.view_of(m.frame);
         if m.area.y0 >= top && m.area.y1 <= bottom {
             return false;
         }
         // A third of the way down, so there's some context above it.
-        let target = scroll + m.area.y0 - top - (bottom - top) / 3.0;
-        match m.frame {
+        self.scroll_to(m.area, m.frame, (bottom - top) / 3.0);
+        true
+    }
+
+    /// Catches up with arriving at a location ending in `#id`: scrolls
+    /// the element with that `:id` to the top of what it's in. Returns
+    /// whether to draw again.
+    fn after_arrival(&mut self) -> bool {
+        if !std::mem::take(&mut self.reveal_anchor) {
+            return false;
+        }
+        let Some((_, id)) = self.site.split_once('#') else { return false };
+        let Some(anchor) = self.anchors.iter().find(|anchor| &*anchor.id == id) else { return false };
+        let (area, frame) = (anchor.area, anchor.frame);
+        self.scroll_to(area, frame, 0.0);
+        true
+    }
+
+    /// The top and bottom of the visible part of frame `frame`, or of the
+    /// window for `None`, and how far it's scrolled.
+    fn view_of(&self, frame: Option<usize>) -> (f32, f32, f32) {
+        match frame.and_then(|id| self.scrollers.iter().find(|s| s.id == id)) {
+            Some(s) => (s.area.y0, s.area.y1, s.scroll),
+            None => (0.0, self.viewport.0, self.scroll.page),
+        }
+    }
+
+    /// Scrolls `frame`, or the page, so that `area` is `gap` below the top
+    /// of what's visible. The next render clamps it.
+    fn scroll_to(&mut self, area: Clip, frame: Option<usize>, gap: f32) {
+        let (top, _, scroll) = self.view_of(frame);
+        let target = scroll + area.y0 - top - gap;
+        match frame {
             Some(id) => _ = self.scroll.frames.insert(id, target),
             None => self.scroll.page = target,
         }
-        true
     }
 
     /// Focuses an input with `:autofocus` when it first appears, or when asked to.
@@ -509,7 +547,12 @@ impl Browser {
     }
 
     fn link_at(&self, x: f32, y: f32) -> Option<&Link> {
-        self.links.iter().find(|link| link.contains(x, y))
+        self.links.iter().find(|link| link.contains(x, y) && (self.ctrl || !link.needs_ctrl()))
+    }
+
+    /// Ctrl went down or up. Links that need it are only links while it's held.
+    pub fn set_ctrl(&mut self, held: bool) {
+        self.ctrl = held;
     }
 
     /// The visible line of text nearest a point, among those in `frame`.
@@ -729,7 +772,7 @@ impl Browser {
         }
         self.selection = None;
         match self.link_at(x, y).map(|link| link.action.clone()) {
-            Some(Action::Go { href, base }) => self.follow(&href, base.as_deref()),
+            Some(Action::Go { href, base, .. }) => self.follow(&href, base.as_deref()),
             Some(Action::Run(handler)) => self.run(&handler, &[]),
             None => return false,
         }
@@ -952,6 +995,7 @@ impl Browser {
         (self.focus, self.selection) = (None, None);
         (self.key_focus, self.held) = (None, Vec::new());
         self.dragging = false;
+        self.reveal_anchor = navigation == Navigation::Follow;
         self.reload();
     }
 
@@ -1899,6 +1943,54 @@ mod tests {
         let requests = server.requests();
         press(&mut browser, [Key::Tab, Key::Tab]);
         assert_eq!(server.requests(), requests, "images aren't downloaded again when the page runs again");
+    }
+
+    #[test]
+    fn ctrl_clicking_a_name_in_view_source_goes_to_its_definition() {
+        let dir = format!("target/test-pages/definitions-{}", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        // Enough definitions around `shout` that it's far down the page, and
+        // can scroll to the top.
+        let filler: String = (0..80).map(|i| format!("(define filler-{i} {i})\n")).collect();
+        std::fs::write(format!("{dir}/lib.sx"), format!("{filler}(define (shout s) (upper s))\n{filler}")).unwrap();
+        std::fs::write(
+            format!("{dir}/page.sx"),
+            "(eval `(do ,@(source \"lib.sx\"))) (define (local) (inc 1)) (page (p (shout \"hi\") (local)))",
+        )
+        .unwrap();
+        let mut browser = Browser::new(format!("browser:view-source?page={dir}/page.sx"), true);
+        let lib = format!("browser:view-source?page={dir}/lib.sx#shout");
+        let definitions =
+            [lib.clone(), "browser:view-source?page=browser:prelude#inc".into(), format!("browser:view-source?page={dir}/page.sx#local")];
+        render(&mut browser);
+        let link_to = |browser: &Browser, href: &str| {
+            let link = browser.links.iter().find(|link| matches!(&link.action, Action::Go { href: h, .. } if &**h == href));
+            link.map(|link| (link.x + 1.0, link.y + 1.0)).unwrap_or_else(|| panic!("a link to {href}"))
+        };
+        for href in &definitions {
+            link_to(&browser, href);
+        }
+
+        let (x, y) = link_to(&browser, &lib);
+        assert!(matches!(browser.hover(x, y), Hover::Text), "without Ctrl, it's text");
+        browser.click(x, y);
+        render(&mut browser);
+        assert_eq!(browser.site, format!("browser:view-source?page={dir}/page.sx"), "a plain click doesn't follow it");
+
+        browser.set_ctrl(true);
+        assert!(matches!(browser.hover(x, y), Hover::Link));
+        assert!(browser.click(x, y));
+        render(&mut browser);
+        assert_eq!(browser.site, lib);
+        let anchor = browser.anchors.iter().find(|anchor| &*anchor.id == "shout").expect("the definition");
+        let frame = browser.scrollers.iter().find(|s| Some(s.id) == anchor.frame).expect("in the site's frame");
+        assert!(frame.scroll > 0.0, "scrolled down to it");
+        // Scroll offsets are whole pixels.
+        assert!((anchor.area.y0 - frame.area.y0).abs() < 1.0, "at the top of the frame: {} vs {}", anchor.area.y0, frame.area.y0);
+
+        browser.back();
+        render(&mut browser);
+        assert_eq!(browser.site, format!("browser:view-source?page={dir}/page.sx"));
     }
 
     #[test]

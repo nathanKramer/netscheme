@@ -23,7 +23,9 @@ cargo run -- http://localhost:8000/hello.sx")
          " starts its state over.")
   (entry "Escape" "While a web page downloads, stops going there. The page you're"
          " on stays up until the next one arrives, with Loading… in the toolbar.")
-  (entry "View source" "Shows the current page's code, coloured and indented.")
+  (entry "View source" "Shows the current page's code, coloured and indented. Ctrl+click"
+         " a name to go to its definition, in the page, a page it reads with "
+         (code "source") ", or the prelude.")
 
   (section "Scrolling")
   (p "Scroll with a trackpad or mouse wheel, or with the keys below. They scroll"

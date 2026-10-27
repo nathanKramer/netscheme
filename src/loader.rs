@@ -41,7 +41,7 @@ const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// What a download that's still running fails with, so the page shows
 /// it's loading rather than an error.
-const STILL_LOADING: &str = " is still loading";
+pub const STILL_LOADING: &str = " is still loading";
 
 /// Decoded images, by location, or why one couldn't be loaded.
 pub type Images = HashMap<String, Result<Rc<Image>, String>>;

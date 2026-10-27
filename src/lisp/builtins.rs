@@ -123,6 +123,11 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         )),
         _ => Err("children: expected an element".into()),
     });
+    // Where a link to `href` on the page at `base` goes.
+    def(&env, "resolve", |args| match args {
+        [Value::Str(base), Value::Str(href)] => Ok(Value::Str(loader::resolve(base, href).into())),
+        _ => Err("resolve: expected a page's location and a link on it".into()),
+    });
     def(&env, "url-encode", |args| match args {
         [Value::Str(s)] => {
             budget::check_length("url-encode", s.len() * 3)?;
@@ -148,14 +153,23 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         loader::fill_image(&c, &mut el);
         Ok(Value::Element(Rc::new(el)))
     });
-    // A page's code as data, without running it.
+    // A page's code as data, without running it. Given a fallback, that's
+    // what a page that can't be read gives, unless it's still downloading.
     let c = ctx.clone();
     def(&env, "source", move |args| {
-        let [Value::Str(href)] = args else { return Err("source: expected a location".into()) };
+        let (href, fallback) = match args {
+            [Value::Str(href)] => (href, None),
+            [Value::Str(href), fallback] => (href, Some(fallback)),
+            _ => return Err("source: expected a location".into()),
+        };
         let location = loader::resolve(&c.location, href);
         let reach = loader::may_reach(&c.location, &location);
-        let source = reach.and_then(|()| loader::read_source(&location, &c.host)).map_err(|e| format!("source: {e}"))?;
-        Ok(Value::list(reader::read_all(&source.text)?))
+        let source = reach.and_then(|()| loader::read_source(&location, &c.host)).map_err(|e| format!("source: {e}"));
+        match (source.and_then(|source| reader::read_all(&source.text)), fallback) {
+            (Ok(forms), _) => Ok(Value::list(forms)),
+            (Err(e), Some(fallback)) if !e.ends_with(loader::STILL_LOADING) => Ok(fallback.clone()),
+            (Err(e), _) => Err(e),
+        }
     });
     // Asks the browser to go to a location, as if a link to it were clicked,
     // once the current event handler finishes.

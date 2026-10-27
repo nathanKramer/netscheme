@@ -89,7 +89,9 @@
   (entry "(dark-mode), (light-dark light dark)" "Whether the browser is in dark mode, and a value for each mode.")
   (entry "(param name)" "A query parameter from the page's location, as in " (code "page.sx?name=value") ", or nil.")
   (entry "(go location)" "Goes to another page once the current event handler finishes.")
-  (entry "(source location)" "Another page's code, as a list of forms, without running it.")
+  (entry "(source location), (source location fallback)" "Another page's code, as a list of forms,"
+         " without running it. With a fallback, that's what a page that can't be read gives.")
+  (entry "(resolve base location)" "Where a link to location goes from the page at base.")
   (entry "(tag el), (attr el :name), (children el)" "What's inside an element: its tag,"
          " an attribute's value, and its children.")
 
