@@ -88,7 +88,8 @@
   (p "Since a page can frame any page, it can frame itself. "
      (a :href "fractal.sx" "The fractal") " does, twice, and the browser stops"
      " once the copies are too small to see: frames more than 8 deep, or drawn at"
-     " under 4% of full size, are left empty.")
+     " under 2.5% of full size, are left empty. Zooming in loads them as they grow,"
+     " so the fractal can be zoomed into forever.")
 
   (subsection "The browser is a page")
   (p "The toolbar at the top of the window is "
@@ -101,10 +102,11 @@
   (entry "browser:chrome?location=<site>" "The toolbar. The window always shows it,"
          " with the site in a " (code "(frame :height \"fill\")") " below. It reads the"
          " site's title out of the frame's document tree, and that becomes the window"
-         " title. The browser tells it about the find bar and the REPL through its"
-         " location too. Edit " (code "ui/chrome.sx") " to change the browser's interface.")
+         " title. The browser tells it about the find bar, the REPL and how far the"
+         " site is zoomed through its location too. Edit " (code "ui/chrome.sx") " to change the browser's interface.")
   (entry "browser:view-source?page=<site>" "A page's source. It can show its own.")
   (entry "browser:back" "Not a page: following a link to it goes back.")
+  (entry "browser:zoom-reset" "Nor this: following a link to it shows the site at its own size.")
   (p "Links on browser pages are relative to the folder the browser was started in,"
      " and any link, whether in the toolbar or the site, navigates the site. Values"
      " inside a query, like the site's own location, are percent-encoded.")

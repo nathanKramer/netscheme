@@ -22,6 +22,7 @@ use crate::{
     browser::{Browser, Hover, Key, LINE_HEIGHT},
     layout::Clip,
     loader::Wake,
+    zoom,
 };
 
 // Only the window icon, which macOS hasn't got, needs these.
@@ -199,6 +200,9 @@ impl App {
             WinitKey::Character(c) if m.control_key() && c.eq_ignore_ascii_case("g") => Key::FindNext,
             WinitKey::Named(NamedKey::F3) => Key::FindNext,
             WinitKey::Character(c) if m.control_key() && m.shift_key() && c.eq_ignore_ascii_case("j") => Key::Repl,
+            WinitKey::Character(c) if m.control_key() && (c == "=" || c == "+") => Key::ZoomIn,
+            WinitKey::Character(c) if m.control_key() && c == "-" => Key::ZoomOut,
+            WinitKey::Character(c) if m.control_key() && c == "0" => Key::ZoomReset,
             // Other shortcuts aren't typing.
             _ if m.control_key() || m.alt_key() || m.super_key() => return None,
             _ => {
@@ -374,13 +378,26 @@ impl ApplicationHandler<Loaded> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
+                let notch = 3.0 * LINE_HEIGHT * state.window.scale_factor() as f32;
+                let (dx, dy) = match delta {
                     // Mouse wheels move in notches.
-                    MouseScrollDelta::LineDelta(_, lines) => -lines * 3.0 * LINE_HEIGHT * state.window.scale_factor() as f32,
+                    MouseScrollDelta::LineDelta(x, y) => (-x * notch, -y * notch),
                     // Trackpads report exact physical pixels.
-                    MouseScrollDelta::PixelDelta(position) => -position.y as f32,
+                    MouseScrollDelta::PixelDelta(position) => (-position.x as f32, -position.y as f32),
                 };
-                self.browser.scroll_by(self.pointer, dy);
+                // With Ctrl, the wheel zooms, a notch at a time; with Shift, it scrolls sideways.
+                if self.modifiers.control_key() {
+                    self.browser.zoom(zoom::STEP.powf(-dy / notch), Some(self.pointer));
+                } else if self.modifiers.shift_key() {
+                    self.browser.scroll_sideways(dx + dy);
+                } else {
+                    self.browser.scroll_by(self.pointer, dy);
+                    self.browser.scroll_sideways(dx);
+                }
+                self.redraw();
+            }
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.browser.zoom(1.0 + delta as f32, Some(self.pointer));
                 self.redraw();
             }
             WindowEvent::MouseInput { state: button_state, button, .. } => {

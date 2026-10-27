@@ -38,6 +38,23 @@ cargo run -- http://localhost:8000/hello.sx")
   (p "Anything taller than the space it's shown in gets a scrollbar on its right"
      " edge. Drag the thumb, or press the track to jump to that point.")
 
+  (section "Zooming")
+  (p "Zooming magnifies the page, the way pinching a phone's screen does: it's"
+     " drawn bigger, without being laid out again, so the page scrolls sideways"
+     " as well as up and down. The toolbar shows how far it's zoomed, and"
+     " clicking that goes back to the page's own size.")
+  (entry "Ctrl+scroll, Ctrl+= and Ctrl+-, pinching a trackpad" "Zooms in or out,"
+         " keeping what's under the pointer where it is.")
+  (entry "Ctrl+0" "Back to the page's own size.")
+  (entry "Shift+scroll, ← →, scrolling sideways" "Scrolls sideways, while zoomed in.")
+  (p "A page can be magnified up to 32 times, but where it has frames, zooming can"
+     " go on forever. Once a frame fills the view, the browser goes into it and"
+     " shows the framed page in place of the site, just as it looked. Frames on"
+     " that page load as they grow big enough to see, and so on, while the pages"
+     " around them, out of sight, stop running. Zooming or scrolling out past the"
+     " framed page's edges comes back out. Try the " (a :href "fractal.sx" "fractal")
+     ", which frames itself.")
+
   (section "Selecting and copying")
   (p "Drag across text to select it, double-click a word, or triple-click a"
      " paragraph. Ctrl+C copies the selection, or the selection in the focused"
@@ -115,6 +132,8 @@ cargo run -- http://localhost:8000/hello.sx")
          " the last, so the same steps always draw the same picture.")
   (entry "--key-down KEY, --key-up KEY" "Send a key, by name, to the canvas that"
          " has the keyboard. Click it first.")
+  (entry "--zoom FACTOR,X,Y" "With " (code "--chrome") ", zoom by a factor around"
+         " a point, in steps, as the mouse wheel would, going into frames on the way.")
   (code-block
 "cargo run -- pages/inputs.sx --screenshot out.png \\
     --click 250,332 --type $'Ada\\tWrite docs\\n'
@@ -126,4 +145,6 @@ cargo run -- pages/counter.sx --chrome --screenshot out.png \\
     --repl $'(set! count 41)\\n'
 cargo run -- pages/canvas.sx --screenshot out.png --frames 120
 cargo run -- pages/snake.sx --screenshot out.png \\
-    --click 200,450 --key-down ArrowDown --frames 30"))
+    --click 200,450 --key-down ArrowDown --frames 30
+cargo run -- pages/fractal.sx --chrome --screenshot out.png \\
+    --zoom 6,260,470"))

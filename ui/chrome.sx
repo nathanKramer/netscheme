@@ -17,6 +17,8 @@
 ; Set while something is downloading: the site the browser is going to, which
 ; replaces this one when it arrives, or frames and images in this one.
 (define loading (param "loading"))
+; Set while the site is zoomed: how far, like "250%".
+(define zoom (param "zoom"))
 
 ; What's in the address bar. Going somewhere starts this page with fresh
 ; state, so it resets to the new location.
@@ -139,6 +141,8 @@
       (row :width 300 :gap 12 :align "middle"
         (spacer)
         (if loading (span toolbar-text disabled "Loading…"))
+        ; Clicking it goes back to the site's own size.
+        (if zoom (a toolbar-text :size 13 :href "browser:zoom-reset" zoom))
         (star)
         (a :href (str "browser:view-source?page=" (url-encode location)) (icon "source" "View source"))
         ; A moon to switch to dark mode, and a sun to switch back. Each is

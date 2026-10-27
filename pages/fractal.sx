@@ -1,10 +1,14 @@
-; A page that embeds itself, twice. Each copy is half the size of the one
-; around it, and the browser stops once the copies are too small to see.
+; A page that embeds itself, twice. Each copy is drawn at 0.4 of its size,
+; which lays it out about as wide as the page around it: wide enough that
+; the site's layout gives it the same 720 pixel column. So every copy looks
+; just like the page, however deep, and zooming in can go on forever. The
+; browser stops loading copies once they're too small to see, and loads more
+; as zooming makes them bigger.
 
 (eval `(do ,@(source "site.sx")))
 
 (demo "Fractal"
-  "Both frames below load fractal.sx, the file that defines this page."
+  "Both frames below load fractal.sx, the file that defines this page. Hold Ctrl and scroll over one to zoom in: it goes on forever."
   (row
-    (frame :src "fractal.sx" :scale 0.5)
-    (frame :src "fractal.sx" :scale 0.5)))
+    (frame :src "fractal.sx" :scale 0.4)
+    (frame :src "fractal.sx" :scale 0.4)))

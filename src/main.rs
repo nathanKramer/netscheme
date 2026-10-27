@@ -13,12 +13,13 @@ mod style;
 #[cfg(test)]
 mod test_server;
 mod window;
+mod zoom;
 
 use std::{fs, process::ExitCode};
 
 use browser::{Browser, Key};
 
-const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --hover X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N | --key-down KEY | --key-up KEY]...";
+const USAGE: &str = "usage: toy-browser [PAGE.sx] [--screenshot OUT.png] [--width N] [--height N] [--scroll N] [--chrome] [--dark] [--click X,Y | --hover X,Y | --drag X,Y,X,Y | --type TEXT | --find TEXT | --repl TEXT | --frames N | --key-down KEY | --key-up KEY | --zoom FACTOR,X,Y]...";
 
 fn main() -> ExitCode {
     let mut location = "pages/hello.sx".to_string();
@@ -51,6 +52,15 @@ fn main() -> ExitCode {
                 let n: Vec<f32> = v.split(',').map(str::parse).collect::<Result<_, _>>().map_err(|_| USAGE)?;
                 let [x0, y0, x1, y1] = n[..] else { return Err(USAGE) };
                 steps.push(Step::Drag((x0, y0), (x1, y1)));
+                Ok(())
+            }),
+            "--zoom" => value().and_then(|v| {
+                let n: Vec<f32> = v.split(',').map(str::parse).collect::<Result<_, _>>().map_err(|_| USAGE)?;
+                let [factor, x, y] = n[..] else { return Err(USAGE) };
+                if factor.is_nan() || factor <= 0.0 {
+                    return Err(USAGE);
+                }
+                steps.push(Step::Zoom(factor, x, y));
                 Ok(())
             }),
             "--type" => value().map(|v| steps.push(Step::Type(v))),
@@ -128,6 +138,9 @@ enum Step {
     /// keyboard: click it first.
     KeyDown(String),
     KeyUp(String),
+    /// Zooming the site, with the chrome, by a factor around a point: in
+    /// steps, as the mouse wheel would, so it goes into frames on the way.
+    Zoom(f32, f32, f32),
 }
 
 /// Renders the browser's page to a PNG, after carrying out `steps` as the
@@ -178,6 +191,15 @@ fn write_screenshot(
                 match step {
                     Step::KeyDown(_) => browser.key_down(name, false),
                     _ => browser.key_up(name),
+                }
+            }
+            Step::Zoom(factor, x, y) => {
+                let mut left = *factor;
+                while (left - 1.0).abs() > 1e-4 {
+                    let step = left.clamp(0.5, 2.0);
+                    browser.render(&mut buf, w, h, 1.0, 0);
+                    browser.zoom(step, Some((*x, *y)));
+                    left /= step;
                 }
             }
             Step::Frames(n) => {

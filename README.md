@@ -50,7 +50,7 @@ Choose **View source**, the `</>` in the toolbar, on any page to read it.
 | [The language](pages/language.sx) | Values, special forms, functions, errors and limits |
 | [The library](pages/library.sx) | Every builtin, and the prelude |
 | [Code is data](pages/code-as-data.sx) | `source`, quasiquote, frames, and the browser as a page |
-| [Using the browser](pages/using.sx) | Navigating, keys, finding, the REPL, settings, screenshots |
+| [Using the browser](pages/using.sx) | Navigating, keys, zooming, finding, the REPL, settings, screenshots |
 | [How it works](pages/internals.sx) | From source to pixels, module by module, and the crates it's built on |
 
 Demos, including a canvas, Snake, and a Game of Life, are linked from the home page.

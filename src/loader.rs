@@ -34,7 +34,7 @@ use crate::{
 /// itself terminates.
 const MAX_FRAME_DEPTH: u32 = 8;
 /// Frames drawn smaller than this are left empty too; nobody can see them.
-const MIN_FRAME_SCALE: f32 = 0.04;
+const MIN_FRAME_SCALE: f32 = 0.025;
 /// Pages bigger than this aren't downloaded.
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 /// The biggest image file the browser will read or download.
@@ -113,6 +113,25 @@ pub struct Host {
     pub bookmarks: RefCell<Vec<Bookmark>>,
     /// Downloads running on other threads, while loading in the background.
     loads: RefCell<Option<Loads>>,
+    /// How the site is zoomed, which decides what its frame loads.
+    pub zoom: RefCell<SiteZoom>,
+}
+
+/// What the site's frame loads, as it's zoomed; see `zoom`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SiteZoom {
+    /// How many times its own size the page in the frame is drawn, so that
+    /// frames on it too small to see at that size are left empty.
+    pub magnification: f32,
+    /// A page framed on the site that the view has gone into, which the
+    /// site's frame loads in the site's place, with the key of its state.
+    pub page: Option<(String, String)>,
+}
+
+impl Default for SiteZoom {
+    fn default() -> SiteZoom {
+        SiteZoom { magnification: 1.0, page: None }
+    }
 }
 
 /// Downloads running on other threads, which send what they got back here.
@@ -521,24 +540,38 @@ fn decode(s: &str) -> String {
 /// unless the frame is too deep or too small to be worth drawing.
 pub fn fill_frame(parent: &PageContext, frame: &mut Element) {
     let Some(Value::Str(src)) = frame.attr("src").cloned() else { return };
-    let scale = parent.scale
+    let mut scale = parent.scale
         * match frame.attr("scale") {
             Some(Value::Num(n)) => *n as f32,
             _ => 1.0,
         };
+    // Counted whether or not it's filled, so that zooming, which changes
+    // which frames are, doesn't change which state each frame has.
+    let index = parent.frames_created.replace(parent.frames_created.get() + 1);
+    let mut state_key = format!("{}/{index}", parent.state_key);
+    let mut location = resolve(&parent.location, &src);
+    let site = state_key == parent.host.site_key;
+    if site {
+        let zoom = parent.host.zoom.borrow();
+        scale *= zoom.magnification;
+        if let Some((page, key)) = &zoom.page {
+            (location, state_key) = (page.clone(), key.clone());
+        }
+    }
     if parent.depth >= MAX_FRAME_DEPTH || scale < MIN_FRAME_SCALE {
         return;
     }
-    let index = parent.frames_created.replace(parent.frames_created.get() + 1);
-    let state_key = format!("{}/{index}", parent.state_key);
-    let location = resolve(&parent.location, &src);
+    let key = Value::Str(state_key.as_str().into());
     let inner = Frame { depth: parent.depth + 1, scale, state_key, store: parent.store.clone(), host: parent.host.clone() };
     let (page, location) = match may_reach(&parent.location, &location) {
         Ok(()) => open_nested(&location, inner),
         Err(e) => (error_page(&e), location),
     };
-    // Links on the framed page resolve against where it came from.
+    // Links on the framed page resolve against where it came from. Zooming
+    // in goes into a frame by its location and state, and only the site zooms.
     frame.attrs.push(("location".into(), Value::Str(location.into())));
+    frame.attrs.push(("state-key".into(), key));
+    frame.attrs.push(("site".into(), Value::Bool(site)));
     if let Err(e) = frame.set_children(vec![Node::Element(page)]) {
         // Too deep to show the page; show why instead, which is shallow.
         frame.set_children(vec![Node::Element(error_page(&e))]).expect("an error page fits");
@@ -651,8 +684,8 @@ mod tests {
             deepest.max().unwrap_or(0) + (&*el.tag == "frame") as u32
         }
         let page = open(file.to_str().unwrap(), &Rc::default(), &Rc::default());
-        // 0.5^4 is above MIN_FRAME_SCALE; 0.5^5 is below it.
-        assert_eq!(depth(&page), 5, "4 frames with pages, then an empty one");
+        // 0.5^5 is above MIN_FRAME_SCALE; 0.5^6 is below it.
+        assert_eq!(depth(&page), 6, "5 frames with pages, then an empty one");
         fs::remove_dir_all(dir).unwrap();
     }
 }

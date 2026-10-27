@@ -13,8 +13,8 @@ use crate::{
     dom::Element,
     image::Image,
     layout::{
-        Anchor, Clip, DisplayItem, Drawings, Focus, InputBox, KeyTarget, Layout, Link, Match, Overlay, Scrollbar, Scroller, Search,
-        TextLine,
+        Anchor, Clip, DisplayItem, Drawings, Focus, FramedPage, InputBox, KeyTarget, Layout, Link, Magnify, Match, Overlay, Scrollbar,
+        Scroller, Search, Site, TextLine,
     },
     loader::Images,
     style::{Color, Face, Family, Palette, Style},
@@ -95,6 +95,8 @@ pub struct View<'a> {
     pub ctrl: bool,
     /// Where the link under the pointer goes, shown in a box at the bottom of the window.
     pub status: Option<&'a str>,
+    /// How the site is zoomed.
+    pub magnify: Magnify,
 }
 
 pub struct Rendered {
@@ -120,6 +122,9 @@ pub struct Rendered {
     pub hover_areas: Vec<Clip>,
     /// Overlays, topmost last, in window coordinates.
     pub overlays: Vec<Overlay>,
+    /// Where the site was drawn, in window coordinates, and the frames on it.
+    pub site: Option<Site>,
+    pub framed: Vec<FramedPage>,
     /// The parts of the window that were painted, or `None` for all of it.
     pub damage: Option<Vec<Clip>>,
 }
@@ -170,6 +175,7 @@ impl Renderer {
             layout.point(x, y + view.scroll.page.max(0.0));
         }
         layout.ctrl(view.ctrl);
+        layout.magnify(view.magnify);
         // Overlays are placed in the part of the page the window shows. The
         // page can't be measured first, so they go by the scroll asked for.
         layout.view(Clip::rect(0.0, view.scroll.page.max(0.0).round(), w as f32, h as f32));
@@ -179,6 +185,7 @@ impl Renderer {
             (layout.items, layout.links, layout.scrollers, layout.inputs, layout.matches);
         let (mut key_targets, mut anchors) = (layout.key_targets, layout.anchors);
         let (mut lines, mut hover_areas, mut overlays) = (layout.lines, layout.hover_areas, layout.overlays);
+        let (mut site, framed) = (layout.site, layout.framed);
 
         let screen = Clip::rect(0.0, 0.0, w as f32, h as f32);
         // Each frame's content moves up by how far it's scrolled, and by how
@@ -213,7 +220,7 @@ impl Renderer {
         let areas = scrollers.iter_mut().map(|s| &mut s.area).chain(inputs.iter_mut().map(|i| &mut i.area));
         let areas = areas.chain(matches.iter_mut().map(|m| &mut m.area)).chain(key_targets.iter_mut().map(|k| &mut k.area));
         let areas = areas.chain(hover_areas.iter_mut()).chain(anchors.iter_mut().map(|a| &mut a.area));
-        let areas = areas.chain(overlays.iter_mut().map(|o| &mut o.area));
+        let areas = areas.chain(overlays.iter_mut().map(|o| &mut o.area)).chain(site.iter_mut().map(|s| &mut s.area));
         for area in areas.chain(lines.iter_mut().flat_map(|l| [&mut l.area, &mut l.visible])) {
             area.y0 -= dy;
             area.y1 -= dy;
@@ -243,6 +250,8 @@ impl Renderer {
             lines,
             hover_areas,
             overlays,
+            site,
+            framed,
             damage,
         }
     }
@@ -688,6 +697,7 @@ mod tests {
                 pointer: None,
                 ctrl: false,
                 status: None,
+                magnify: Magnify::default(),
             },
             0,
         )
@@ -717,6 +727,7 @@ mod tests {
                 pointer: None,
                 ctrl: false,
                 status: None,
+                magnify: Magnify::default(),
             },
             0,
         );
@@ -759,6 +770,7 @@ mod tests {
             pointer,
             ctrl: false,
             status: None,
+            magnify: Magnify::default(),
         };
         let screen = Clip::rect(0.0, 0.0, 400.0, 300.0);
         let placed = |items: &[DisplayItem]| {
@@ -833,6 +845,7 @@ mod tests {
             pointer: None,
             ctrl: false,
             status: None,
+            magnify: Magnify::default(),
         };
         Renderer::new().render(&page, &mut buf, 200, 60, &view, 0);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
@@ -932,6 +945,7 @@ mod tests {
                     pointer: None,
                     ctrl: false,
                     status: None,
+                    magnify: Magnify::default(),
                 },
                 0,
             )
@@ -1013,6 +1027,7 @@ mod tests {
                 pointer: moment.pointer,
                 ctrl: false,
                 status: None,
+                magnify: Magnify::default(),
             };
             renderer.render(&page, buf, w, h, &view, age)
         };
@@ -1084,6 +1099,7 @@ mod tests {
                 pointer,
                 ctrl: false,
                 status: None,
+                magnify: Magnify::default(),
             };
             renderer.render(&page, &mut buf, 200, 200, &view, age)
         };

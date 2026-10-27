@@ -330,6 +330,48 @@ pub struct Scroller {
     pub bar: Option<Scrollbar>,
 }
 
+/// How to draw the site, the page in the frame marked `:site`; see `zoom`.
+#[derive(Clone, Copy, Debug)]
+pub struct Magnify {
+    /// How many times its own size the page is drawn.
+    pub magnification: f32,
+    /// The page's width in logical pixels, or `None` to fill its frame.
+    pub width: Option<f32>,
+    /// How far it's scrolled to the right, in physical pixels.
+    pub x: f32,
+}
+
+impl Default for Magnify {
+    fn default() -> Magnify {
+        Magnify { magnification: 1.0, width: None, x: 0.0 }
+    }
+}
+
+/// Where the site was drawn, and how far it was scrolled after clamping.
+#[derive(Clone, Copy, Debug)]
+pub struct Site {
+    /// The site's frame's `Scroller::id`, and its area.
+    pub scroller: usize,
+    pub area: Clip,
+    /// The size of the page, in physical pixels.
+    pub width: f32,
+    pub height: f32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// A frame on the site, which zooming in far enough goes into.
+#[derive(Clone, Debug)]
+pub struct FramedPage {
+    /// The page in the frame, in physical pixels from the top-left corner
+    /// of the site.
+    pub area: Clip,
+    /// How big the page's pixels are, in the site's.
+    pub scale: f32,
+    pub location: Rc<str>,
+    pub state_key: Rc<str>,
+}
+
 /// A clickable region: an `(a :href ...)`, or any element with `:on-click`.
 pub struct Link {
     pub x: f32,
@@ -553,6 +595,14 @@ pub struct Layout<'a> {
     /// Overlays waiting for the page they're on to be laid out.
     pending: Vec<PendingOverlay>,
     pub overlays: Vec<Overlay>,
+    /// How to draw the site, and where it was drawn.
+    magnify: Magnify,
+    pub site: Option<Site>,
+    /// While laying out the site: how many frames deep it is, where its
+    /// top-left corner is and the scale it's drawn at.
+    site_root: Option<(usize, Point, f32)>,
+    /// The frames on the site, outside other frames.
+    pub framed: Vec<FramedPage>,
 }
 
 /// How much layout has produced, to go back to after laying something out
@@ -574,6 +624,7 @@ struct Marks {
     hover_areas: usize,
     pending: usize,
     overlays: usize,
+    framed: usize,
 }
 
 /// How a row decides the width of one of its columns.
@@ -635,7 +686,16 @@ impl<'a> Layout<'a> {
             view: None,
             pending: Vec::new(),
             overlays: Vec::new(),
+            magnify: Magnify::default(),
+            site: None,
+            site_root: None,
+            framed: Vec::new(),
         }
+    }
+
+    /// Draws the site as `magnify` says.
+    pub fn magnify(&mut self, magnify: Magnify) {
+        self.magnify = magnify;
     }
 
     /// Lays out elements under (`x`, `y`) with their `:hover` styles.
@@ -671,6 +731,7 @@ impl<'a> Layout<'a> {
             hover_areas: self.hover_areas.len(),
             pending: self.pending.len(),
             overlays: self.overlays.len(),
+            framed: self.framed.len(),
         }
     }
 
@@ -691,6 +752,7 @@ impl<'a> Layout<'a> {
         self.hover_areas.truncate(marks.hover_areas);
         self.pending.truncate(marks.pending);
         self.overlays.truncate(marks.overlays);
+        self.framed.truncate(marks.framed);
     }
 
     /// Moves the links, text lines and other areas recorded since `marks`
@@ -1151,6 +1213,8 @@ impl<'a> Layout<'a> {
     /// `:border` is false. With a `:height` (a number, or "fill" to reach the
     /// bottom of the window) the page is clipped to it and scrolls by itself.
     /// The page's styles start fresh rather than inheriting from outside.
+    /// The frame marked `:site`, which holds the site in the chrome, draws
+    /// its page as `magnify` says.
     fn frame(&mut self, el: &Element, x: f32, y: f32, w: f32) -> f32 {
         let Some(Node::Element(page)) = el.children.first() else { return y };
         let zoom = match el.attr("scale") {
@@ -1170,8 +1234,15 @@ impl<'a> Layout<'a> {
             Some(v) if !v.truthy() => 0.0,
             _ => self.scale.round().max(1.0),
         };
+        let site = matches!(el.attr("site"), Some(Value::Bool(true)));
+        // Frames on the site can be zoomed into, unless they scroll by themselves.
+        let on_site = self.site_root.filter(|&(depth, ..)| depth == self.frame_depth && height.is_none());
+        let state_key = match el.attr("state-key") {
+            Some(Value::Str(key)) => key.clone(),
+            _ => "".into(),
+        };
 
-        let saved = (self.scale, std::mem::replace(&mut self.base, base));
+        let saved = (self.scale, std::mem::replace(&mut self.base, base.clone()));
         self.scale *= zoom;
         self.frame_depth += 1;
         let (inner_x, inner_y, inner_w) = (x + border, y + border, w - 2.0 * border);
@@ -1179,10 +1250,19 @@ impl<'a> Layout<'a> {
             None => self.block(page, &Style::root(self.palette), inner_x, inner_y, inner_w) + border,
             Some(h) => {
                 let inner_h = (h - 2.0 * border).max(0.0);
-                self.scrolling_page(page, Clip::rect(inner_x, inner_y, inner_w, inner_h));
+                let magnify = site.then_some(self.magnify);
+                self.scrolling_page(page, Clip::rect(inner_x, inner_y, inner_w, inner_h), magnify);
                 y + h
             }
         };
+        if let (Some((_, (root_x, root_y), root_scale)), Some(location)) = (on_site, base) {
+            self.framed.push(FramedPage {
+                area: Clip::rect(inner_x - root_x, inner_y - root_y, inner_w, bottom - border - inner_y),
+                scale: self.scale / root_scale,
+                location,
+                state_key,
+            });
+        }
         (self.scale, self.base) = saved;
         self.frame_depth -= 1;
 
@@ -1200,14 +1280,28 @@ impl<'a> Layout<'a> {
     }
 
     /// Lays out `page` inside `area`, scrolled by its frame's offset and
-    /// clipped to the area.
-    fn scrolling_page(&mut self, page: &Element, area: Clip) {
+    /// clipped to the area. If it's the site, it's magnified, and scrolled
+    /// sideways too, as `magnify` says.
+    fn scrolling_page(&mut self, page: &Element, area: Clip, magnify: Option<Magnify>) {
         let id = self.next_frame_id;
         self.next_frame_id += 1;
+        let outer_scale = self.scale;
+        let (width, x) = match magnify {
+            Some(magnify) => {
+                self.scale *= magnify.magnification;
+                let width = magnify.width.map_or((area.x1 - area.x0) * magnify.magnification, |w| w * self.scale);
+                (width, magnify.x.clamp(0.0, (width - (area.x1 - area.x0)).max(0.0)).round())
+            }
+            None => (area.x1 - area.x0, 0.0),
+        };
+        let left = area.x0 - x;
+        let root = magnify.map(|_| (self.frame_depth, (left, area.y0), self.scale));
+        let outer_root = self.site_root;
+        self.site_root = root.or(outer_root);
 
         // Measure the page first, to know how far it can scroll.
         let marks = self.marks();
-        let content_bottom = self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
+        let content_bottom = self.block(page, &Style::root(self.palette), left, area.y0, width);
         self.rewind(marks);
 
         let max_scroll = (content_bottom - area.y1).max(0.0);
@@ -1230,11 +1324,16 @@ impl<'a> Layout<'a> {
         self.pointer = self.pointer.map(|(x, y)| (x, y + scroll));
         self.scrolled += scroll;
         self.items.push(DisplayItem::Layer(Some(id)));
-        self.block(page, &Style::root(self.palette), area.x0, area.y0, area.x1 - area.x0);
+        self.block(page, &Style::root(self.palette), left, area.y0, width);
         self.items.push(DisplayItem::Layer(outer_scroller));
         (self.clip, self.pointer, self.scrolled, self.view) = saved;
         self.scroller = outer_scroller;
         self.shift_since(&marks, -scroll);
+        (self.scale, self.site_root) = (outer_scale, outer_root);
+        if magnify.is_some() {
+            let height = content_bottom - area.y0;
+            self.site = Some(Site { scroller: id, area, width, height, x, y: scroll });
+        }
         let bar = Scrollbar::new(area, content_bottom - area.y0, scroll, self.scale);
         if let Some(bar) = bar {
             self.items.push(DisplayItem::Rect {

@@ -11,14 +11,18 @@ use std::{
 
 use crate::{
     dom::{self, Element, Node},
-    layout::{Action, Anchor, Clip, Drawings, Focus, InputBox, KeyTarget, Link, Match, Overlay, Scrollbar, Scroller, Search, TextLine},
+    layout::{
+        Action, Anchor, Clip, Drawings, Focus, FramedPage, InputBox, KeyTarget, Link, Magnify, Match, Overlay, Scrollbar, Scroller, Search,
+        Site, TextLine,
+    },
     lisp::{
         self, Value,
         watch::{self, Touched},
     },
-    loader::{self, FindRequest, Host, ReplEntry, ReplRequest, StateStore, Wake},
+    loader::{self, FindRequest, Host, ReplEntry, ReplRequest, SiteZoom, StateStore, Wake},
     paint::{Renderer, Scroll, View},
     settings::Settings,
+    zoom::{self, Zoom},
 };
 
 /// Logical pixels scrolled per arrow key press or mouse wheel line.
@@ -27,6 +31,10 @@ pub const LINE_HEIGHT: f32 = 40.0;
 const BACK: &str = "browser:back";
 /// Following a link to this location reloads the site instead, as F5 does.
 const RELOAD: &str = "browser:reload";
+/// Following a link to this location shows the site at its own size, as Ctrl+0 does.
+const ZOOM_RESET: &str = "browser:zoom-reset";
+/// The most times one render draws again, going into or out of frames.
+const MAX_ZOOM_RENDERS: usize = 16;
 /// How long the caret stays on, then off.
 const BLINK: Duration = Duration::from_millis(530);
 /// Time between frames of animation: 60 a second.
@@ -67,6 +75,11 @@ pub enum Key {
     FindNext,
     /// Open the REPL, or close it if it's open.
     Repl,
+    /// Magnify the site, or shrink it back, around the pointer.
+    ZoomIn,
+    ZoomOut,
+    /// Show the site at its own size.
+    ZoomReset,
 }
 
 /// The search in the find bar.
@@ -122,12 +135,16 @@ pub struct Browser {
     host: Rc<Host>,
     /// Where settings are kept between runs of the browser, if they are.
     settings: Option<Settings>,
-    /// Sites to return to with "back", with their scroll offsets and state, most recent last.
-    history: Vec<(String, Scroll, Rc<StateStore>)>,
+    /// Sites to return to with "back", with their scroll offsets, zoom and state, most recent last.
+    history: Vec<(String, Scroll, Zoom, Rc<StateStore>)>,
     /// Where the browser is going, while the site there downloads in the
     /// background; the current site stays until it arrives.
     navigating: Option<(Navigation, String)>,
     scroll: Scroll,
+    zoom: Zoom,
+    /// Whether the zoom has changed since the page last ran: it runs again,
+    /// as how far it's zoomed decides which frames are loaded.
+    zoomed: bool,
     focus: Option<Focus>,
     /// The canvas that has the keyboard, by `KeyTarget::id`, and the keys
     /// it's been told went down and not yet that they went up.
@@ -181,6 +198,9 @@ pub struct Browser {
     hover_areas: Vec<Clip>,
     anchors: Vec<Anchor>,
     overlays: Vec<Overlay>,
+    /// Where the site was drawn in the chrome, from the last render.
+    drawn: Option<Site>,
+    framed: Vec<FramedPage>,
     /// Whether the mouse button went down outside an overlay and dismissed
     /// it, so letting go of it does nothing else.
     dismissed: bool,
@@ -223,6 +243,8 @@ impl Browser {
             history: Vec::new(),
             navigating: None,
             scroll: Scroll::default(),
+            zoom: Zoom::default(),
+            zoomed: false,
             focus: None,
             key_focus: None,
             held: Vec::new(),
@@ -253,6 +275,8 @@ impl Browser {
             overlays: Vec::new(),
             dismissed: false,
             anchors: Vec::new(),
+            drawn: None,
+            framed: Vec::new(),
             pointer: None,
             ctrl: false,
             viewport: (0.0, 1.0),
@@ -329,16 +353,68 @@ impl Browser {
     /// was last drawn into `age` frames ago, or never if 0. Returns the parts
     /// of it that were drawn, or `None` for all of it.
     pub fn render(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32, age: u8) -> Option<Vec<Clip>> {
-        let mut damage = self.render_once(buf, w, h, scale, age);
+        // However many times it was zoomed since the last render.
+        if std::mem::take(&mut self.zoomed) {
+            self.reload();
+        }
+        let mut damage = self.render_zoomed(buf, w, h, scale, age);
         // Finding text can mean drawing again: once the chrome has been told
         // how many matches there are, or to scroll the current one into view.
         // Both, so neither waits for the other.
         if self.after_search() | self.after_arrival() {
-            let again = self.render_once(buf, w, h, scale, 1);
+            let again = self.render_zoomed(buf, w, h, scale, 1);
             damage = damage.zip(again).map(|(first, second)| first.into_iter().chain(second).collect());
         }
         self.autofocus();
         damage
+    }
+
+    /// Renders, then goes into or out of a frame on the site if zooming or
+    /// scrolling has called for it, and renders again, until it hasn't.
+    fn render_zoomed(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32, age: u8) -> Option<Vec<Clip>> {
+        let mut damage = Some(Vec::new());
+        for i in 0..MAX_ZOOM_RENDERS {
+            // As asked for, before rendering clamps it.
+            let asked = (self.zoom.x, self.drawn.and_then(|site| self.scroll.frames.get(&site.scroller).copied()));
+            let drawn = self.render_once(buf, w, h, scale, if i == 0 { age } else { 1 });
+            damage = damage.zip(drawn).map(|(first, second)| first.into_iter().chain(second).collect());
+            if !self.after_zoom(asked) {
+                break;
+            }
+        }
+        damage
+    }
+
+    /// Goes out of the frame the view has gone into, if the page in it no
+    /// longer covers the site's frame at the offsets `asked` for, or else
+    /// into a frame on the site that does now. Returns whether it did.
+    fn after_zoom(&mut self, (x, y): (f32, Option<f32>)) -> bool {
+        let Some(site) = self.drawn else { return false };
+        let scale = self.viewport.1;
+        let (w, h) = (site.area.x1 - site.area.x0, site.area.y1 - site.area.y0);
+        let y = y.unwrap_or(site.y);
+        // To within a pixel, for rounding.
+        let covered = site.width >= w - 1.0
+            && site.height >= h - 1.0
+            && (-1.0..=site.width - w + 1.0).contains(&x)
+            && (-1.0..=site.height - h + 1.0).contains(&y);
+        let left = if covered { None } else { self.zoom.leave(scale, y) };
+        let y = match left {
+            Some(y) => y,
+            None => {
+                self.zoom.x = site.x;
+                // Only once zoomed, and with a pixel to spare, so as not to go straight back out.
+                let (x0, y0, x1, y1) = (site.x - 2.0, site.y - 2.0, site.x + w + 2.0, site.y + h + 2.0);
+                let covering = |f: &&FramedPage| f.area.x0 <= x0 && f.area.y0 <= y0 && f.area.x1 >= x1 && f.area.y1 >= y1;
+                match self.framed.iter().find(covering).filter(|_| self.zoom != Zoom::default()) {
+                    Some(frame) => self.zoom.enter(frame, scale, site.y),
+                    None => return false,
+                }
+            }
+        };
+        self.scroll.frames.insert(site.scroller, y);
+        self.reload();
+        true
     }
 
     fn render_once(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f32, age: u8) -> Option<Vec<Clip>> {
@@ -363,6 +439,7 @@ impl Browser {
             pointer: self.pointer,
             ctrl: self.ctrl,
             status: status.as_deref(),
+            magnify: Magnify { magnification: self.zoom.magnification, width: self.zoom.width(), x: self.zoom.x },
         };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view, age);
         drop(images);
@@ -375,6 +452,7 @@ impl Browser {
         }
         (self.bar, self.matches, self.lines) = (rendered.bar, rendered.matches, rendered.lines);
         (self.hover_areas, self.anchors, self.overlays) = (rendered.hover_areas, rendered.anchors, rendered.overlays);
+        (self.drawn, self.framed) = (rendered.site, rendered.framed);
         self.viewport = (h as f32, scale);
         // The page may have changed under the focused input.
         self.focus = self.focus.and_then(|focus| {
@@ -861,6 +939,43 @@ impl Browser {
         }
     }
 
+    /// Scrolls the site sideways by `dx` physical pixels, which it can do
+    /// when it's zoomed in; positive is right. The next render clamps it.
+    pub fn scroll_sideways(&mut self, dx: f32) {
+        if self.drawn.is_some() {
+            self.zoom.x += dx;
+        }
+    }
+
+    /// Magnifies the site by `factor`, or shrinks it if that's below 1,
+    /// keeping what's at `point` where it is, or if that's off the site,
+    /// what's in the middle of it.
+    pub fn zoom(&mut self, factor: f32, point: Option<(f32, f32)>) {
+        let Some(site) = self.drawn else { return };
+        let area = site.area;
+        let middle = ((area.x0 + area.x1) / 2.0, (area.y0 + area.y1) / 2.0);
+        let (x, y) = point.filter(|&(x, y)| area.contains(x, y)).unwrap_or(middle);
+        let scroll = self.scroll.frames.get(&site.scroller).copied().unwrap_or(site.y);
+        let magnification = self.zoom.magnification;
+        let scroll = self.zoom.zoom_at(factor, (x - area.x0, y - area.y0), scroll);
+        self.scroll.frames.insert(site.scroller, scroll);
+        // Unless it's as far in or out as it goes.
+        self.zoomed |= self.zoom.magnification != magnification;
+    }
+
+    /// Shows the site at its own size, coming out of any frames, with what
+    /// was at the top-left of the view still there.
+    pub fn reset_zoom(&mut self) {
+        let Some(site) = self.drawn else { return };
+        let mut scroll = self.scroll.frames.get(&site.scroller).copied().unwrap_or(site.y);
+        while let Some(outer) = self.zoom.leave(self.viewport.1, scroll) {
+            scroll = outer;
+        }
+        scroll = self.zoom.zoom_at(1.0 / self.zoom.magnification, (0.0, 0.0), scroll);
+        self.scroll.frames.insert(site.scroller, scroll);
+        self.zoomed = true;
+    }
+
     /// Handles a key press. A focused input gets it first; otherwise it
     /// scrolls whatever is at `pointer`.
     pub fn key(&mut self, key: Key, shift: bool, pointer: (f32, f32)) {
@@ -893,6 +1008,9 @@ impl Browser {
                 self.repl = !self.repl;
                 return self.reload();
             }
+            Key::ZoomIn => return self.zoom(zoom::STEP, Some(pointer)),
+            Key::ZoomOut => return self.zoom(1.0 / zoom::STEP, Some(pointer)),
+            Key::ZoomReset => return self.reset_zoom(),
             Key::Escape if self.key_focus.is_some() => return self.focus_keys(None),
             Key::Escape
                 if self.focus.is_none()
@@ -919,6 +1037,10 @@ impl Browser {
         let (window_height, scale) = self.viewport;
         let height = self.scroller_at(pointer.0, pointer.1).map_or(window_height, |s| s.area.y1 - s.area.y0);
         let page = (height - 40.0 * scale).max(height / 2.0);
+        if let Key::Left | Key::Right = key {
+            let dx = LINE_HEIGHT * scale;
+            return self.scroll_sideways(if key == Key::Left { -dx } else { dx });
+        }
         let dy = match key {
             Key::Down => LINE_HEIGHT * scale,
             Key::Up => -LINE_HEIGHT * scale,
@@ -1012,7 +1134,8 @@ impl Browser {
             .map_or(String::new(), |find| format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1));
         let repl = if self.repl { "&repl=1" } else { "" };
         let loading = if self.loading() { "&loading=1" } else { "" };
-        format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}", loader::encode(&self.site))
+        let zoom = if self.zoom == Zoom::default() { String::new() } else { format!("&zoom={}", loader::encode(&self.zoom.label())) };
+        format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}{zoom}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -1022,6 +1145,9 @@ impl Browser {
         }
         if href == RELOAD {
             return self.navigate(Navigation::Reload, self.site.clone());
+        }
+        if href == ZOOM_RESET {
+            return self.reset_zoom();
         }
         let from = base.map_or_else(|| self.location(), String::from);
         let site = loader::resolve(&from, href);
@@ -1069,16 +1195,17 @@ impl Browser {
             Navigation::Follow => self.history.push((
                 std::mem::replace(&mut self.site, site),
                 std::mem::take(&mut self.scroll),
+                std::mem::take(&mut self.zoom),
                 std::mem::take(&mut self.page_state),
             )),
             Navigation::Back => {
-                let Some((site, scroll, page_state)) = self.history.pop() else { return };
+                let Some((site, scroll, zoom, page_state)) = self.history.pop() else { return };
                 // The site's state comes back, but the toolbar's describes the
                 // current site, so the toolbar (the top-level page) starts afresh.
                 if self.chrome {
                     page_state.forget("");
                 }
-                (self.site, self.scroll, self.page_state) = (site, scroll, page_state);
+                (self.site, self.scroll, self.zoom, self.page_state) = (site, scroll, zoom, page_state);
             }
             Navigation::Reload => {
                 self.host.images.borrow_mut().clear();
@@ -1207,6 +1334,8 @@ impl Browser {
     }
 
     fn run_page_once(&mut self) {
+        let page = self.zoom.entered.last().map(|entered| (entered.location.clone(), entered.state_key.clone()));
+        *self.host.zoom.borrow_mut() = SiteZoom { magnification: self.zoom.magnification, page };
         let (page, reads) = watch::reads(|| loader::open(&self.location(), &self.page_state, &self.host));
         self.show(page, reads);
         // `go` only means something in an event handler, not while the page runs.
@@ -1969,6 +2098,100 @@ mod tests {
         assert_eq!(browser.scroll.page, 0.0);
         assert_eq!(browser.scroll.frames[&id], bar.scroll_for(bar.thumb.y0 + 100.0).round());
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The part of the frame on the site that shows most, in the window, if any shows.
+    fn most_shown_frame(browser: &Browser) -> Option<Clip> {
+        let site = browser.drawn.unwrap();
+        let (dx, dy) = (site.area.x0 - site.x, site.area.y0 - site.y);
+        let shown = browser.framed.iter().map(|frame| {
+            let area = Clip { x0: frame.area.x0 + dx, y0: frame.area.y0 + dy, x1: frame.area.x1 + dx, y1: frame.area.y1 + dy };
+            area.intersect(site.area)
+        });
+        let size = |a: &Clip| (a.x1 - a.x0) * (a.y1 - a.y0);
+        shown.filter(|a| !a.is_empty()).max_by(|a, b| size(a).total_cmp(&size(b)))
+    }
+
+    /// Where the pointer goes to zoom into a frame on the site: the middle
+    /// of the part of one that shows most.
+    fn aim_at_frame(browser: &Browser) -> Option<(f32, f32)> {
+        most_shown_frame(browser).map(|a| ((a.x0 + a.x1) / 2.0, (a.y0 + a.y1) / 2.0))
+    }
+
+    #[test]
+    fn zooming_into_the_fractal_goes_on_forever() {
+        let mut browser = Browser::new("pages/fractal.sx".into(), true);
+        render(&mut browser);
+        assert_eq!(browser.framed.len(), 2);
+        let mut deepest = 0;
+        for _ in 0..60 {
+            // As someone would: scrolling a frame's top to the top of the
+            // view, or down to frames below a page's heading, and zooming in.
+            let site = browser.drawn.unwrap();
+            let can_scroll = site.y + 1.0 < site.height - (site.area.y1 - site.area.y0);
+            match most_shown_frame(&browser) {
+                Some(frame) if frame.y0 > site.area.y0 + 1.0 && can_scroll => browser.scroll_by((450.0, 300.0), frame.y0 - site.area.y0),
+                Some(_) => browser.zoom(zoom::STEP, aim_at_frame(&browser)),
+                None => browser.scroll_by((450.0, 300.0), LINE_HEIGHT * 3.0),
+            }
+            render(&mut browser);
+            deepest = deepest.max(browser.zoom.entered.len());
+            assert!(browser.zoom.magnification < 32.0, "going into frames means it never stops at the most it magnifies a page");
+        }
+        assert!(deepest >= 10, "went {deepest} frames in");
+        assert!(browser.location().contains("&zoom=%C3%97"), "the chrome is told how far: {}", browser.location());
+        let state_key = &browser.zoom.entered.last().unwrap().state_key;
+        assert!(state_key.starts_with("/0/"), "{state_key}");
+
+        // Zooming back out comes out of every frame, back to the site.
+        for _ in 0..100 {
+            browser.zoom(0.5, None);
+            render(&mut browser);
+            if browser.zoom.magnification == 1.0 {
+                break;
+            }
+        }
+        assert_eq!(browser.zoom, Zoom::default());
+        assert!(!browser.location().contains("zoom="));
+    }
+
+    #[test]
+    fn going_into_a_frame_looks_the_same_and_scrolling_out_of_it_comes_back_out() {
+        let src = r#"(page (p "Above") (row (frame :src "inner.sx" :scale 0.5) (p "beside")))"#;
+        let (mut browser, dir) = browse("zoom-into", src, true);
+        let inner = r#"(page (map (fn (i) (p "line " i)) (range 40)))"#;
+        std::fs::write(dir.join("inner.sx"), inner).unwrap();
+        render(&mut browser);
+        let (mut outside, mut inside) = (vec![0; 900 * 600], vec![0; 900 * 600]);
+        for _ in 0..30 {
+            browser.zoom(zoom::STEP, aim_at_frame(&browser));
+            browser.reload();
+            // Drawn once from outside the frame, then, if that went in, from inside.
+            let asked = (browser.zoom.x, browser.drawn.and_then(|site| browser.scroll.frames.get(&site.scroller).copied()));
+            browser.render_once(&mut outside, 900, 600, 1.0, 0);
+            if browser.after_zoom(asked) {
+                break;
+            }
+        }
+        assert_eq!(browser.zoom.entered.len(), 1, "went into the frame");
+        assert_eq!(browser.zoom.entered[0].location, dir.join("inner.sx").to_string_lossy());
+        browser.render_once(&mut inside, 900, 600, 1.0, 0);
+        // Text can land a part of a pixel apart, but no more.
+        let channels = |p: u32| [(p >> 16) as u8, (p >> 8) as u8, p as u8];
+        let difference: u64 = outside
+            .iter()
+            .zip(&inside)
+            .flat_map(|(&a, &b)| channels(a).into_iter().zip(channels(b)).map(|(a, b)| u64::from(a.abs_diff(b))))
+            .sum();
+        let mean = difference as f64 / (900.0 * 600.0 * 3.0);
+        assert!(mean < 1.0, "going in looks different, by {mean} a channel");
+
+        // Scrolling up past the top of the framed page scrolls the page around it.
+        browser.key(Key::Home, false, (450.0, 300.0));
+        render(&mut browser);
+        assert!(browser.zoom.entered.is_empty());
+        assert_eq!(browser.scroll.frames[&browser.drawn.unwrap().scroller], 0.0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
