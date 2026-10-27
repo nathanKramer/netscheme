@@ -154,6 +154,13 @@
      (code ":on-escape") " runs when Escape leaves it, and " (code ":on-shift-submit")
      " runs instead of " (code ":on-submit") " for Shift+Enter. The toolbar's find"
      " bar, which Ctrl+F opens, uses all three.")
+  (p "A " (code "textarea") " is an input for lines of text. It takes the same"
+     " attributes, and " (code ":rows") " for how many lines tall it is (4 unless it"
+     " says). Enter starts a new line, Tab indents, Up and Down move between lines,"
+     " and Home and End go to the ends of one. With " (code ":code :netscheme")
+     ", it's monospaced and highlights what's typed into it as Netscheme code:"
+     " comments, strings, keywords, numbers, and the names lists start with."
+     " There's one on the " (a :href "inputs.sx" "text inputs") " demo.")
   (subsection "A to-do list")
   (p "Put state, inputs and lists together and you have an app:")
   (live list-code (todo))

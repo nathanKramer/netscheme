@@ -221,6 +221,9 @@ impl Renderer {
         for scroller in &mut scrollers {
             scroller.bar = scroller.bar.map(|bar| bar.shifted(-dy));
         }
+        for input in &mut inputs {
+            input.caret_ys.iter_mut().for_each(|y| *y -= dy);
+        }
         let frames = scrollers.iter().map(|s| (s.id, s.scroll)).collect();
 
         let mut layers: HashMap<_, _> = scrollers.iter().map(|s| (Some(s.id), (s.scroll, s.area))).collect();

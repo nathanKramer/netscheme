@@ -670,16 +670,21 @@ impl Browser {
     }
 
     /// Types `text`, from the clipboard, into the focused input, replacing
-    /// its selection. Inputs hold one line, so line breaks and tabs become spaces.
+    /// its selection. Inputs hold one line, so line breaks and tabs become
+    /// spaces. Textareas keep line breaks, and a tab becomes two spaces.
     pub fn paste(&mut self, text: &str) {
         let Some(focus) = self.focus else { return };
-        let text: String = text
-            .trim_end_matches(['\r', '\n'])
-            .replace("\r\n", " ")
-            .chars()
-            .map(|c| if c.is_whitespace() { ' ' } else { c })
-            .filter(|c| !c.is_control())
-            .collect();
+        let multiline = self.inputs.iter().any(|input| input.id == focus.id && input.multiline());
+        let text: String = if multiline {
+            text.replace("\r\n", "\n").replace('\t', "  ").chars().filter(|&c| c == '\n' || !c.is_control()).collect()
+        } else {
+            text.trim_end_matches(['\r', '\n'])
+                .replace("\r\n", " ")
+                .chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .filter(|c| !c.is_control())
+                .collect()
+        };
         if !text.is_empty() {
             self.edit(focus, &Key::Text(text), false);
         }
@@ -758,7 +763,7 @@ impl Browser {
             self.select_from(x, y, clicks);
             return false;
         };
-        let at = input.caret_at(x);
+        let at = input.caret_at(x, y);
         let len = input.caret_xs.len() - 1;
         let newly_focused = self.focus.is_none_or(|focus| focus.id != input.id);
         let select_all = newly_focused && input.element.attr("select-on-focus").is_some_and(Value::truthy);
@@ -813,7 +818,7 @@ impl Browser {
         }
         let Some(focus) = self.focus.filter(|_| self.dragging) else { return false };
         let Some(input) = self.inputs.iter().find(|input| input.id == focus.id) else { return false };
-        let cursor = input.caret_at(x);
+        let cursor = input.caret_at(x, y);
         if cursor == focus.cursor {
             return false;
         }
@@ -936,7 +941,18 @@ impl Browser {
             return false;
         };
         let (element, value) = (input.element.clone(), input.value.clone());
-        match edit(&value, focus, key, shift) {
+        // Up and Down go to the nearest place on the line above or below,
+        // or to the start or end from the first or last line.
+        if input.multiline()
+            && let (Key::Up | Key::Down, Some(&x), Some(&y)) = (key, input.caret_xs.get(focus.cursor), input.caret_ys.get(focus.cursor))
+        {
+            let (dy, end) = if *key == Key::Up { (-input.line_height, 0) } else { (input.line_height, input.caret_xs.len() - 1) };
+            let target = input.caret_at(x, y + dy + input.line_height / 2.0);
+            let cursor = if input.caret_ys[target] == y { end } else { target };
+            self.set_focus(Focus { cursor, anchor: if shift { focus.anchor } else { cursor }, ..focus });
+            return true;
+        }
+        match edit(&value, focus, key, shift, input.multiline()) {
             None => return false,
             Some(Edit::Select { cursor, anchor }) => self.set_focus(Focus { cursor, anchor, ..focus }),
             Some(Edit::Change(text, cursor)) => {
@@ -1287,9 +1303,10 @@ enum Edit {
 }
 
 /// What `key` does to an input holding `value`, focused as `focus`. With
-/// `shift` held, moving the caret extends the selection. `None` if the
-/// input doesn't use the key.
-fn edit(value: &str, focus: Focus, key: &Key, shift: bool) -> Option<Edit> {
+/// `shift` held, moving the caret extends the selection. In a `multiline`
+/// textarea, Home and End go to the ends of the line, Enter starts a new
+/// line, and Tab indents. `None` if the input doesn't use the key.
+fn edit(value: &str, focus: Focus, key: &Key, shift: bool, multiline: bool) -> Option<Edit> {
     let chars: Vec<char> = value.chars().collect();
     let len = chars.len();
     let (cursor, anchor) = (focus.cursor.min(len), focus.anchor.min(len));
@@ -1299,7 +1316,14 @@ fn edit(value: &str, focus: Focus, key: &Key, shift: bool) -> Option<Edit> {
         chars[..from].iter().chain(&text.chars().collect::<Vec<_>>()).chain(&chars[to..]).collect()
     };
     let to = |position: usize| Edit::Select { cursor: position, anchor: if shift { anchor } else { position } };
+    let line_start = chars[..cursor].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1);
+    let line_end = chars[cursor..].iter().position(|&c| c == '\n').map_or(len, |i| cursor + i);
+    let type_in = |text: &str| Edit::Change(replace(start, end, text), start + text.chars().count());
     Some(match key {
+        Key::Home if multiline => to(line_start),
+        Key::End if multiline => to(line_end),
+        Key::Enter if multiline => type_in("\n"),
+        Key::Tab if multiline => type_in("  "),
         // Without shift, an arrow key leaves a selection at that end.
         Key::Left if selected && !shift => to(start),
         Key::Right if selected && !shift => to(end),
@@ -1315,7 +1339,7 @@ fn edit(value: &str, focus: Focus, key: &Key, shift: bool) -> Option<Edit> {
         Key::Enter => Edit::Submit,
         Key::Escape => Edit::Blur,
         Key::Tab => Edit::Next,
-        Key::Text(text) => Edit::Change(replace(start, end, text), start + text.chars().count()),
+        Key::Text(text) => type_in(text),
         _ => return None,
     })
 }
@@ -1352,16 +1376,16 @@ mod tests {
     fn editing_keys() {
         let text = |s: &str| Key::Text(s.into());
         let select = |cursor, anchor| Some(Edit::Select { cursor, anchor });
-        assert_eq!(edit("ac", at(1), &text("b"), false), Some(Edit::Change("abc".into(), 2)));
-        assert_eq!(edit("héllo", at(2), &Key::Backspace, false), Some(Edit::Change("hllo".into(), 1)));
-        assert_eq!(edit("abc", at(0), &Key::Backspace, false), select(0, 0));
-        assert_eq!(edit("abc", at(1), &Key::Delete, false), Some(Edit::Change("ac".into(), 1)));
-        assert_eq!(edit("abc", at(3), &Key::Delete, false), select(3, 3));
-        assert_eq!(edit("abc", at(3), &Key::Right, false), select(3, 3));
-        assert_eq!(edit("abc", at(9), &Key::Left, false), select(2, 2), "a stale cursor is clamped");
-        assert_eq!(edit("abc", at(1), &Key::Home, false), select(0, 0));
-        assert_eq!(edit("abc", at(1), &Key::End, false), select(3, 3));
-        assert_eq!(edit("abc", at(1), &Key::Down, false), None, "left for scrolling");
+        assert_eq!(edit("ac", at(1), &text("b"), false, false), Some(Edit::Change("abc".into(), 2)));
+        assert_eq!(edit("héllo", at(2), &Key::Backspace, false, false), Some(Edit::Change("hllo".into(), 1)));
+        assert_eq!(edit("abc", at(0), &Key::Backspace, false, false), select(0, 0));
+        assert_eq!(edit("abc", at(1), &Key::Delete, false, false), Some(Edit::Change("ac".into(), 1)));
+        assert_eq!(edit("abc", at(3), &Key::Delete, false, false), select(3, 3));
+        assert_eq!(edit("abc", at(3), &Key::Right, false, false), select(3, 3));
+        assert_eq!(edit("abc", at(9), &Key::Left, false, false), select(2, 2), "a stale cursor is clamped");
+        assert_eq!(edit("abc", at(1), &Key::Home, false, false), select(0, 0));
+        assert_eq!(edit("abc", at(1), &Key::End, false, false), select(3, 3));
+        assert_eq!(edit("abc", at(1), &Key::Down, false, false), None, "left for scrolling");
     }
 
     #[test]
@@ -1369,17 +1393,29 @@ mod tests {
         let text = |s: &str| Key::Text(s.into());
         let select = |cursor, anchor| Some(Edit::Select { cursor, anchor });
         // Shift extends from the anchor, in either direction.
-        assert_eq!(edit("abcd", at(1), &Key::Right, true), select(2, 1));
-        assert_eq!(edit("abcd", selecting(1, 2), &Key::End, true), select(4, 1));
-        assert_eq!(edit("abcd", selecting(3, 2), &Key::Left, true), select(1, 3));
-        assert_eq!(edit("abcd", at(2), &Key::SelectAll, false), select(4, 0));
+        assert_eq!(edit("abcd", at(1), &Key::Right, true, false), select(2, 1));
+        assert_eq!(edit("abcd", selecting(1, 2), &Key::End, true, false), select(4, 1));
+        assert_eq!(edit("abcd", selecting(3, 2), &Key::Left, true, false), select(1, 3));
+        assert_eq!(edit("abcd", at(2), &Key::SelectAll, false, false), select(4, 0));
         // Without shift, arrows collapse the selection to one end.
-        assert_eq!(edit("abcd", selecting(1, 3), &Key::Left, false), select(1, 1));
-        assert_eq!(edit("abcd", selecting(3, 1), &Key::Right, false), select(3, 3));
+        assert_eq!(edit("abcd", selecting(1, 3), &Key::Left, false, false), select(1, 1));
+        assert_eq!(edit("abcd", selecting(3, 1), &Key::Right, false, false), select(3, 3));
         // Typing and deleting replace the selection, whichever way it was made.
-        assert_eq!(edit("abcd", selecting(3, 1), &text("X"), false), Some(Edit::Change("aXd".into(), 2)));
-        assert_eq!(edit("abcd", selecting(1, 3), &Key::Backspace, false), Some(Edit::Change("ad".into(), 1)));
-        assert_eq!(edit("abcd", selecting(0, 4), &Key::Delete, false), Some(Edit::Change("".into(), 0)));
+        assert_eq!(edit("abcd", selecting(3, 1), &text("X"), false, false), Some(Edit::Change("aXd".into(), 2)));
+        assert_eq!(edit("abcd", selecting(1, 3), &Key::Backspace, false, false), Some(Edit::Change("ad".into(), 1)));
+        assert_eq!(edit("abcd", selecting(0, 4), &Key::Delete, false, false), Some(Edit::Change("".into(), 0)));
+    }
+
+    #[test]
+    fn editing_lines() {
+        let select = |cursor, anchor| Some(Edit::Select { cursor, anchor });
+        let code = "ab\ncd";
+        assert_eq!(edit(code, at(4), &Key::Home, false, true), select(3, 3), "to the start of the line");
+        assert_eq!(edit(code, at(1), &Key::End, true, true), select(2, 1), "to the end of the line");
+        assert_eq!(edit(code, at(4), &Key::End, false, false), select(5, 5), "an input has one line");
+        assert_eq!(edit(code, at(2), &Key::Enter, false, true), Some(Edit::Change("ab\n\ncd".into(), 3)));
+        assert_eq!(edit(code, selecting(0, 2), &Key::Tab, false, true), Some(Edit::Change("  \ncd".into(), 2)));
+        assert_eq!(edit(code, at(2), &Key::Enter, false, false), Some(Edit::Submit));
     }
 
     #[test]
@@ -1423,6 +1459,68 @@ mod tests {
         browser.key(Key::Text("x".into()), false, (0.0, 0.0));
         render(&mut browser);
         assert_eq!(browser.inputs[0].value, "h!", "typing does nothing without focus");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn typing_lines_into_a_textarea() {
+        let (mut browser, dir) = browse(
+            "textarea",
+            r#"(define-state code "") (page :padding 0 (textarea :value code :on-input (fn (t) (set! code t))))"#,
+            false,
+        );
+        let mut buf = vec![0; 500 * 200];
+        let mut render = |browser: &mut Browser| browser.render(&mut buf, 500, 200, 1.0, 0);
+        render(&mut browser);
+        assert!(browser.click(10.0, 10.0), "focus the textarea");
+        let keys = [Key::Text("(a".into()), Key::Enter, Key::Tab, Key::Text("b)".into()), Key::Up, Key::Text("x".into())];
+        for key in keys {
+            render(&mut browser);
+            browser.key(key, false, (0.0, 0.0));
+        }
+        render(&mut browser);
+        assert_eq!(browser.inputs[0].value, "(ax\n  b)", "Up goes to the end of the shorter line above");
+        browser.key(Key::Down, false, (0.0, 0.0));
+        browser.key(Key::Down, false, (0.0, 0.0));
+        assert_eq!(browser.focus.map(|f| f.cursor), Some(8), "Down from the last line goes to the end");
+
+        // Clicking on the second line puts the caret there.
+        let (x, y) = (browser.inputs[0].caret_xs[6], browser.inputs[0].caret_ys[6] + 2.0);
+        browser.click(x + 1.0, y);
+        assert_eq!(browser.focus.map(|f| f.cursor), Some(6));
+        browser.paste("c\r\n\td");
+        render(&mut browser);
+        assert_eq!(browser.inputs[0].value, "(ax\n  c\n  db)", "pasting keeps line breaks");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clicking_and_dragging_in_a_scrolled_textarea() {
+        let (mut browser, dir) = browse(
+            "textarea-scrolled",
+            r#"(define-state code "abc\ndef\nghi")
+               (page (map (fn (i) (p i)) (range 30))
+                 (textarea :value code :on-input (fn (t) (set! code t))))"#,
+            true,
+        );
+        let mut buf = vec![0; 600 * 400];
+        let mut render = |browser: &mut Browser| browser.render(&mut buf, 600, 400, 1.0, 0);
+        render(&mut browser);
+        browser.scroll_by((300.0, 300.0), 1e9);
+        render(&mut browser);
+        let area = browser.inputs.last().unwrap().area;
+        assert!(browser.scrollers[0].scroll > 0.0, "the site is scrolled");
+        // Inside a 1px border and 5px of padding, lines are 16 × 1.3 tall.
+        let line = |row: f32| area.y0 + 6.0 + 20.8 * (row + 0.5);
+
+        browser.click(area.x0 + 6.0, line(1.0));
+        assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((4, 4)), "the caret goes where it's clicked");
+
+        browser.press(area.x0 + 6.0, line(0.0), 1);
+        assert!(browser.drag_to(area.x0 + 200.0, line(2.0)));
+        browser.release(area.x0 + 200.0, line(2.0));
+        assert_eq!(browser.focus.map(|f| (f.anchor, f.cursor)), Some((0, 11)), "dragging selects across lines");
+        assert_eq!(browser.selected_text().as_deref(), Some("abc\ndef\nghi"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -80,6 +80,12 @@ pub struct Palette {
     pub focus: Color,
     pub placeholder: Color,
     pub selection: Color,
+    /// Highlighted code: see `highlight::Token`.
+    pub syntax_comment: Color,
+    pub syntax_string: Color,
+    pub syntax_keyword: Color,
+    pub syntax_constant: Color,
+    pub syntax_head: Color,
 }
 
 impl Palette {
@@ -97,6 +103,11 @@ impl Palette {
         focus: Color(0x5b, 0x3a, 0xb8, 0xff),
         placeholder: Color(0x9a, 0x94, 0xa3, 0xff),
         selection: Color(0xd8, 0xcc, 0xf2, 0xff),
+        syntax_comment: Color(0x8a, 0x84, 0x93, 0xff),
+        syntax_string: Color(0x2a, 0x7a, 0x3a, 0xff),
+        syntax_keyword: Color(0x8a, 0x3a, 0xb8, 0xff),
+        syntax_constant: Color(0xb8, 0x5a, 0x1a, 0xff),
+        syntax_head: Color(0x1a, 0x5f, 0xb4, 0xff),
     };
 
     pub const DARK: Palette = Palette {
@@ -113,6 +124,11 @@ impl Palette {
         focus: Color(0xb8, 0x9c, 0xff, 0xff),
         placeholder: Color(0x82, 0x7b, 0x8d, 0xff),
         selection: Color(0x4e, 0x3d, 0x7a, 0xff),
+        syntax_comment: Color(0x8a, 0x83, 0x96, 0xff),
+        syntax_string: Color(0x7f, 0xd3, 0x8c, 0xff),
+        syntax_keyword: Color(0xd2, 0x9b, 0xff, 0xff),
+        syntax_constant: Color(0xf0, 0xa6, 0x6a, 0xff),
+        syntax_head: Color(0x8a, 0xb4, 0xf8, 0xff),
     };
 
     pub fn new(dark: bool) -> &'static Palette {
@@ -236,9 +252,11 @@ impl Style {
                 s.background = Some(palette.button);
                 s.set_padding(8.0);
             }
-            "input" => {
+            "input" | "textarea" => {
                 (s.background, s.weight, s.underline) = (Some(palette.input), 400, false);
                 s.set_padding(5.0);
+                // Code, as `:code :netscheme` says it holds, is monospaced.
+                s.mono = s.mono || el.attr("code").is_some_and(Value::truthy);
             }
             _ => {}
         }

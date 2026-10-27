@@ -1,15 +1,18 @@
 ; A text input shows the :value the page gives it. Typing calls :on-input
 ; with the new text, and Enter calls :on-submit. The handlers store the text
-; in state, and the page runs again with it.
+; in state, and the page runs again with it. A textarea works the same way,
+; with lines of text, and :code :netscheme highlights them as code.
 
 (eval `(do ,@(source "site.sx")))
 
 (define-state name "")
 (define-state draft "")
 (define-state todos (list "Add a text input" "Build an address bar"))
+(define-state snippet
+  "; Highlighted as you type\n(define (greet name)\n  (str \"Hello, \" name \"!\"))\n\n(p :size 18 (greet \"world\") 42 true)")
 
 (demo "Inputs"
-  "A greeting and a to-do list, built from inputs whose text lives in state."
+  "A greeting, a to-do list and a code editor, built from inputs whose text lives in state."
 
   (h2 :size 25 :margin 12 "Hello, " (span :color accent (if (empty? name) "stranger" name)) "!")
   (p "Your name: "
@@ -29,4 +32,10 @@
          todos)
     (if (empty? todos) (p :margin 8 muted "Nothing left to do.")))
   (p muted (plural (length todos) "thing") " to do. Click an input to type in it."
-     " Tab moves to the next one, and Escape leaves it."))
+     " Tab moves to the next one, and Escape leaves it.")
+
+  (section "Code")
+  (p (textarea :code :netscheme :rows 7 :width :fill :value snippet
+               :on-input (fn (text) (set! snippet text))))
+  (p muted (plural (length (split snippet "\n")) "line") " of Netscheme. In a textarea, Enter"
+     " starts a new line, Tab indents, and Escape leaves it."))

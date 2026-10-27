@@ -41,7 +41,7 @@
          (code "spacer") ", share the room left equally. " (code ":align \"middle\"")
          " or " (code "\"bottom\"") " lines the columns up other than at the top.")
   (entry "h1, h2, h3, p, pre" "Headings, paragraphs, and preformatted code that keeps its spaces and line breaks.")
-  (entry "span, b, code, a, button, input, img, canvas" "Inline elements, which flow along a line of text and wrap with it.")
+  (entry "span, b, code, a, button, input, textarea, img, canvas" "Inline elements, which flow along a line of text and wrap with it.")
   (entry "spacer" "Takes up whatever room is left on its line, pushing what follows"
          " to the end. The toolbar uses one to put the mode switch at its right-hand end.")
   (entry "rect, circle, line, polyline, polygon, path, text" "Shapes, drawn inside a " (code "canvas") ".")

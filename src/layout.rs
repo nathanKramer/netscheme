@@ -6,6 +6,7 @@ use std::{collections::HashMap, ops::Range, rc::Rc};
 use crate::{
     canvas::{self, Contour, Point},
     dom::{self, Element, Node},
+    highlight,
     image::Image,
     lisp::{self, Value},
     loader::Images,
@@ -181,7 +182,7 @@ pub fn listens_for_keys(el: &Element) -> bool {
     ["on-key-down", "on-key-up"].iter().any(|name| el.attr(name).is_some_and(Value::truthy))
 }
 
-/// A text input, as laid out.
+/// A text input or textarea, as laid out.
 pub struct InputBox {
     pub id: usize,
     /// The visible part of the box.
@@ -190,13 +191,26 @@ pub struct InputBox {
     pub value: String,
     /// Window x of each caret position: before each character, and after the last.
     pub caret_xs: Vec<f32>,
+    /// Window y of the top of the line each caret position is on, and how
+    /// tall lines are. An input's carets are all on one line.
+    pub caret_ys: Vec<f32>,
+    pub line_height: f32,
 }
 
 impl InputBox {
-    /// The caret position closest to window x.
-    pub fn caret_at(&self, x: f32) -> usize {
-        let distance = |i: usize| (self.caret_xs[i] - x).abs();
-        (0..self.caret_xs.len()).min_by(|&a, &b| distance(a).total_cmp(&distance(b))).unwrap_or(0)
+    /// The caret position closest to a point in the window: on the line
+    /// nearest it, then nearest across.
+    pub fn caret_at(&self, x: f32, y: f32) -> usize {
+        let distance = |i: usize| {
+            let top = self.caret_ys[i];
+            ((top - y).max(y - top - self.line_height).max(0.0), (self.caret_xs[i] - x).abs())
+        };
+        (0..self.caret_xs.len()).min_by(|&a, &b| distance(a).partial_cmp(&distance(b)).expect("distances are numbers")).unwrap_or(0)
+    }
+
+    /// Whether it holds lines of text, as a textarea does.
+    pub fn multiline(&self) -> bool {
+        &*self.element.tag == "textarea"
     }
 }
 
@@ -370,6 +384,15 @@ struct PendingOverlay {
     parent: Rc<Style>,
     anchor: Clip,
     group_hover: usize,
+}
+
+/// How many lines of text tall an input is: a textarea's `:rows`, or 4.
+fn input_rows(input: &Element) -> usize {
+    match input.attr("rows") {
+        _ if &*input.tag != "textarea" => 1,
+        Some(Value::Num(n)) => (*n as usize).max(1),
+        _ => 4,
+    }
 }
 
 /// Whether `node` is an overlay, which takes no room where it's written.
@@ -679,6 +702,9 @@ impl<'a> Layout<'a> {
         for scroller in &mut self.scrollers[marks.scrollers..] {
             scroller.area = scroller.area.shifted(dy);
             scroller.bar = scroller.bar.map(|bar| bar.shifted(dy));
+        }
+        for input in &mut self.inputs[marks.inputs..] {
+            input.caret_ys.iter_mut().for_each(|y| *y += dy);
         }
         let areas = self.inputs[marks.inputs..].iter_mut().map(|input| &mut input.area);
         let areas = areas.chain(self.matches[marks.matches..].iter_mut().map(|m| &mut m.area));
@@ -1500,7 +1526,7 @@ impl<'a> Layout<'a> {
         out: &mut Vec<Segment>,
     ) {
         let mut style = self.style(el, parent);
-        if &*el.tag == "input" {
+        if matches!(&*el.tag, "input" | "textarea") {
             let style = Rc::new(style);
             let embed = Embed::Input(el.clone(), self.input_width(el, width));
             out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(embed) });
@@ -1591,9 +1617,10 @@ impl<'a> Layout<'a> {
     fn piece_box(&self, segment: &Segment) -> (f32, f32) {
         let (height, baseline) = self.line_box(&segment.style);
         match segment.embed {
-            Some(Embed::Input(..)) => {
+            Some(Embed::Input(ref input, _)) => {
                 let inset = self.input_inset(&segment.style);
-                (height + inset.top + inset.bottom, baseline + inset.top)
+                let text_height = height * input_rows(input) as f32;
+                (text_height + inset.top + inset.bottom, baseline + inset.top)
             }
             Some(Embed::Image(_, _, h, Align::Baseline)) | Some(Embed::Canvas(_, _, h)) => (h, h),
             // Lowercase letters are about half the font size tall.
@@ -1614,19 +1641,22 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// An input's `:width`, or 240. `:width :fill` takes the containing
-    /// block's content width, `width`, as an image's does.
+    /// An input's `:width`, or 240, or a textarea's, or 400. `:width :fill`
+    /// takes the containing block's content width, `width`, as an image's does.
     fn input_width(&self, input: &Element, width: f32) -> f32 {
         match input.attr("width") {
             Some(Value::Num(n)) => *n as f32 * self.scale,
             Some(Value::Keyword(fill)) if &**fill == "fill" => width,
+            _ if &*input.tag == "textarea" => 400.0 * self.scale,
             _ => 240.0 * self.scale,
         }
     }
 
-    /// Draws a text input filling `area`: its value (or placeholder) clipped
-    /// to the box and scrolled to keep the caret in view, plus the caret if
-    /// the input has focus.
+    /// Draws a text input or textarea filling `area`: its value (or
+    /// placeholder) clipped to the box and scrolled to keep the caret in
+    /// view, plus the caret if it has focus. A textarea's value is lines of
+    /// text. Either is highlighted as code if its `:code` names a language
+    /// the browser knows, as `:code :netscheme` does.
     fn input(&mut self, el: &Rc<Element>, style: &Style, area: Clip) {
         let id = self.next_input_id;
         self.next_input_id += 1;
@@ -1655,55 +1685,102 @@ impl<'a> Layout<'a> {
             None | Some(Value::Nil) => String::new(),
             Some(value) => value.to_string(),
         };
+        let multiline = &*el.tag == "textarea";
         let (size, face) = (style.font_size * self.scale, style.face());
         let inset = self.input_inset(style);
         let (inner_x, inner_w) = (x + inset.left, (w - inset.left - inset.right).max(0.0));
+        let (inner_y, inner_h) = (y + inset.top, (h - inset.top - inset.bottom).max(0.0));
         let (line_height, baseline) = self.line_box(style);
 
-        let mut offsets = vec![0.0];
-        for c in value.chars() {
-            offsets.push(offsets[offsets.len() - 1] + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, face));
+        // How far each caret position is from the start of its line, and which line that is.
+        let chars: Vec<char> = value.chars().collect();
+        let (mut offsets, mut rows) = (vec![0.0], vec![0]);
+        for &c in &chars {
+            let (offset, row) = (offsets[offsets.len() - 1], rows[rows.len() - 1]);
+            if multiline && c == '\n' {
+                offsets.push(0.0);
+                rows.push(row + 1);
+            } else {
+                offsets.push(offset + self.fonts.measure(c.encode_utf8(&mut [0; 4]), size, face));
+                rows.push(row);
+            }
         }
-        let len = value.chars().count();
+        let len = chars.len();
         let cursor = focus.map(|focus| focus.cursor.min(len));
         let selection = focus.map(|focus| (focus.anchor.min(len), focus.cursor.min(len))).filter(|(a, c)| a != c);
         let scroll_x = cursor.map_or(0.0, |c| (offsets[c] - (inner_w - thin)).max(0.0));
-        let text_x = inner_x - scroll_x;
+        let scroll_y = cursor.filter(|_| multiline).map_or(0.0, |c| ((rows[c] + 1) as f32 * line_height - inner_h).max(0.0));
+        let (text_x, text_y) = (inner_x - scroll_x, inner_y - scroll_y);
+        let row_y = |row: usize| text_y + row as f32 * line_height;
 
         let outer = self.clip;
         let visible = area.intersect(outer);
-        self.items.push(DisplayItem::Clip(Clip { x0: inner_x, x1: inner_x + inner_w, ..visible }));
-        if let Some((a, c)) = selection {
-            let (start, end) = (offsets[a.min(c)], offsets[a.max(c)]);
-            let highlight = style.palette.selection;
-            self.items.push(DisplayItem::Rect {
-                x: text_x + start,
-                y: y + inset.top,
-                w: end - start,
-                h: line_height,
-                color: highlight,
-                radius: 0.0,
-            });
-        }
-        let (text, color) = match el.attr("placeholder") {
-            Some(Value::Str(placeholder)) if value.is_empty() => (placeholder.to_string(), style.palette.placeholder),
-            _ => (value.clone(), style.color),
+        // An input's text is clipped at the sides; a textarea's lines inside its border too.
+        let text_clip = match multiline {
+            true => Clip { x0: inner_x, x1: inner_x + inner_w, y0: y + border, y1: y + h - border }.intersect(visible),
+            false => Clip { x0: inner_x, x1: inner_x + inner_w, ..visible },
         };
-        self.items.push(DisplayItem::Text { x: text_x, y: y + inset.top + baseline, text, size, face, color });
+        self.items.push(DisplayItem::Clip(text_clip));
+        if let Some((a, c)) = selection {
+            // A selected line break shows as a space at the end of its line.
+            let space = self.fonts.measure(" ", size, face);
+            let (mut from, end) = (a.min(c), a.max(c));
+            while from < end {
+                let line_break = (from..end).find(|&i| multiline && chars[i] == '\n');
+                let (x0, x1) = match line_break {
+                    Some(i) => (offsets[from], offsets[i] + space),
+                    None => (offsets[from], offsets[end]),
+                };
+                let (x, y) = (text_x + x0, row_y(rows[from]));
+                self.items.push(DisplayItem::Rect { x, y, w: x1 - x0, h: line_height, color: style.palette.selection, radius: 0.0 });
+                from = line_break.map_or(end, |i| i + 1);
+            }
+        }
+        match el.attr("placeholder") {
+            Some(Value::Str(placeholder)) if value.is_empty() => {
+                let (text, color) = (placeholder.to_string(), style.palette.placeholder);
+                self.items.push(DisplayItem::Text { x: text_x, y: text_y + baseline, text, size, face, color });
+            }
+            _ => {
+                // Each character's colour, then runs of one colour on one line, drawn if they're in view.
+                let mut colors = vec![style.color; len];
+                for (range, token) in highlight::language(el.attr("code")).map_or(Vec::new(), |tokens| tokens(&chars)) {
+                    colors[range].fill(token.color(style.palette));
+                }
+                let breaks = |i: usize| multiline && chars[i] == '\n';
+                let mut i = 0;
+                while i < len {
+                    let start = i;
+                    while i < len && !breaks(i) && colors[i] == colors[start] {
+                        i += 1;
+                    }
+                    let top = row_y(rows[start]);
+                    if i > start && top < text_clip.y1 && top + line_height > text_clip.y0 {
+                        let text = chars[start..i].iter().collect();
+                        let (x, y, color) = (text_x + offsets[start], top + baseline, colors[start]);
+                        self.items.push(DisplayItem::Text { x, y, text, size, face, color });
+                    }
+                    if i < len && breaks(i) {
+                        i += 1;
+                    }
+                }
+            }
+        }
         // Like most text fields, no caret while there's a selection.
         if let Some(c) = cursor
             && self.caret_visible
             && selection.is_none()
         {
             let caret =
-                DisplayItem::Rect { x: text_x + offsets[c], y: y + inset.top, w: thin, h: line_height, color: style.color, radius: 0.0 };
+                DisplayItem::Rect { x: text_x + offsets[c], y: row_y(rows[c]), w: thin, h: line_height, color: style.color, radius: 0.0 };
             self.items.push(caret);
         }
         self.items.push(DisplayItem::Clip(outer));
 
         if !visible.is_empty() {
             let caret_xs = offsets.iter().map(|offset| text_x + offset).collect();
-            self.inputs.push(InputBox { id, area: visible, element: el.clone(), value, caret_xs });
+            let caret_ys = rows.iter().map(|&row| row_y(row)).collect();
+            self.inputs.push(InputBox { id, area: visible, element: el.clone(), value, caret_xs, caret_ys, line_height });
         }
     }
 
@@ -2244,6 +2321,43 @@ mod tests {
             })
             .collect();
         assert!(radii.ends_with(&[8.0, 7.0]), "the border's corners, and the background's just inside them: {radii:?}");
+    }
+
+    #[test]
+    fn textareas_show_lines_and_can_highlight_netscheme() {
+        let (items, _) = layout(r#"(page :padding 0 (p :margin 0 (textarea :rows 3 :value "a\n(p :x 1)")))"#, 500.0);
+        let texts = texts(&items);
+        let [("a", ax, ay), ("(p :x 1)", px, py)] = texts[..] else { panic!("{texts:?}") };
+        assert_eq!((ax, px), (6.0, 6.0));
+        assert!((py - ay - 16.0 * 1.3).abs() < 0.01, "one line below");
+        let box_height = items.iter().find_map(|item| match item {
+            DisplayItem::Rect { h, .. } => Some(*h),
+            _ => None,
+        });
+        assert_eq!(box_height, Some(16.0 * 1.3 * 3.0 + 12.0), "three lines tall, with padding and a border");
+
+        let (items, _) = layout(r#"(page :padding 0 (textarea :code :netscheme :value "(p :x 1) ; hi"))"#, 500.0);
+        let colors: Vec<(&str, Color)> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text { text, color, .. } => Some((text.as_str(), *color)),
+                _ => None,
+            })
+            .collect();
+        let p = &Palette::LIGHT;
+        assert_eq!(
+            colors,
+            vec![
+                ("(", p.text),
+                ("p", p.syntax_head),
+                (" ", p.text),
+                (":x", p.syntax_keyword),
+                (" ", p.text),
+                ("1", p.syntax_constant),
+                (") ", p.text),
+                ("; hi", p.syntax_comment)
+            ]
+        );
     }
 
     #[test]

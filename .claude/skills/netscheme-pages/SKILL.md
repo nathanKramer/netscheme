@@ -110,7 +110,7 @@ pairs and children, mixed in any order.
 
 - **Blocks:** `page` (takes `:title`), `div`, `row` (children side by side; see
   [Rows](#rows)), `h1`, `h2`, `h3`, `p`, `pre`, `frame`
-- **Inline:** `span`, `b`, `code`, `a`, `button`, `input`, `img`, `canvas`,
+- **Inline:** `span`, `b`, `code`, `a`, `button`, `input`, `textarea`, `img`, `canvas`,
   `spacer` (fills the rest of the line, pushing what follows to the right)
 - **Over the page:** `overlay`, for menus, tooltips, dialogs and notices (see
   [Overlays](#overlays))
@@ -248,6 +248,10 @@ in a `:group` and use `:group-hover`.
   space around its text.
   Without `:on-input`, typing changes nothing. There are also `:autofocus`,
   `:select-on-focus`, `:on-escape` and `:on-shift-submit`.
+- `(textarea :value code :rows 8 :width :fill :on-input (fn (text) (set! code text)))`
+  holds lines of text: Enter starts a new line and Tab indents, so Escape
+  leaves it. `:code :netscheme` makes it monospaced and highlights it as
+  Netscheme code.
 - `(go "other.sx")` navigates after the handler finishes, and
   `(param "name")` reads `?name=value` from the page's location.
 
