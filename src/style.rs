@@ -246,7 +246,8 @@ impl Style {
                 (s.mono, s.font_size, s.background, s.margin) = (true, 14.0, Some(palette.code), 12.0);
                 s.set_padding(14.0);
             }
-            "a" => (s.color, s.underline) = (palette.link, true),
+            // A link that holds blocks, like a card, keeps the colours of what's in it.
+            "a" if !crate::dom::holds_blocks(el) => (s.color, s.underline) = (palette.link, true),
             "frame" => s.margin = 12.0,
             "button" => {
                 s.background = Some(palette.button);

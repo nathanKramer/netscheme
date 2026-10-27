@@ -849,8 +849,8 @@ impl<'a> Layout<'a> {
             self.items.insert(background_index, DisplayItem::Rect { x, y, w, h, color, radius });
         }
         // After the children's, so a click on a child's own handler or link wins.
-        if let Some(handler) = el.attr("on-click") {
-            self.push_link(Clip::rect(x, y, w, h), Action::Run(handler.clone()));
+        if let Some(action) = self.action(el) {
+            self.push_link(Clip::rect(x, y, w, h), action);
         }
         if let Some(Value::Str(id)) = el.attr("id") {
             self.anchors.push(Anchor { id: id.clone(), area: Clip::rect(x, y, w, h), frame: self.scroller });
@@ -871,7 +871,7 @@ impl<'a> Layout<'a> {
             if &*child.tag == "overlay" {
                 let group_hover = self.group_hover;
                 self.pending.push(PendingOverlay { el: child.clone(), parent: style.clone(), anchor, group_hover });
-            } else if dom::is_inline(&child.tag) {
+            } else if dom::is_inline(child) {
                 self.queue_overlays(child, &Rc::new(self.style(child, style)), anchor);
             }
         }
@@ -1024,7 +1024,7 @@ impl<'a> Layout<'a> {
             match child {
                 Node::Text(text) => run.push(Segment::text(text, style)),
                 Node::Element(child) if &*child.tag == "overlay" => {}
-                Node::Element(child) if dom::is_inline(&child.tag) => self.collect_inline(child, style, None, None, w, &mut run),
+                Node::Element(child) if dom::is_inline(child) => self.collect_inline(child, style, None, None, w, &mut run),
                 Node::Element(child) => {
                     cy = self.inline_run(&mut run, x, cy, w);
                     cy = self.block(child, style, x, cy, w);
@@ -1131,7 +1131,7 @@ impl<'a> Layout<'a> {
             Some(Value::Keyword(fill)) if &**fill == "fill" && !self.fitting => return Column::Fill,
             _ => {}
         }
-        match (&*el.tag, dom::is_inline(&el.tag)) {
+        match (&*el.tag, dom::is_inline(el)) {
             ("spacer", _) if !self.fitting => Column::Fill,
             (_, true) => self.content_column(child, style, w),
             _ if self.fitting => self.content_column(child, style, w),
@@ -1532,18 +1532,11 @@ impl<'a> Layout<'a> {
             out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(embed) });
             return;
         }
-        let action = match (el.attr("on-click"), el.attr("href")) {
-            (Some(handler), _) => Some(Action::Run(handler.clone())),
-            (None, Some(Value::Str(href))) if &*el.tag == "a" => {
-                let ctrl = el.attr("ctrl-click").is_some_and(Value::truthy);
-                // Underlined only while it's a link.
-                if ctrl {
-                    style.underline = self.ctrl;
-                }
-                Some(Action::Go { href: href.clone(), base: self.base.clone(), ctrl })
-            }
-            _ => action,
-        };
+        // A link with `:ctrl-click` is underlined only while it's a link.
+        if &*el.tag == "a" && el.attr("ctrl-click").is_some_and(Value::truthy) {
+            style.underline = self.ctrl;
+        }
+        let action = self.action(el).or(action);
         if &*el.tag == "spacer" {
             out.push(Segment {
                 text: "".into(),
@@ -1580,6 +1573,19 @@ impl<'a> Layout<'a> {
                 Node::Element(child) if &*child.tag == "overlay" => {}
                 Node::Element(child) => self.collect_inline(child, &style, style.background, action.clone(), width, out),
             }
+        }
+    }
+
+    /// What clicking `el` does: run its `:on-click` handler, or for a link,
+    /// go to its `:href`.
+    fn action(&self, el: &Element) -> Option<Action> {
+        match (el.attr("on-click"), el.attr("href")) {
+            (Some(handler), _) => Some(Action::Run(handler.clone())),
+            (None, Some(Value::Str(href))) if &*el.tag == "a" => {
+                let ctrl = el.attr("ctrl-click").is_some_and(Value::truthy);
+                Some(Action::Go { href: href.clone(), base: self.base.clone(), ctrl })
+            }
+            _ => None,
         }
     }
 
@@ -2491,6 +2497,32 @@ mod tests {
         assert_eq!(colours(&over.items), [red, red, ink], "the border and the title change");
         assert_eq!(over.hover_areas.len(), 1);
         assert_eq!(over.lines.len(), away.lines.len(), "laid out once, in the end");
+    }
+
+    #[test]
+    fn links_that_hold_blocks_are_cards() {
+        let src = r##"(page :padding 0
+                        (a :href "about.sx" :group true :padding 16 :margin 12 :border "#333" :hover (list :border "#f15125")
+                          (p :margin 0 :group-hover (list :color "#f15125") "title")
+                          (p :margin 0 "text"))
+                        (p (a :href "inline.sx" "below")))"##;
+        let away = layout_pointing(src, (10.0, 500.0));
+        let go = |link: &Link| match &link.action {
+            Action::Go { href, .. } => href.to_string(),
+            Action::Run(_) => panic!("not a link"),
+        };
+        let [card, inline] = &away.links[..] else { panic!("two links") };
+        assert_eq!((go(card), go(inline)), ("about.sx".into(), "inline.sx".into()));
+        assert_eq!((card.x, card.y, card.w), (0.0, 0.0, 400.0), "the card's whole box, padding and all");
+        assert!((card.h - (2.0 * 17.0 + 2.0 * 16.0 * 1.3)).abs() < 0.01, "two lines inside 16px of padding and a border: {}", card.h);
+        let (grey, ink, link) = (Color::parse("#333").unwrap(), Palette::LIGHT.text, Palette::LIGHT.link);
+        assert_eq!(colours(&away.items), [grey, ink, link], "the card's text keeps its colour; the inline link's doesn't");
+        let underlines = away.items.iter().filter(|item| matches!(item, DisplayItem::Rect { h, .. } if *h == 1.0)).count();
+        assert_eq!(underlines, 1, "only the inline link is underlined");
+
+        let red = Color::parse("#f15125").unwrap();
+        let over = layout_pointing(src, (10.0, 5.0));
+        assert_eq!(colours(&over.items), [red, red, link], "it's a group, and can be hovered");
     }
 
     #[test]

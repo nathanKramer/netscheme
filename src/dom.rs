@@ -11,9 +11,18 @@ pub const TAGS: &[&str] = &[
     "overlay", "rect", "circle", "line", "polyline", "polygon", "path", "text",
 ];
 
-/// Tags laid out within a line of text rather than as their own block.
-pub fn is_inline(tag: &str) -> bool {
-    matches!(tag, "span" | "b" | "code" | "a" | "button" | "input" | "textarea" | "img" | "spacer" | "canvas")
+/// Whether `el` is laid out within a line of text rather than as its own
+/// block. A link is inline unless it holds blocks: then it's a block itself,
+/// as a card that's a link is.
+pub fn is_inline(el: &Element) -> bool {
+    let inline_tag = matches!(&*el.tag, "span" | "b" | "code" | "a" | "button" | "input" | "textarea" | "img" | "spacer" | "canvas");
+    inline_tag && !(&*el.tag == "a" && holds_blocks(el))
+}
+
+/// Whether any of `el`'s children is a block. Overlays don't count, as they
+/// take no room where they're written.
+pub fn holds_blocks(el: &Element) -> bool {
+    el.children.iter().any(|child| matches!(child, Node::Element(child) if &*child.tag != "overlay" && !is_inline(child)))
 }
 
 /// Elements nested deeper than this are refused, so that laying out or

@@ -68,6 +68,10 @@
           :hover (style :border warm)
        (p :margin 0 :bold true :group-hover (style :color warm) "Point at this card")
        (p :margin 0 "Its border and its title change colour.")))
+  (p "Inline elements don't take " (code ":hover") " themselves, so put them in a"
+     " group and use " (code ":group-hover") ". An " (code "a") " that holds blocks"
+     " is a block, so a card that's a link can take " (code ":hover") " and be a"
+     " group too. See the links section of " (a :href "tour.sx" "Pages are programs") ".")
 
   (section "Styles are values")
   (p "The " (code "style") " function takes attributes and returns them as a list."

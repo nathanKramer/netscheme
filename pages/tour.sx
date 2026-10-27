@@ -160,4 +160,17 @@
      ". Opening it scrolls the block with that " (code ":id") ", like "
      (code "(div :id \"intro\" ...)") ", to the top. A link with "
      (code ":ctrl-click true") " is only a link, and underlined, while Ctrl is held: a plain click"
-     " selects its text instead. View source uses both, to go to definitions."))
+     " selects its text instead. View source uses both, to go to definitions.")
+  (subsection "Cards that are links")
+  (p "An " (code "a") " that holds blocks, like paragraphs, is a block itself."
+     " Clicking anywhere in its box follows it, and it takes the styles any block"
+     " does: a background, a border, padding and so on. Its text keeps the colours"
+     " around it, rather than turning blue and underlined, so it can be a card."
+     " With " (code ":hover") " and " (code ":group") ", it can show it's a link:")
+  (example
+    '(a :href "styles.sx" :group true :padding 14 :radius 8
+        :background (light-dark "#f3eef7" "#2a2631")
+        :hover (style :background (light-dark "#e8dff2" "#352f40"))
+       (p :margin 4 :bold true :group-hover (style :underline true) "Styles are values →")
+       (p :margin 0 "The next chapter, as a card that's a link.")))
+  (p "An " (code "a") " with only text and inline elements in it stays inline."))

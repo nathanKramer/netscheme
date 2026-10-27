@@ -113,7 +113,9 @@ pairs and children, mixed in any order.
 - **Blocks:** `page` (takes `:title`), `div`, `row` (children side by side; see
   [Rows](#rows)), `h1`, `h2`, `h3`, `p`, `pre`, `frame`
 - **Inline:** `span`, `b`, `code`, `a`, `button`, `input`, `textarea`, `img`, `canvas`,
-  `spacer` (fills the rest of the line, pushing what follows to the right)
+  `spacer` (fills the rest of the line, pushing what follows to the right).
+  An `a` that holds blocks is a block itself: see
+  [Images, links and frames](#images-links-and-frames).
 - **Over the page:** `overlay`, for menus, tooltips, dialogs and notices (see
   [Overlays](#overlays))
 - **Shapes, inside a `canvas` only:** `rect`, `circle`, `line`, `polyline`,
@@ -225,7 +227,8 @@ change its title along with its border:
 ```
 
 Inline elements like `a` and `span` don't take `:hover` themselves; put them
-in a `:group` and use `:group-hover`.
+in a `:group` and use `:group-hover`. An `a` that holds blocks is a block,
+so it takes `:hover` and `:group` like a `div`.
 
 ## State and events
 
@@ -329,6 +332,19 @@ shapes after the children.
 - `(a :href "other.sx" "text")` resolves relative to the page, and `http(s)://`
   works too. On file pages, a leading `/` means the folder the browser was
   started in.
+- **Cards that are links:** an `a` that holds blocks (`p`, `div`, `row`, ...)
+  is a block. Clicking anywhere in its box follows it, it takes block styles
+  (`:background`, `:border`, `:radius`, `:padding`, `:margin`, `:width`,
+  `:hover`, `:group`), and its text keeps the surrounding colours instead of
+  being blue and underlined. Wrap bare text in a `p`, as an `a` holding only
+  text and inline elements stays inline:
+
+  ```lisp
+  (a :href "about.sx" :group true :padding 16 :radius 8 :border edge
+     :hover (style :border accent)
+    (p :margin 0 :bold true :group-hover (style :color accent) "About me")
+    (p :margin 0 "Who I am and what I make."))
+  ```
 - `(frame :src "page.sx" :scale 0.5 :height 300 :border false)` embeds another
   page with its own state.
 
