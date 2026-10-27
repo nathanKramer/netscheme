@@ -108,8 +108,8 @@ exists, so define anything missing yourself.
 Every element is a function. Its arguments are `:keyword value` attribute
 pairs and children, mixed in any order.
 
-- **Blocks:** `page` (takes `:title`), `div`, `row` (children side by side in
-  equal columns), `h1`, `h2`, `h3`, `p`, `pre`, `frame`
+- **Blocks:** `page` (takes `:title`), `div`, `row` (children side by side; see
+  [Rows](#rows)), `h1`, `h2`, `h3`, `p`, `pre`, `frame`
 - **Inline:** `span`, `b`, `code`, `a`, `button`, `input`, `img`, `canvas`,
   `spacer` (fills the rest of the line, pushing what follows to the right)
 - **Over the page:** `overlay`, for menus, tooltips, dialogs and notices (see
@@ -157,6 +157,22 @@ For layout, use `row`, `spacer`, `padding`, `margin`, `:width` and
 the way round, so to draw a coloured edge on one side only, nest boxes:
 `(div :background accent :padding-left 3 (div :background panel :padding 14 ...))`.
 
+### Rows
+
+A `row` puts its children side by side, `:gap` px apart (16 by default):
+
+- A child with a numeric `:width` keeps that width.
+- Inline children, and blocks with `:width "fit"`, are as wide as their content.
+- Every other child, and every `spacer`, shares the room left equally.
+- `:align "middle"` or `"bottom"` lines the columns up other than at the top.
+
+```lisp
+(row :gap 12 :align "middle"
+  (img :src "logo.png" :width 48)          ; inline: as wide as it is
+  (div (b "Netscheme") (p :margin 0 "A browser for a Lisp"))   ; takes the rest
+  (div :width "fit" (button "Open")))      ; as wide as its button
+```
+
 Defaults: `page` has padding 24, `p` margin 12, `h1`/`h2`/`h3` are 32/24/19 px
 and bold, `button` has padding 8.
 
@@ -192,6 +208,21 @@ automatically. If you pick any colour, give it both modes with
 (define panel  (light-dark "#f4f1f8" "#25222b"))
 (define edge   (light-dark "#d8d2e0" "#3a3542"))
 ```
+
+**Hover:** `:hover` takes a style that a **block** has while the pointer is
+over it. Give a block `:group true` and its descendants, inline ones
+included, get their `:group-hover` styles while it's hovered, so a card can
+change its title along with its border:
+
+```lisp
+(div :group true :border edge :radius 8 :padding 12
+     :hover (style :border accent)
+  (p :margin 0 :bold true :group-hover (style :color accent) "Point at this card")
+  (p :margin 0 "Its border and its title change colour."))
+```
+
+Inline elements like `a` and `span` don't take `:hover` themselves; put them
+in a `:group` and use `:group-hover`.
 
 ## State and events
 
