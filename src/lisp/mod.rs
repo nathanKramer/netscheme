@@ -222,7 +222,8 @@ mod tests {
 
     #[test]
     fn runaway_pages_stop_with_an_error() {
-        assert!(eval("(define (f) (f)) (f)").contains("levels of nesting"), "infinite recursion");
+        assert!(eval("(define (f) (+ 1 (f))) (f)").contains("levels of nesting"), "infinite recursion");
+        assert!(eval("(define (f) (f)) (f)").contains("evaluation steps"), "an infinite loop of tail calls");
         let fib = "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 40)";
         assert!(eval(fib).contains("evaluation steps"), "too much work, without deep recursion");
         let doubling = r#"(define (grow s n) (if (= n 0) s (grow (str s s) (- n 1)))) (grow "ab" 40)"#;
@@ -241,6 +242,21 @@ mod tests {
         // without growing it.
         let count = "(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 3000)";
         assert_eq!(eval(count), "3000");
+    }
+
+    #[test]
+    fn tail_calls_loop_without_nesting() {
+        // Far deeper than the nesting limit allows for calls that aren't tail calls.
+        let count = "(define (count n acc) (if (= n 0) acc (count (- n 1) (+ acc 1)))) (count 50000 0)";
+        assert_eq!(eval(count), "50000");
+        let mutual = "(define (even? n) (if (= n 0) true (odd? (- n 1))))
+                      (define (odd? n) (if (= n 0) false (even? (- n 1))))
+                      (list (even? 40000) (odd? 40001))";
+        assert_eq!(eval(mutual), "(true true)");
+        // Every tail position: the last form of a body, `do`, `let` and `cond`,
+        // either branch of `if`, the last of `and` and `or`, and `eval`.
+        let forms = "(define (f n) (do 1 (let ((m (- n 1))) (cond ((= n 0) 'done) (else (and true (or false (if false 0 (eval `(f ,m)))))))))) (f 20000)";
+        assert_eq!(eval(forms), "done");
     }
 
     #[test]

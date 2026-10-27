@@ -57,6 +57,18 @@
     '(let ((adder (fn (n) (fn (x) (+ x n))))
            (add-ten (adder 10)))
        (p "Adding ten to each: " (interpose ", " (map add-ten '(1 2 3))))))
+  (p "A call that's the last thing a function does is a " (b "tail call") ". The"
+     " function has nothing left to do with the result, so the browser carries on"
+     " with the call in its place instead of nesting deeper. A function can loop"
+     " by calling itself last, as many times as its steps allow:")
+  (example
+    '(let ((count-up (fn (n total) (if (= n 0) total (count-up (- n 1) (+ total n))))))
+       (p "1 + 2 + ... + 20,000 = " (count-up 20000 0))))
+  (p "A call is in tail position when it's the last form of a function's body,"
+     " either branch of " (code "if") ", the last form of " (code "do") ", "
+     (code "let") " or a " (code "cond") " clause, or the last of " (code "and")
+     " or " (code "or") ". A call whose result is used, like the one in "
+     (code "(+ 1 (f n))") ", isn't one.")
   (p "Rest parameters make variadic functions, and " (code "apply") " calls a"
      " function with a list of arguments:")
   (example
@@ -74,7 +86,7 @@
     (p :margin 4 "• " (b "A million evaluation steps") " for each run of a page, and each"
        " event handler. The pages here use at most about 20,000.")
     (p :margin 4 "• " (b "Ten thousand levels of nesting") ", which is about 3,300"
-       " recursive calls, so runaway recursion stops quickly.")
+       " recursive calls, so runaway recursion stops quickly. Tail calls don't nest.")
     (p :margin 4 "• " (b "A million characters or items") " in any string or list a"
        " builtin makes, checked as it's built, so a string that doubles in a loop stops early.")
     (p :margin 4 "• " (b "512 levels of element nesting") ", and source nested at most 1,000 deep."))

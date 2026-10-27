@@ -1868,7 +1868,7 @@ mod tests {
         browser.click(deep.0, deep.1);
         render(&mut browser);
         assert_eq!(browser.error, None, "the next thing that works clears it");
-        assert!(browser.page.to_string().contains(r#"(b "done")"#));
+        assert!(browser.page.to_string().contains(r#"(b "3000")"#));
     }
 
     /// Clicks the last link whose action satisfies `which`. The site comes

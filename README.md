@@ -96,7 +96,7 @@ is started from a launcher.
 ## Roadmap
 
 1. Forward history.
-2. More of the language: macros, tail calls.
+2. More of the language: macros.
 
 ## License
 

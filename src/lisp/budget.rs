@@ -48,17 +48,27 @@ pub fn enter() -> Result<Depth, String> {
     if !ACTIVE.get() {
         return Ok(Depth(false));
     }
-    let steps = STEPS.get() + 1;
-    STEPS.set(steps);
-    if steps > MAX_STEPS {
-        return Err(format!("stopped after {MAX_STEPS} evaluation steps. Is there an infinite loop?"));
-    }
+    step()?;
     let depth = DEPTH.get() + 1;
     if depth > MAX_DEPTH {
         return Err(format!("stopped at {MAX_DEPTH} levels of nesting. Is there runaway recursion?"));
     }
     DEPTH.set(depth);
     Ok(Depth(true))
+}
+
+/// Counts one evaluation step without nesting, as when evaluation carries
+/// on with a tail call in place.
+pub fn step() -> Result<(), String> {
+    if !ACTIVE.get() {
+        return Ok(());
+    }
+    let steps = STEPS.get() + 1;
+    STEPS.set(steps);
+    if steps > MAX_STEPS {
+        return Err(format!("stopped after {MAX_STEPS} evaluation steps. Is there an infinite loop?"));
+    }
+    Ok(())
 }
 
 /// One level of nesting; see `enter`.

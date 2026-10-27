@@ -1,4 +1,4 @@
-; This page never finishes loading: it recurses forever before it gets as far
+; This page never finishes loading: it loops forever before it gets as far
 ; as describing the page. The browser stops it and shows an error instead.
 
 (define (forever) (forever))

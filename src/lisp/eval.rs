@@ -73,20 +73,45 @@ pub struct Lambda {
     env: Rc<Env>,
 }
 
+/// What evaluating one form comes to: a value, or another form to evaluate
+/// in its place. The second is a tail call, or the tail of a special form
+/// like `if`, and `eval` carries on with it in the same loop, so a function
+/// that calls itself last can loop forever without nesting deeper.
+enum Step {
+    Done(Value),
+    Eval(Value, Rc<Env>),
+}
+
 pub fn eval(expr: &Value, env: &Rc<Env>) -> Result<Value, String> {
     let _depth = budget::enter()?;
-    budget::grow_stack(|| match expr {
+    budget::grow_stack(|| {
+        let (mut expr, mut env) = match step(expr, env)? {
+            Step::Done(value) => return Ok(value),
+            Step::Eval(expr, env) => (expr, env),
+        };
+        loop {
+            budget::step()?;
+            (expr, env) = match step(&expr, &env)? {
+                Step::Done(value) => return Ok(value),
+                Step::Eval(expr, env) => (expr, env),
+            };
+        }
+    })
+}
+
+fn step(expr: &Value, env: &Rc<Env>) -> Result<Step, String> {
+    match expr {
         Value::Sym(name) => match env.get(name) {
             Some(Value::State(cell)) => {
                 watch::read(&cell);
-                Ok(cell.borrow().clone())
+                Ok(Step::Done(cell.borrow().clone()))
             }
-            Some(value) => Ok(value),
+            Some(value) => Ok(Step::Done(value)),
             None => Err(format!("undefined symbol: {name}")),
         },
         Value::List(items) if !items.is_empty() => eval_list(items, env),
-        _ => Ok(expr.clone()),
-    })
+        _ => Ok(Step::Done(expr.clone())),
+    }
 }
 
 pub fn eval_body(body: &[Value], env: &Rc<Env>) -> Result<Value, String> {
@@ -97,84 +122,103 @@ pub fn eval_body(body: &[Value], env: &Rc<Env>) -> Result<Value, String> {
     Ok(result)
 }
 
-fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+/// Evaluates all but the last form of a body, leaving the last as the tail.
+fn tail_body(body: &[Value], env: &Rc<Env>) -> Result<Step, String> {
+    let Some((last, init)) = body.split_last() else { return Ok(Step::Done(Value::Nil)) };
+    for expr in init {
+        eval(expr, env)?;
+    }
+    Ok(Step::Eval(last.clone(), env.clone()))
+}
+
+fn eval_list(items: &[Value], env: &Rc<Env>) -> Result<Step, String> {
+    let done = |value| Ok(Step::Done(value));
+    let tail = |expr: &Value| Ok(Step::Eval(expr.clone(), env.clone()));
     if let Value::Sym(head) = &items[0] {
         match &**head {
-            "quote" => return arg(items, 1, "quote").cloned(),
+            "quote" => return done(arg(items, 1, "quote")?.clone()),
             "if" => {
                 let cond = eval(arg(items, 1, "if")?, env)?;
-                return if cond.truthy() { eval(arg(items, 2, "if")?, env) } else { items.get(3).map_or(Ok(Value::Nil), |e| eval(e, env)) };
+                return if cond.truthy() { tail(arg(items, 2, "if")?) } else { items.get(3).map_or(done(Value::Nil), tail) };
             }
-            "do" => return eval_body(&items[1..], env),
+            "do" => return tail_body(&items[1..], env),
             "and" => {
-                let mut result = Value::Bool(true);
-                for expr in &items[1..] {
-                    result = eval(expr, env)?;
+                let Some((last, init)) = items[1..].split_last() else { return done(Value::Bool(true)) };
+                for expr in init {
+                    let result = eval(expr, env)?;
                     if !result.truthy() {
-                        break;
+                        return done(result);
                     }
                 }
-                return Ok(result);
+                return tail(last);
             }
             "or" => {
-                let mut result = Value::Nil;
-                for expr in &items[1..] {
-                    result = eval(expr, env)?;
+                let Some((last, init)) = items[1..].split_last() else { return done(Value::Nil) };
+                for expr in init {
+                    let result = eval(expr, env)?;
                     if result.truthy() {
-                        break;
+                        return done(result);
                     }
                 }
-                return Ok(result);
+                return tail(last);
             }
             "cond" => return eval_cond(&items[1..], env),
             "let" => return eval_let(items, env),
-            "quasiquote" => return quasiquote(arg(items, 1, "quasiquote")?, env),
+            "quasiquote" => return done(quasiquote(arg(items, 1, "quasiquote")?, env)?),
             // Code is data: evaluate the argument, then evaluate the result as code.
-            "eval" => return eval(&eval(arg(items, 1, "eval")?, env)?, env),
-            "define" => return eval_define(items, env),
-            "define-state" => return eval_define_state(items, env),
+            "eval" => return tail(&eval(arg(items, 1, "eval")?, env)?),
+            "define" => return done(eval_define(items, env)?),
+            "define-state" => return done(eval_define_state(items, env)?),
             "set!" => {
                 let Some(Value::Sym(name)) = items.get(1) else {
                     return Err("set!: expected a variable name".into());
                 };
                 let value = eval(arg(items, 2, "set!")?, env)?;
                 env.set(name, value)?;
-                return Ok(Value::Nil);
+                return done(Value::Nil);
             }
-            "fn" => return make_lambda(arg(items, 1, "fn")?, &items[2..], env),
+            "fn" => return done(make_lambda(arg(items, 1, "fn")?, &items[2..], env)?),
             _ => {}
         }
     }
     let f = eval(&items[0], env)?;
     let args = items[1..].iter().map(|e| eval(e, env)).collect::<Result<Vec<_>, _>>()?;
-    apply(&f, &args)
+    match &f {
+        Value::Lambda(lambda) => tail_body(&lambda.body, &lambda.bind(&args)?),
+        _ => done(apply(&f, &args)?),
+    }
 }
 
 pub fn apply(f: &Value, args: &[Value]) -> Result<Value, String> {
     match f {
         Value::Native(_, func) => func(args),
-        Value::Lambda(lambda) => {
-            let n = lambda.params.len();
-            match lambda.rest {
-                None if args.len() != n => return Err(format!("expected {n} arguments, got {}", args.len())),
-                Some(_) if args.len() < n => return Err(format!("expected at least {n} arguments, got {}", args.len())),
-                _ => {}
-            }
-            let env = Env::new(Some(lambda.env.clone()));
-            for (param, value) in lambda.params.iter().zip(args) {
-                env.define(param.clone(), value.clone());
-            }
-            if let Some(rest) = &lambda.rest {
-                env.define(rest.clone(), Value::list(args[n..].to_vec()));
-            }
-            eval_body(&lambda.body, &env)
-        }
+        Value::Lambda(lambda) => eval_body(&lambda.body, &lambda.bind(args)?),
         other => Err(format!("not a function: {other}")),
     }
 }
 
+impl Lambda {
+    /// A new environment for a call, with the parameters bound to `args`.
+    fn bind(&self, args: &[Value]) -> Result<Rc<Env>, String> {
+        let n = self.params.len();
+        match self.rest {
+            None if args.len() != n => return Err(format!("expected {n} arguments, got {}", args.len())),
+            Some(_) if args.len() < n => return Err(format!("expected at least {n} arguments, got {}", args.len())),
+            _ => {}
+        }
+        let env = Env::new(Some(self.env.clone()));
+        for (param, value) in self.params.iter().zip(args) {
+            env.define(param.clone(), value.clone());
+        }
+        if let Some(rest) = &self.rest {
+            env.define(rest.clone(), Value::list(args[n..].to_vec()));
+        }
+        Ok(env)
+    }
+}
+
 /// `(cond (test body...) ... (else body...))`
-fn eval_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+fn eval_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Step, String> {
     for clause in clauses {
         let Value::List(clause) = clause else {
             return Err("cond: each clause must be a list".into());
@@ -182,14 +226,14 @@ fn eval_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Value, String> {
         let (test, body) = clause.split_first().ok_or("cond: empty clause")?;
         let is_else = matches!(test, Value::Sym(s) if &**s == "else");
         if is_else || eval(test, env)?.truthy() {
-            return eval_body(body, env);
+            return tail_body(body, env);
         }
     }
-    Ok(Value::Nil)
+    Ok(Step::Done(Value::Nil))
 }
 
 /// `(let ((name value) ...) body...)`. Each value can see the names before it.
-fn eval_let(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
+fn eval_let(items: &[Value], env: &Rc<Env>) -> Result<Step, String> {
     let Value::List(bindings) = arg(items, 1, "let")? else {
         return Err("let: expected a list of bindings".into());
     };
@@ -204,7 +248,7 @@ fn eval_let(items: &[Value], env: &Rc<Env>) -> Result<Value, String> {
         let value = eval(expr, &inner)?;
         inner.define(name.clone(), value);
     }
-    eval_body(&items[2..], &inner)
+    tail_body(&items[2..], &inner)
 }
 
 /// Builds `form` as data, except that `,x` is evaluated and `,@xs` is

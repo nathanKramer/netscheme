@@ -4,13 +4,16 @@
 
 (eval `(do ,@(source "site.sx")))
 
-(define (forever) (forever))
+; Each call waits for the next one, to add one to its result, so every call
+; nests deeper. Without the addition it would be a tail call, which loops
+; without nesting until it runs out of steps instead.
+(define (forever) (+ 1 (forever)))
 
 (define (fib n)
   (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 
-(define (count-down n)
-  (if (= n 0) "done" (count-down (- n 1))))
+(define (count n)
+  (if (= n 0) 0 (+ 1 (count (- n 1)))))
 
 (define-state result "nothing yet")
 
@@ -18,11 +21,14 @@
   "Each button runs some code when clicked. The first two would never finish in reasonable time."
   (p (button :on-click (fn () (forever)) "Recurse forever")
      " " (button :on-click (fn () (set! result (fib 40))) "Compute fib 40")
-     " " (button :on-click (fn () (set! result (count-down 3000))) "Recurse 3000 deep"))
+     " " (button :on-click (fn () (set! result (count 3000))) "Recurse 3000 deep"))
   (div :background panel :padding 14 :margin 16
     (p :margin 0 "Last result: " (b result)))
   (p "The browser stops the first two and says why in a banner, and the page"
      " carries on. The third recurses deeply too, but finishes well within the"
      " limits.")
   (note "A page that loops while it loads gets the same treatment, except that"
-        " the error replaces the page: " (a :href "forever.sx" "try one") "."))
+        " the error replaces the page: " (a :href "forever.sx" "try one") ".")
+  (note "A function that calls itself as the last thing it does, like"
+        " " (code "(define (loop) (loop))") ", doesn't nest at all, so it runs until it"
+        " uses up its steps. See " (a :href "language.sx" "tail calls") "."))
