@@ -15,18 +15,22 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key as WinitKey, ModifiersState, NamedKey},
     platform::modifier_supplement::KeyEventExtModifierSupplement,
-    window::{CursorIcon, Icon, Theme, Window, WindowAttributes, WindowId},
+    window::{CursorIcon, Theme, Window, WindowAttributes, WindowId},
 };
 
 use crate::{
     browser::{Browser, Hover, Key, LINE_HEIGHT},
-    image::Image,
     layout::Clip,
     loader::Wake,
 };
 
+// Only the window icon, which macOS hasn't got, needs these.
+#[cfg(not(target_os = "macos"))]
+use {crate::image::Image, winit::window::Icon};
+
 /// What desktops know the browser as. On Linux, taskbars and launchers find
 /// a window's icon through the desktop entry with this name.
+#[cfg(all(unix, not(target_os = "macos")))]
 const APP_ID: &str = "netscheme";
 
 /// Presses closer together than this, in time and space, count as a double
@@ -221,6 +225,9 @@ fn key_name(event: &KeyEvent) -> Option<String> {
 
 /// Names the window, and gives it the logo as its icon where the platform
 /// takes one from the window: Windows and X11, but not Wayland or macOS.
+///
+/// Those two want the icon from somewhere else: Wayland from a desktop entry
+/// named `APP_ID`, macOS from the running application, in `set_dock_icon`.
 fn with_identity(attrs: WindowAttributes, event_loop: &ActiveEventLoop) -> WindowAttributes {
     #[cfg(all(unix, not(target_os = "macos")))]
     let attrs = {
@@ -233,10 +240,14 @@ fn with_identity(attrs: WindowAttributes, event_loop: &ActiveEventLoop) -> Windo
         attrs
     };
     let _ = event_loop;
+    #[cfg(target_os = "macos")]
+    return attrs;
+    #[cfg(not(target_os = "macos"))]
     attrs.with_window_icon(logo_icon())
 }
 
 /// The logo at 256 × 256, the largest size window icons are usually shown at.
+#[cfg(not(target_os = "macos"))]
 fn logo_icon() -> Option<Icon> {
     const SIZE: u32 = 256;
     let logo = Image::decode_png(include_bytes!("../assets/images/logo.png")).ok()?;
@@ -254,6 +265,28 @@ fn logo_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, SIZE, SIZE).ok()
 }
 
+/// Gives the Dock and the app switcher the logo, which on macOS belongs to the
+/// application rather than to any window. Without a bundle to read an icon
+/// from, as when the browser is started with `cargo run`, this is the only
+/// thing that sets it.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    // The event loop runs on the main thread, so `resumed` is called on it.
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    // NSImage decodes the PNG itself, so the logo goes in as it is on disk.
+    let data = NSData::with_bytes(include_bytes!("../assets/images/logo.png"));
+    let Some(logo) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        eprintln!("no dock icon: the logo wouldn't decode");
+        return;
+    };
+    // SAFETY: an NSImage of the application's own icon, set on the main thread.
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&logo)) };
+}
+
 impl ApplicationHandler<Loaded> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
@@ -261,6 +294,8 @@ impl ApplicationHandler<Loaded> for App {
         }
         let attrs = Window::default_attributes().with_title(self.browser.title()).with_inner_size(LogicalSize::new(900.0, 700.0));
         let attrs = with_identity(attrs, event_loop);
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
         let window = Rc::new(event_loop.create_window(attrs).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");

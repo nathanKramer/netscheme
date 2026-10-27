@@ -14,6 +14,14 @@ ureq = "3.5.0"
 url = "2.5.8"
 winit = "0.30"
 
+# macOS takes no icon from the window, so the logo is set on the running
+# application instead, in `window.rs`. These are already in the tree, through
+# arboard.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
+
 # Painting is pixel loops, which an unoptimised build runs several times
 # slower. Debug info and assertions stay on.
 [profile.dev]

@@ -62,6 +62,10 @@ its class on X11, so window manager rules, like Hyprland's `class:netscheme`,
 and desktop entries can match it. On X11 and Windows the window carries the
 logo as its icon.
 
+macOS takes no icon from the window, so the browser gives the logo to the
+running application instead, which is what the Dock and the app switcher show.
+That works without an app bundle, so `cargo run` gets the icon too.
+
 Wayland compositors take icons from a desktop entry instead. Build with
 `cargo build --release`, copy `assets/images/logo.png` to
 `~/.local/share/icons/hicolor/256x256/apps/netscheme.png`, and write a
