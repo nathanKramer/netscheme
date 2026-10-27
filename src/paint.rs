@@ -88,6 +88,8 @@ pub struct View<'a> {
     pub drawings: Option<&'a Drawings>,
     /// Where the mouse pointer is in the window, for `:hover` styles.
     pub pointer: Option<(f32, f32)>,
+    /// Whether Ctrl is held, which underlines links with `:ctrl-click`.
+    pub ctrl: bool,
 }
 
 pub struct Rendered {
@@ -160,6 +162,7 @@ impl Renderer {
         if let Some((x, y)) = view.pointer {
             layout.point(x, y + view.scroll.page.max(0.0));
         }
+        layout.ctrl(view.ctrl);
         let content_height = layout.block(page, &root, 0.0, 0.0, w as f32);
         let dy = view.scroll.page.clamp(0.0, (content_height - h as f32).max(0.0)).round();
         let (items, mut links, mut scrollers, mut inputs, mut matches) =
@@ -634,6 +637,7 @@ mod tests {
                 images: None,
                 drawings: None,
                 pointer: None,
+                ctrl: false,
             },
             0,
         )
@@ -661,6 +665,7 @@ mod tests {
                 images: None,
                 drawings: None,
                 pointer: None,
+                ctrl: false,
             },
             0,
         );
@@ -727,6 +732,7 @@ mod tests {
             images: Some(&images),
             drawings: None,
             pointer: None,
+            ctrl: false,
         };
         Renderer::new().render(&page, &mut buf, 200, 60, &view, 0);
         let top = (0..60).find(|&y| buf[y * 200 + 20] & 0xff != 0).expect("the image is drawn");
@@ -791,6 +797,7 @@ mod tests {
                     images: None,
                     drawings: None,
                     pointer: None,
+                    ctrl: false,
                 },
                 0,
             )
@@ -868,6 +875,7 @@ mod tests {
                 images: None,
                 drawings: None,
                 pointer: moment.pointer,
+                ctrl: false,
             };
             renderer.render(&page, buf, w, h, &view, age)
         };
@@ -937,6 +945,7 @@ mod tests {
                 images: None,
                 drawings: None,
                 pointer,
+                ctrl: false,
             };
             renderer.render(&page, &mut buf, 200, 200, &view, age)
         };

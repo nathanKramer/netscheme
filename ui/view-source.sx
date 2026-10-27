@@ -80,7 +80,7 @@
 (define (token x)
   (let ((location (and (symbol? x) (get definitions (str x)))))
     (if location
-        (a :href (definition-link location (str x)) :ctrl-click true symbol-style :underline false (repr x))
+        (a :href (definition-link location (str x)) :ctrl-click true symbol-style (repr x))
         (span (cond ((string? x) string-style)
                     ((keyword? x) keyword-style)
                     ((number? x) number-style)

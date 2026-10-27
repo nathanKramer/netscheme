@@ -137,5 +137,5 @@
   (p "A location can end in " (code "#") " and a name, as in " (code "page.sx#intro")
      ". Opening it scrolls the block with that " (code ":id") ", like "
      (code "(div :id \"intro\" ...)") ", to the top. A link with "
-     (code ":ctrl-click true") " is only a link while Ctrl is held: a plain click"
+     (code ":ctrl-click true") " is only a link, and underlined, while Ctrl is held: a plain click"
      " selects its text instead. View source uses both, to go to definitions."))

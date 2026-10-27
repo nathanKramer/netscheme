@@ -347,6 +347,7 @@ impl Browser {
             images: Some(&images),
             drawings: Some(&self.drawings),
             pointer: self.pointer,
+            ctrl: self.ctrl,
         };
         let rendered = self.renderer.render(&self.page, buf, w, h, &view, age);
         drop(images);
@@ -550,9 +551,10 @@ impl Browser {
         self.links.iter().find(|link| link.contains(x, y) && (self.ctrl || !link.needs_ctrl()))
     }
 
-    /// Ctrl went down or up. Links that need it are only links while it's held.
-    pub fn set_ctrl(&mut self, held: bool) {
-        self.ctrl = held;
+    /// Ctrl went down or up. Links that need it are only links, and
+    /// underlined, while it's held. Returns whether that changed anything.
+    pub fn set_ctrl(&mut self, held: bool) -> bool {
+        std::mem::replace(&mut self.ctrl, held) != held
     }
 
     /// The visible line of text nearest a point, among those in `frame`.

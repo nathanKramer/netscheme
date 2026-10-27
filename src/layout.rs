@@ -470,6 +470,8 @@ pub struct Layout<'a> {
     scroller: Option<usize>,
     /// Where the mouse pointer is, for `:hover` styles.
     pointer: Option<(f32, f32)>,
+    /// Whether Ctrl is held, which underlines links with `:ctrl-click`.
+    ctrl: bool,
     /// The element being laid out with its `:hover` style, by address, and
     /// how many hovered `:group`s layout is inside, for `:group-hover` styles.
     hovered: Option<usize>,
@@ -554,6 +556,7 @@ impl<'a> Layout<'a> {
             frame_depth: 0,
             scroller: None,
             pointer: None,
+            ctrl: false,
             hovered: None,
             group_hover: 0,
             hover_areas: Vec::new(),
@@ -566,6 +569,11 @@ impl<'a> Layout<'a> {
     /// Lays out elements under (`x`, `y`) with their `:hover` styles.
     pub fn point(&mut self, x: f32, y: f32) {
         self.pointer = Some((x, y));
+    }
+
+    /// Lays out links with `:ctrl-click` as links, underlined, if `held`.
+    pub fn ctrl(&mut self, held: bool) {
+        self.ctrl = held;
     }
 
     fn marks(&self) -> Marks {
@@ -1311,6 +1319,10 @@ impl<'a> Layout<'a> {
             (Some(handler), _) => Some(Action::Run(handler.clone())),
             (None, Some(Value::Str(href))) if &*el.tag == "a" => {
                 let ctrl = el.attr("ctrl-click").is_some_and(Value::truthy);
+                // Underlined only while it's a link.
+                if ctrl {
+                    style.underline = self.ctrl;
+                }
                 Some(Action::Go { href: href.clone(), base: self.base.clone(), ctrl })
             }
             _ => action,
@@ -1930,6 +1942,21 @@ mod tests {
         assert_eq!(clicked(50.0, 25.0), "over");
         assert_eq!(clicked(5.0, 5.0), "under");
         assert_eq!(clicked(90.0, 5.0), "canvas");
+    }
+
+    #[test]
+    fn ctrl_click_links_are_underlined_while_ctrl_is_held() {
+        let src = r#"(page :padding 0 (p (a :href "x.sx" :ctrl-click true "def")))"#;
+        let Ok(Value::Element(page)) = crate::lisp::run(src, &crate::loader::test_context()) else { panic!("not a page") };
+        let fonts = Fonts::load();
+        let scrolls = HashMap::new();
+        let rects = |ctrl| {
+            let mut layout = Layout::new(&fonts, &Palette::LIGHT, 1.0, 600.0, &scrolls, None, true);
+            layout.ctrl(ctrl);
+            layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 800.0);
+            layout.items.iter().filter(|item| matches!(item, DisplayItem::Rect { .. })).count()
+        };
+        assert_eq!(rects(true), rects(false) + 1, "an underline");
     }
 
     #[test]
