@@ -168,11 +168,14 @@ mod tests {
     }
 
     #[test]
-    fn only_browser_pages_search() {
+    fn only_browser_pages_search_and_bookmark() {
         assert!(eval(r#"(set-find "x")"#).contains("only browser: pages"));
         assert!(eval("(find-next)").contains("only browser: pages"));
         assert!(eval(r#"(repl-eval "1")"#).contains("only browser: pages"));
         assert!(eval("(repl-log)").contains("only browser: pages"));
+        assert!(eval("(bookmarks)").contains("only browser: pages"));
+        assert!(eval(r#"(bookmark "a.sx" "A")"#).contains("only browser: pages"));
+        assert!(eval(r#"(unbookmark "a.sx")"#).contains("only browser: pages"));
     }
 
     #[test]

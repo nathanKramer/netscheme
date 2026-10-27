@@ -25,6 +25,8 @@ use crate::{
 pub const LINE_HEIGHT: f32 = 40.0;
 /// Following a link to this location goes back instead.
 const BACK: &str = "browser:back";
+/// Following a link to this location reloads the site instead, as F5 does.
+const RELOAD: &str = "browser:reload";
 /// How long the caret stays on, then off.
 const BLINK: Duration = Duration::from_millis(530);
 /// Time between frames of animation: 60 a second.
@@ -291,11 +293,15 @@ impl Browser {
         self.host.dark_mode.get()
     }
 
-    /// Keeps settings in `settings` between runs: starts in the mode saved
-    /// there, and saves the mode whenever a page's switch changes it.
+    /// Keeps settings in `settings` between runs: starts in the mode and
+    /// with the bookmarks saved there, and saves them whenever a page changes them.
     pub fn keep_settings(&mut self, settings: Settings) {
         if let Some(dark) = settings.dark_mode() {
             self.set_dark_mode(dark);
+        }
+        if !settings.bookmarks().is_empty() {
+            *self.host.bookmarks.borrow_mut() = settings.bookmarks().to_vec();
+            self.reload();
         }
         self.settings = Some(settings);
     }
@@ -982,6 +988,9 @@ impl Browser {
         if href == BACK {
             return self.back();
         }
+        if href == RELOAD {
+            return self.navigate(Navigation::Reload, self.site.clone());
+        }
         let from = base.map_or_else(|| self.location(), String::from);
         let site = loader::resolve(&from, href);
         if let Err(e) = loader::may_reach(&from, &site) {
@@ -1063,11 +1072,18 @@ impl Browser {
     /// shown. Returns whether they all succeeded.
     fn run_all(&mut self, handlers: &[Value], args: &[Value], clear_error: bool) -> bool {
         let dark = self.dark_mode();
+        let bookmarks = self.host.bookmarks.borrow().clone();
         let (result, changed) = watch::writes(|| handlers.iter().try_for_each(|handler| lisp::apply(handler, args).map(drop)));
         // The page and the chrome show these, so changing them means running the page again.
         let mut shown_changed = self.dark_mode() != dark;
         if let Some(settings) = self.settings.as_mut().filter(|_| shown_changed) {
             settings.set_dark_mode(!dark);
+        }
+        if *self.host.bookmarks.borrow() != bookmarks {
+            if let Some(settings) = self.settings.as_mut() {
+                settings.set_bookmarks(self.host.bookmarks.borrow().clone());
+            }
+            shown_changed = true;
         }
         if let Some(request) = self.host.take_find().filter(|_| result.is_ok()) {
             self.find_request(request);
@@ -1306,6 +1322,7 @@ fn word_at(value: &str, at: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Bookmark;
 
     fn at(cursor: usize) -> Focus {
         Focus { id: 0, cursor, anchor: cursor }
@@ -1906,7 +1923,8 @@ mod tests {
     fn dark_mode_is_a_browser_setting() {
         let mut browser = Browser::new("pages/hello.sx".into(), true);
         render(&mut browser);
-        let toggle = browser.links.iter().find(|link| matches!(link.action, Action::Run(_))).unwrap();
+        // The star comes first, then the mode switch.
+        let toggle = browser.links.iter().filter(|link| matches!(link.action, Action::Run(_))).nth(1).unwrap();
         let (x, y) = (toggle.x + 1.0, toggle.y + 1.0);
         assert!(browser.click(x, y));
         assert!(browser.dark_mode(), "the toolbar's button turns it on");
@@ -1934,6 +1952,74 @@ mod tests {
     }
 
     #[test]
+    fn the_toolbar_reloads_the_site() {
+        let mut browser = Browser::new("pages/counter.sx".into(), true);
+        press(&mut browser, [Key::Repl, Key::Text("(set! count 41)".into()), Key::Enter, Key::Escape]);
+        assert!(browser.title().starts_with("Counter: 41"), "{}", browser.title());
+        click_link(&mut browser, to("browser:reload"));
+        assert_eq!(browser.site, "pages/counter.sx", "it stays on the site");
+        assert!(browser.title().starts_with("Counter: 0"), "with its state started over: {}", browser.title());
+    }
+
+    #[test]
+    fn bookmarks_outlast_the_browser() {
+        let dir = std::env::temp_dir().join(format!("toy-browser-bookmarks-test-{}", std::process::id()));
+        let file = dir.join("netscheme").join("settings");
+        let saved = || std::fs::read_to_string(dir.join("netscheme").join("bookmarks")).unwrap();
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        browser.keep_settings(Settings::at(file.clone()));
+        // With no bookmarks, the toolbar's buttons are the star, then the mode switch.
+        click_button(&mut browser, 0);
+        assert_eq!(saved(), "pages/hello.sx\tWelcome\n");
+
+        let mut browser = Browser::new("pages/tour.sx".into(), true);
+        browser.keep_settings(Settings::at(file));
+        render(&mut browser);
+        assert!(browser.page.to_string().contains("Welcome"), "the next run shows it in the toolbar");
+        // Now the bookmark comes first.
+        click_button(&mut browser, 0);
+        assert_eq!(browser.site, "pages/hello.sx", "and it goes there");
+
+        click_button(&mut browser, 1);
+        assert!(browser.host.bookmarks.borrow().is_empty(), "the filled star removes it");
+        assert_eq!(saved(), "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bookmarks_past_the_third_are_in_a_menu() {
+        let mut browser = Browser::new("pages/hello.sx".into(), true);
+        let titles = ["One", "Two", "Threefold-and-long", "Four", "Five"];
+        *browser.host.bookmarks.borrow_mut() =
+            titles.iter().map(|title| Bookmark { location: "pages/tour.sx".into(), title: (*title).into() }).collect();
+        browser.reload();
+        render(&mut browser);
+        let page = browser.page.to_string();
+        assert!(page.contains(r#""Threefold…""#), "shortened to fit: {page}");
+        assert!(!page.contains("Four"), "the rest wait for the menu");
+
+        // The three bookmarks come first, then the menu's button.
+        click_button(&mut browser, 3);
+        let page = browser.page.to_string();
+        assert!(page.contains("Four") && page.contains("Five"), "{page}");
+        let four =
+            browser.links.iter().find(|link| matches!(link.action, Action::Run(_)) && link.y > 40.0).expect("the menu, below the toolbar");
+        let (x, y) = (four.x + 1.0, four.y + 1.0);
+        assert!(browser.click(x, y));
+        render(&mut browser);
+        assert_eq!(browser.site, "pages/tour.sx", "a bookmark in the menu goes to its site");
+    }
+
+    /// Clicks the `i`th button with an `:on-click` handler, in the order they're laid out.
+    fn click_button(browser: &mut Browser, i: usize) {
+        render(browser);
+        let link = browser.links.iter().filter(|link| matches!(link.action, Action::Run(_))).nth(i).expect("a button to click");
+        let (x, y) = (link.x + 1.0, link.y + 1.0);
+        assert!(browser.click(x, y));
+        render(browser);
+    }
+
+    #[test]
     fn only_browser_pages_change_settings() {
         let dir = std::env::temp_dir().join(format!("toy-browser-dark-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1949,14 +2035,14 @@ mod tests {
 
     #[test]
     fn handler_errors_leave_the_page_usable() {
-        // The toolbar's dark mode button comes first, then the page's three.
+        // The toolbar's star and dark mode button come first, then the page's three.
         let button = |browser: &Browser, i: usize| {
             let link = browser.links.iter().filter(|l| matches!(l.action, Action::Run(_))).nth(i).unwrap();
             (link.x + 1.0, link.y + 1.0)
         };
         let mut browser = Browser::new("pages/runaway.sx".into(), true);
         render(&mut browser);
-        let forever = button(&browser, 1);
+        let forever = button(&browser, 2);
 
         browser.click(forever.0, forever.1);
         render(&mut browser);
@@ -1965,7 +2051,7 @@ mod tests {
         assert_eq!(browser.site, "pages/runaway.sx", "and the page is still there");
 
         // The banner moved the page down.
-        let deep = button(&browser, 3);
+        let deep = button(&browser, 4);
         browser.click(deep.0, deep.1);
         render(&mut browser);
         assert_eq!(browser.error, None, "the next thing that works clears it");

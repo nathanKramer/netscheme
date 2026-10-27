@@ -27,6 +27,7 @@ use crate::{
     dom::{Element, Node, build_element},
     image::Image,
     lisp::{self, Env, PageState, Value},
+    settings::Bookmark,
 };
 
 /// Frames nested deeper than this are left empty, so a page that frames
@@ -108,6 +109,8 @@ pub struct Host {
     repl: RefCell<Option<ReplRequest>>,
     /// What has been run in the REPL, oldest first.
     pub repl_log: RefCell<Vec<ReplEntry>>,
+    /// The user's bookmarks, oldest first.
+    pub bookmarks: RefCell<Vec<Bookmark>>,
     /// Downloads running on other threads, while loading in the background.
     loads: RefCell<Option<Loads>>,
 }

@@ -16,15 +16,15 @@ cargo run -- http://localhost:8000/hello.sx")
 
   (section "Getting around")
   (entry "Click a link" "Goes to its page, which starts with fresh state.")
-  (entry "Alt+←, the mouse's back button, ← Back" "Goes back, to the page's"
+  (entry "Alt+←, the mouse's back button, the toolbar's ←" "Goes back, to the page's"
          " state and scroll position as you left them. The toolbar keeps its own"
          " state, so the address bar shows where you are.")
-  (entry "F5, Ctrl+R" "Reloads: downloads the page again, reloads its images, and"
+  (entry "F5, Ctrl+R, the toolbar's circular arrow" "Reloads: downloads the page again, reloads its images, and"
          " starts its state over.")
   (entry "Escape" "Dismisses the page's topmost overlay, if it has an "
          (code ":on-dismiss") " handler. While a web page downloads, stops going there."
          " The page you're on stays up until the next one arrives, with Loading… in the toolbar.")
-  (entry "View source" "Shows the current page's code, coloured and indented. Ctrl+click"
+  (entry "View source, the toolbar's </>" "Shows the current page's code, coloured and indented. Ctrl+click"
          " a name to go to its definition, in the page, a page it reads with "
          (code "source") ", or the prelude.")
 
@@ -75,6 +75,14 @@ cargo run -- http://localhost:8000/hello.sx")
         " so anything " (code "define") "d in the REPL is gone by the next entry. "
         (code "define-state") " variables are what last. A runaway entry stops"
         " with an error, as an event handler does.")
+
+  (section "Bookmarks")
+  (p "The star at the right of the toolbar bookmarks the page you're on, under its"
+     " title, and fills in. The first three bookmarks are listed left of the address"
+     " bar, with long titles shortened, and the rest are in the menu that » opens."
+     " Clicking one goes there. Clicking a filled star removes the page's bookmark.")
+  (p "Bookmarks are kept in " (code "~/.config/netscheme/bookmarks") ", beside the"
+     " settings, one per line: the location, a tab, then the title.")
 
   (section "Dark mode")
   (p "The moon and sun at the right of the toolbar switch between light and dark"

@@ -40,7 +40,7 @@ and open `http://localhost:8000/hello.sx`.
 
 The browser opens on its own guide, written in Netscheme. Its examples are
 printed from the same code they run, so they always show what they make.
-Choose **View source** in the toolbar on any page to read it.
+Choose **View source**, the `</>` in the toolbar, on any page to read it.
 
 | Chapter | |
 |---|---|

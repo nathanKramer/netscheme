@@ -55,7 +55,7 @@
         (dict :file "code-as-data.sx" :title "Code is data"
               :blurb "Reading a page's source, building code with quasiquote, and pages inside pages.")
         (dict :file "using.sx" :title "Using the browser"
-              :blurb "Navigating, scrolling, finding, the REPL, dark mode, and screenshots.")
+              :blurb "Navigating, scrolling, finding, the REPL, bookmarks, dark mode, and screenshots.")
         (dict :file "internals.sx" :title "How it works"
               :blurb "From source text to pixels: the reader, evaluator, layout and painter.")))
 
@@ -101,7 +101,7 @@
     (hr)
     (p :margin 0 small
        "Every page here is a Netscheme program. Choose "
-       (b "View source") " in the toolbar to read it.")))
+       (b "View source") ", the " (code "</>") " in the toolbar, to read it.")))
 
 ; A page of the site, with its masthead and footer.
 (define (site-page title & body)

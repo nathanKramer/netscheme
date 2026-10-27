@@ -163,7 +163,8 @@ A `row` puts its children side by side, `:gap` px apart (16 by default):
 
 - A child with a numeric `:width` keeps that width.
 - Inline children, and blocks with `:width "fit"`, are as wide as their content.
-- Every other child, and every `spacer`, shares the room left equally.
+- Every other child, including an `input` with `:width :fill`, and every
+  `spacer`, shares the room left equally.
 - `:align "middle"` or `"bottom"` lines the columns up other than at the top.
 
 ```lisp
@@ -242,6 +243,7 @@ in a `:group` and use `:group-hover`.
 - `:on-click (fn () ...)` works on any element, not only `button`.
 - **Inputs are controlled:**
   `(input :value draft :placeholder "..." :width 320 :on-input (fn (text) (set! draft text)) :on-submit (fn (text) ...))`.
+  `:width :fill` makes it as wide as its block, or its share of a `row`.
   Without `:on-input`, typing changes nothing. There are also `:autofocus`,
   `:select-on-focus`, `:on-escape` and `:on-shift-submit`.
 - `(go "other.sx")` navigates after the handler finishes, and

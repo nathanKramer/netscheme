@@ -118,7 +118,7 @@
   (entry "damage.rs" "Which parts of the window changed between two frames, so"
          " only those are painted again, the way browsers repaint.")
   (entry "image.rs" "Decoding PNG files, and scaling images.")
-  (entry "settings.rs" "Settings kept between runs, like dark mode.")
+  (entry "settings.rs" "Settings kept between runs, like dark mode, and bookmarks.")
   (entry "test_server.rs" "A tiny HTTP server, so tests can load pages from the web.")
 
   (section "What it's built on")

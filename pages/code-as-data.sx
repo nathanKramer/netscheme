@@ -28,7 +28,7 @@
     '(let ((forms (source "hello.sx")))
        (p (plural (length forms) "form") ", the first of which starts with "
           (code (repr (first (first forms)))) ".")))
-  (p "The toolbar's " (b "View source") " button opens "
+  (p "The toolbar's " (b "View source") " button, " (code "</>") ", opens "
      (a :href "browser:view-source?page=browser:view-source" "a page") " that does"
      " exactly this: it reads a page's forms with " (code "source") ", then turns"
      " them into coloured, indented elements. The code samples in this guide are"

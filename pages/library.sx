@@ -104,6 +104,9 @@
   (entry "(repl-eval code), (repl-log), (close-repl)" "Runs code in the site, lists"
          " what has run, as dictionaries of " (code ":input") ", " (code ":output")
          " and " (code ":error") ", and closes the REPL.")
+  (entry "(bookmarks), (bookmark location title), (unbookmark location)" "Lists the"
+         " bookmarks, as dictionaries of " (code ":location") " and " (code ":title")
+         ", bookmarks a location, or renames its bookmark, and removes one.")
 
   (section "The prelude")
   (p "These are written in Netscheme, in " (code "ui/prelude.sx") ". A page can"

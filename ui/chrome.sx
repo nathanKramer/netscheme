@@ -34,8 +34,47 @@
 (define toolbar (style :background (light-dark "#ebe8ef" "#2a2631") :padding 10 :margin 0))
 (define rule (style :background (light-dark "#d3cfda" "#14121a") :padding 0.5 :margin 0))
 
-(define (toolbar-link href label)
-  (a :href href toolbar-text label))
+; One of the toolbar's icons, drawn in its ink for the mode: ui/icons/<name>-light.png or -dark.png.
+(define (icon name alt)
+  (img :src (str "browser:icons/" name (if (dark-mode) "-dark" "-light") ".png")
+       :width 20 :align "middle" :alt alt))
+
+; The star bookmarks the site, or, once it's bookmarked, filled in, unbookmarks it.
+(define bookmarked (any? (fn (b) (= (get b :location) location)) (bookmarks)))
+
+(define (star)
+  (img :src (cond (bookmarked "browser:icons/star-filled.png")
+                  ((dark-mode) "browser:icons/star-dark.png")
+                  (else "browser:icons/star-light.png"))
+       :width 20 :align "middle"
+       :alt (if bookmarked "Remove bookmark" "Bookmark this page")
+       :on-click (fn () (if bookmarked
+                            (unbookmark location)
+                            (bookmark location (or site-title location))))))
+
+; The first few bookmarks are links in the toolbar, with their titles
+; shortened to fit. The rest are in a menu, opened with ».
+(define bookmarks-shown 3)
+(define-state bookmarks-open false)
+
+(define (shorten text n)
+  (if (> (length text) n) (str (trim (substring text 0 (dec n))) "…") text))
+
+(define bookmark-text (style :underline false :size 13 :color (light-dark "#3a2f4a" "#ded8e8")))
+
+(define (bookmark-link b n)
+  (a bookmark-text :on-click (fn () (go (get b :location))) (shorten (get b :title) n)))
+
+(define (more-bookmarks)
+  (define more (drop (bookmarks) bookmarks-shown))
+  (if (not (empty? more))
+      (div :width "fit"
+        (a toolbar-text :size 16 :on-click (fn () (set! bookmarks-open (not bookmarks-open))) "»")
+        (if bookmarks-open
+            (overlay :at "below" :margin-top 8 :padding 8 :radius 6 :width 260
+                     :background (light-dark "#ebe8ef" "#2a2631") :border (light-dark "#d3cfda" "#14121a")
+                     :on-dismiss (fn () (set! bookmarks-open false))
+              (map (fn (b) (p :margin 4 (bookmark-link b 36))) more))))))
 
 (define (find-bar)
   (div toolbar
@@ -81,26 +120,33 @@
              :on-escape (fn () (close-repl))))))
 
 (page :title (or site-title location) :padding 0
+  ; The address bar fills the middle, between columns of equal width, so
+  ; it stays centred: the way back, reloading and the bookmarks on its
+  ; left, and the icons on its right.
   (div toolbar
-    (p :margin 0
-      (if can-go-back
-          (toolbar-link "browser:back" "← Back")
-          (span toolbar-text disabled "← Back"))
-      " "
-      (input :value typed :width 420 :select-on-focus true
+    (row :gap 12 :align "middle"
+      (row :width 300 :gap 12 :align "middle"
+        ; Greyed out when there's nowhere to go back to.
+        (if can-go-back
+            (a :href "browser:back" (icon "back" "Back"))
+            (icon "back-disabled" "Back"))
+        (a :href "browser:reload" (icon "refresh" "Reload"))
+        (map (fn (b) (bookmark-link b 10)) (take (bookmarks) bookmarks-shown))
+        (more-bookmarks))
+      (input :value typed :width :fill :select-on-focus true
              :on-input (fn (text) (set! typed text))
              :on-submit (fn (text) (go text)))
-      " "
-      (toolbar-link (str "browser:view-source?page=" (url-encode location)) "View source")
-      (if loading (list "  " (span toolbar-text disabled "Loading…")))
-      ; The spacer pushes the mode switch to the right-hand end.
-      (spacer)
-      ; A moon to switch to dark mode, and a sun to switch back. Each is
-      ; drawn in the toolbar's ink for the mode it's shown in.
-      (img :src (if (dark-mode) "browser:icons/sun.png" "browser:icons/moon.png")
-           :width 20 :align "middle"
-           :alt (if (dark-mode) "Switch to light mode" "Switch to dark mode")
-           :on-click (fn () (set-dark-mode (not (dark-mode)))))))
+      (row :width 300 :gap 12 :align "middle"
+        (spacer)
+        (if loading (span toolbar-text disabled "Loading…"))
+        (star)
+        (a :href (str "browser:view-source?page=" (url-encode location)) (icon "source" "View source"))
+        ; A moon to switch to dark mode, and a sun to switch back. Each is
+        ; drawn in the toolbar's ink for the mode it's shown in.
+        (img :src (if (dark-mode) "browser:icons/sun.png" "browser:icons/moon.png")
+             :width 20 :align "middle"
+             :alt (if (dark-mode) "Switch to light mode" "Switch to dark mode")
+             :on-click (fn () (set-dark-mode (not (dark-mode))))))))
   (div rule)
   (if finding (list (find-bar) (div rule)))
   (if repl-open (list (repl) (div rule)))

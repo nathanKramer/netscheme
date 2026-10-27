@@ -9,6 +9,7 @@ use super::{
 use crate::{
     dom,
     loader::{self, PageContext},
+    settings::Bookmark,
 };
 
 pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
@@ -254,6 +255,44 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
             ])))
         };
         Ok(Value::list(c.host.repl_log.borrow().iter().map(entry).collect()))
+    });
+    // The bookmarks, and changes to them. Only browser pages may see or change them.
+    let bookmarks_only = |c: &Rc<PageContext>, name: &str| {
+        if c.location.starts_with("browser:") { Ok(()) } else { Err(format!("{name}: only browser: pages can use bookmarks")) }
+    };
+    // Each is (dict :location where :title what-it-was-called).
+    let c = ctx.clone();
+    def(&env, "bookmarks", move |_| {
+        bookmarks_only(&c, "bookmarks")?;
+        let bookmark = |b: &Bookmark| {
+            Value::Dict(Rc::new(BTreeMap::from([
+                (Key::Keyword("location".into()), Value::Str(b.location.as_str().into())),
+                (Key::Keyword("title".into()), Value::Str(b.title.as_str().into())),
+            ])))
+        };
+        Ok(Value::list(c.host.bookmarks.borrow().iter().map(bookmark).collect()))
+    });
+    // Bookmarks a location, or renames its bookmark if it has one. Tabs and
+    // line breaks become spaces, as the bookmarks file is lines of tab-separated fields.
+    let c = ctx.clone();
+    def(&env, "bookmark", move |args| {
+        bookmarks_only(&c, "bookmark")?;
+        let [Value::Str(location), Value::Str(title)] = args else { return Err("bookmark: expected a location and a title".into()) };
+        let one_line = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+        let (location, title) = (one_line(location), one_line(title));
+        let mut bookmarks = c.host.bookmarks.borrow_mut();
+        match bookmarks.iter_mut().find(|b| b.location == location) {
+            Some(existing) => existing.title = title,
+            None => bookmarks.push(Bookmark { location, title }),
+        }
+        Ok(Value::Nil)
+    });
+    let c = ctx.clone();
+    def(&env, "unbookmark", move |args| {
+        bookmarks_only(&c, "unbookmark")?;
+        let [Value::Str(location)] = args else { return Err("unbookmark: expected a location".into()) };
+        c.host.bookmarks.borrow_mut().retain(|b| b.location != **location);
+        Ok(Value::Nil)
     });
     // A query parameter from the page's location: `page.sx?name=value`.
     let c = ctx.clone();

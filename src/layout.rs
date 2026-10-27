@@ -392,7 +392,8 @@ struct Segment {
 
 /// Something in a line of text that isn't text.
 enum Embed {
-    Input(Rc<Element>),
+    /// A text input, this wide.
+    Input(Rc<Element>, f32),
     /// An image, or `None` for one that couldn't be loaded, at this size.
     Image(Option<Rc<Image>>, f32, f32, Align),
     /// Takes up whatever room is left on its line.
@@ -1043,8 +1044,8 @@ impl<'a> Layout<'a> {
 
     /// Columns side by side, one per child, `:gap` apart. A child with a
     /// numeric `:width` keeps it, and inline children and those with
-    /// `:width "fit"` are as wide as their content. The other children, and
-    /// spacers, share the room left equally. `:align` lines the columns up
+    /// `:width "fit"` are as wide as their content. The other children,
+    /// including inline ones with `:width :fill`, and spacers, share the room left equally. `:align` lines the columns up
     /// at the "top", "middle" or "bottom". Returns the bottom of the tallest.
     fn row(&mut self, el: &Element, style: &Rc<Style>, x: f32, y: f32, w: f32) -> f32 {
         let children: Vec<&Node> = el.children.iter().filter(|child| !is_overlay(child)).collect();
@@ -1093,6 +1094,7 @@ impl<'a> Layout<'a> {
         match el.attr("width") {
             Some(Value::Num(n)) => return Column::Sized((*n as f32).max(0.0) * self.scale),
             Some(Value::Str(fit)) if &**fit == "fit" => return self.content_column(child, style, w),
+            Some(Value::Keyword(fill)) if &**fill == "fill" && !self.fitting => return Column::Fill,
             _ => {}
         }
         match (&*el.tag, dom::is_inline(&el.tag)) {
@@ -1310,7 +1312,7 @@ impl<'a> Layout<'a> {
                 piece.padding = segment.padding * self.scale;
                 piece.x = word.width;
                 piece.w = match &segment.embed {
-                    Some(Embed::Input(input)) => self.input_width(input),
+                    Some(Embed::Input(_, w)) => *w,
                     Some(Embed::Image(_, w, ..)) | Some(Embed::Canvas(_, w, _)) => *w,
                     Some(Embed::Spacer) => 0.0,
                     None => self.measure(&piece.text, &segment.style) + 2.0 * piece.padding,
@@ -1342,7 +1344,7 @@ impl<'a> Layout<'a> {
             let (height, baseline) = self.piece_box(segment);
             let (px, py) = (x + piece.x, baseline_y - baseline);
             match &segment.embed {
-                Some(Embed::Input(input)) => {
+                Some(Embed::Input(input, _)) => {
                     self.input(input, &segment.style, Clip::rect(px, py, piece.w, height));
                     continue;
                 }
@@ -1492,7 +1494,8 @@ impl<'a> Layout<'a> {
         let mut style = self.style(el, parent);
         if &*el.tag == "input" {
             let style = Rc::new(style);
-            out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(Embed::Input(el.clone())) });
+            let embed = Embed::Input(el.clone(), self.input_width(el, width));
+            out.push(Segment { text: "".into(), style, action: None, padding: 0.0, nowrap: true, embed: Some(embed) });
             return;
         }
         let action = match (el.attr("on-click"), el.attr("href")) {
@@ -1580,7 +1583,7 @@ impl<'a> Layout<'a> {
     fn piece_box(&self, segment: &Segment) -> (f32, f32) {
         let (height, baseline) = self.line_box(&segment.style);
         match segment.embed {
-            Some(Embed::Input(_)) => {
+            Some(Embed::Input(..)) => {
                 let inset = self.input_inset(&segment.style);
                 (height + 2.0 * inset, baseline + inset)
             }
@@ -1597,12 +1600,14 @@ impl<'a> Layout<'a> {
         (style.padding_left + 1.0) * self.scale
     }
 
-    fn input_width(&self, input: &Element) -> f32 {
-        let width = match input.attr("width") {
-            Some(Value::Num(n)) => *n as f32,
-            _ => 240.0,
-        };
-        width * self.scale
+    /// An input's `:width`, or 240. `:width :fill` takes the containing
+    /// block's content width, `width`, as an image's does.
+    fn input_width(&self, input: &Element, width: f32) -> f32 {
+        match input.attr("width") {
+            Some(Value::Num(n)) => *n as f32 * self.scale,
+            Some(Value::Keyword(fill)) if &**fill == "fill" => width,
+            _ => 240.0 * self.scale,
+        }
     }
 
     /// Draws a text input filling `area`: its value (or placeholder) clipped
@@ -2210,6 +2215,18 @@ mod tests {
         let right = fonts.measure("right", 16.0, Face { family: Family::Sans, weight: 700 });
         assert_eq!(texts[0].1, 0.0);
         assert!((texts[1].1 + right - 400.0).abs() < 0.01, "pushed to the end: {texts:?}");
+    }
+
+    #[test]
+    fn inputs_can_fill_the_room_in_a_row() {
+        let page = r#"(page :padding 0 (row :gap 0 (div :width 100) (input :width :fill) (div :width 100)))"#;
+        let Ok(Value::Element(page)) = crate::lisp::run(page, &crate::loader::test_context()) else { panic!("not a page") };
+        let fonts = Fonts::load();
+        let scrolls = HashMap::new();
+        let mut layout = Layout::new(&fonts, &Palette::LIGHT, 1.0, 600.0, &scrolls, None, true);
+        layout.block(&page, &Style::root(&Palette::LIGHT), 0.0, 0.0, 500.0);
+        let area = layout.inputs[0].area;
+        assert_eq!((area.x0, area.x1), (100.0, 400.0), "between the columns either side");
     }
 
     #[test]
