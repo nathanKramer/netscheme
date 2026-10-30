@@ -135,7 +135,7 @@ enum Step {
     /// This many frames of animation, each a 60th of a second after the last.
     Frames(u32),
     /// A key going down or up, by its name, for the canvas that has the
-    /// keyboard: click it first.
+    /// keyboard, after clicking it, or for a page that listens for keys.
     KeyDown(String),
     KeyUp(String),
     /// Zooming the site, with the chrome, by a factor around a point: in
@@ -186,7 +186,10 @@ fn write_screenshot(
             Step::KeyDown(name) | Step::KeyUp(name) => {
                 browser.render(&mut buf, w, h, 1.0, 0);
                 if !browser.listening() {
-                    return Err(format!("no canvas has the keyboard for {name:?}: click one that listens for keys first").into());
+                    return Err(format!(
+                        "nothing has the keyboard for {name:?}: click a canvas that listens for keys first, or give the page :on-key-down"
+                    )
+                    .into());
                 }
                 match step {
                     Step::KeyDown(_) => browser.key_down(name, false),

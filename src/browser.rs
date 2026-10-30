@@ -12,8 +12,8 @@ use std::{
 use crate::{
     dom::{self, Element, Node},
     layout::{
-        Action, Anchor, Clip, Drawings, Focus, FramedPage, InputBox, KeyTarget, Link, Magnify, Match, Overlay, Scrollbar, Scroller, Search,
-        Site, TextLine,
+        self, Action, Anchor, Clip, Drawings, Focus, FramedPage, InputBox, KeyTarget, Link, Magnify, Match, Overlay, Scrollbar, Scroller,
+        Search, Site, TextLine,
     },
     lisp::{
         self, Value,
@@ -221,10 +221,12 @@ impl Browser {
 
     /// A browser that downloads web pages and images on other threads, so
     /// that a slow server doesn't keep it waiting. `wake` is called when a
-    /// download finishes, after which `loaded` should be called.
+    /// download finishes, after which `loaded` should be called. Unlike
+    /// other browsers, its pages' random numbers differ each time it runs.
     pub fn loading_in_background(site: String, chrome: bool, wake: Wake) -> Browser {
         let mut browser = Browser::unloaded(site, chrome);
         browser.host.load_in_background(wake);
+        browser.host.seed_randomly();
         browser.reload();
         browser
     }
@@ -615,9 +617,25 @@ impl Browser {
         self.overlays[i].dismiss.clone()
     }
 
-    /// Whether a canvas has the keyboard, so keys go to it rather than the browser.
+    /// Whether a canvas, or the site's page, has the keyboard, so keys go
+    /// to it rather than the browser.
     pub fn listening(&self) -> bool {
-        self.key_focus.is_some()
+        self.key_focus.is_some() || self.keys_to_page()
+    }
+
+    /// Whether keys go to the site's page: it listens for them, and no
+    /// input or canvas has the keyboard.
+    fn keys_to_page(&self) -> bool {
+        self.key_focus.is_none() && self.focus.is_none() && self.site_page().is_some_and(|page| layout::listens_for_keys(page))
+    }
+
+    /// The site's page, as it last ran: in the chrome, the one in the frame
+    /// marked `:site`.
+    fn site_page(&self) -> Option<&Rc<Element>> {
+        if !self.chrome {
+            return Some(&self.page);
+        }
+        site_frame_page(&self.page)
     }
 
     /// Gives the keyboard to key target `id`, or to nothing. The canvas that
@@ -630,16 +648,17 @@ impl Browser {
     }
 
     /// A key named `name` went down, as the web's `KeyboardEvent.key` names
-    /// it, while a canvas has the keyboard. Repeats, from holding it, are ignored.
+    /// it, while a canvas or the page has the keyboard. Repeats, from holding
+    /// it, are ignored.
     pub fn key_down(&mut self, name: &str, repeat: bool) {
-        if self.key_focus.is_none() || repeat || self.held.iter().any(|held| held == name) {
+        if !self.listening() || repeat || self.held.iter().any(|held| held == name) {
             return;
         }
         self.held.push(name.to_string());
         self.key_handler("on-key-down", name);
     }
 
-    /// A key named `name` went up. Only keys the canvas saw go down count.
+    /// A key named `name` went up. Only keys the canvas or page saw go down count.
     pub fn key_up(&mut self, name: &str) {
         let Some(i) = self.held.iter().position(|held| held == name) else { return };
         self.held.remove(i);
@@ -655,8 +674,11 @@ impl Browser {
     }
 
     fn key_handler(&mut self, attr: &str, name: &str) {
-        let target = self.key_targets.iter().find(|target| Some(target.id) == self.key_focus);
-        if let Some(handler) = target.and_then(|target| target.element.attr(attr)).filter(|handler| handler.truthy()).cloned() {
+        let target = match self.key_focus {
+            Some(id) => self.key_targets.iter().find(|target| target.id == id).map(|target| &target.element),
+            None => self.site_page(),
+        };
+        if let Some(handler) = target.and_then(|target| target.attr(attr)).filter(|handler| handler.truthy()).cloned() {
             self.run(&handler, &[Value::Str(name.into())]);
         }
     }
@@ -1117,7 +1139,9 @@ impl Browser {
     }
 
     fn set_focus(&mut self, focus: Focus) {
+        // The canvas or page that had the keyboard is told its keys went up.
         self.focus_keys(None);
+        self.release_keys();
         self.focus = Some(focus);
         self.caret_moved = Instant::now();
     }
@@ -1290,11 +1314,12 @@ impl Browser {
     }
 
     /// Runs code from the REPL in the site's environment from its latest
-    /// run, so it sees the site's variables and can `set!` its state.
+    /// run, so it sees the site's variables and can `set!` its state, and
+    /// what it defines is there for the REPL's next input.
     fn repl_request(&mut self, request: ReplRequest) {
         match request {
             ReplRequest::Eval(input) => {
-                let output = match self.host.site_env() {
+                let output = match self.host.repl_env() {
                     Some(env) => lisp::eval_in(&input, &env).map(|value| format!("{value:#}")),
                     None => Err("the page hasn't run yet".into()),
                 };
@@ -1383,6 +1408,18 @@ impl Browser {
 /// An element's `:on-frame` handler. `nil` is none, so a page can pause.
 fn frame_handler(el: &Element) -> Option<&Value> {
     el.attr("on-frame").filter(|handler| handler.truthy())
+}
+
+/// The page in the frame marked `:site` in `el`, outside other frames.
+fn site_frame_page(el: &Element) -> Option<&Rc<Element>> {
+    el.children.iter().find_map(|child| match child {
+        Node::Element(frame) if &*frame.tag == "frame" => match (frame.attr("site"), frame.children.first()) {
+            (Some(Value::Bool(true)), Some(Node::Element(page))) => Some(page),
+            _ => None,
+        },
+        Node::Element(child) => site_frame_page(child),
+        Node::Text(_) => None,
+    })
 }
 
 /// Every canvas in `el` and in pages framed inside it that has a `:draw`
@@ -1816,6 +1853,47 @@ mod tests {
         assert!(!browser.listening(), "clicking elsewhere takes the keyboard back");
         assert!(log(&browser).ends_with("+x -x"), "{}", log(&browser));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_page_gets_keys_when_nothing_else_has_the_keyboard() {
+        let src = r#"(define-state log (list)) (define-state typed "")
+               (define (note s) (set! log (append log (list s))))
+               (page :padding 0 :on-key-down (fn (k) (note (str "+" k))) :on-key-up (fn (k) (note (str "-" k)))
+                 (canvas :width 100 :height 50 :on-key-down (fn (k) (note (str "canvas" k))))
+                 (input :value typed :on-input (fn (t) (set! typed t)))
+                 (p "log: " (join log " ")))"#;
+        for chrome in [false, true] {
+            let (mut browser, dir) = browse(&format!("page-keys-{chrome}"), src, chrome);
+            let log = |browser: &Browser| {
+                let page = browser.page.to_string();
+                let start = page.find("\"log: \" ").unwrap() + 8;
+                page[start..].split('"').nth(1).unwrap_or("").to_string()
+            };
+            render(&mut browser);
+            assert!(browser.listening(), "without a click");
+            browser.key_down("a", false);
+            browser.key_down("a", true);
+            browser.key_down("Enter", false);
+            browser.key_up("a");
+            assert_eq!(log(&browser), "+a +Enter -a");
+
+            // Focusing the input lets go of the page's keys, and takes them.
+            let input = browser.inputs.iter().max_by_key(|input| input.id).unwrap().area;
+            browser.click(input.x0 + 5.0, (input.y0 + input.y1) / 2.0);
+            assert!(!browser.listening(), "an input has the keyboard");
+            assert_eq!(log(&browser), "+a +Enter -a -Enter");
+            browser.key(Key::Escape, false, (0.0, 0.0));
+            assert!(browser.listening(), "and gives it back");
+
+            // So does a canvas that listens.
+            render(&mut browser);
+            let canvas = browser.key_targets[0].area;
+            browser.click(canvas.x0 + 5.0, canvas.y0 + 5.0);
+            browser.key_down("b", false);
+            assert!(log(&browser).ends_with("canvasb"), "{}", log(&browser));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -2315,6 +2393,12 @@ mod tests {
         assert_eq!(log, [Ok("nil".into()), Ok("82".into()), Err("undefined symbol: nope".into())]);
         assert!(browser.title().starts_with("Counter: 41"), "set! changed the site's state: {}", browser.title());
         assert_eq!(browser.inputs[1].value, "", "and the input clears");
+
+        press(&mut browser, [Key::Text("(define (twice) (* count 2))".into()), Key::Enter]);
+        press(&mut browser, [Key::Text("(define (thrice) (+ (twice) count))".into()), Key::Enter]);
+        press(&mut browser, [Key::Text("(thrice)".into()), Key::Enter]);
+        let last = browser.host.repl_log.borrow().last().map(|e| e.output.clone());
+        assert_eq!(last, Some(Ok("123".into())), "definitions outlast the page's runs between inputs");
 
         press(&mut browser, [Key::Escape]);
         assert_eq!(browser.inputs.len(), 1, "Escape closes it");

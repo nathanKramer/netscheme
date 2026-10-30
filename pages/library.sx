@@ -16,6 +16,14 @@
          " is the angle from the x axis to the point (x, y).")
   (entry "(min a b ...), (max a b ...)" "The smallest or largest argument. Given one"
          " list, the smallest or largest item in it.")
+  (entry "(random), (random n)" "A random number from 0 up to 1, or a whole number"
+         " from 0 up to n, not including 1 or n: " (code "(random 6)") " is 0 to 5.")
+  (p "A page runs again after every click and keystroke, and draws a new random"
+     " number each time, so keep one that should last in state: "
+     (code "(define-state secret (nth words (random (length words))))")
+     " picks once, and a handler can " (code "set!") " it to pick again. The"
+     " window's numbers differ each time the browser starts. Screenshots and tests"
+     " always get the same ones, so the same steps draw the same picture.")
 
   (section "Comparisons")
   (entry "(= a b ...)" "Whether the values are all equal. It compares lists and"

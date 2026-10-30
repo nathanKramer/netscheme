@@ -297,4 +297,25 @@ mod tests {
             apply(&handler, &[]).unwrap();
         }
     }
+
+    #[test]
+    fn random_numbers_are_in_range_and_repeat_unless_seeded() {
+        let src = "(define xs (map (fn (i) (random)) (range 1000)))
+                   (define ns (map (fn (i) (random 6)) (range 1000)))
+                   (list (all? (fn (x) (and (>= x 0) (< x 1))) xs)
+                         (all? (fn (n) (and (>= n 0) (< n 6) (= n (floor n)))) ns)
+                         (length (filter (fn (n) (= n 5)) ns)))";
+        let result = eval(src);
+        assert!(result.starts_with("(true true "), "{result}");
+        let fives: f64 = result.trim_start_matches("(true true ").trim_end_matches(')').parse().unwrap();
+        assert!((120.0..220.0).contains(&fives), "about a sixth are 5: {fives}");
+        assert_eq!(eval("(random 1)"), "0");
+        assert_eq!(eval("(random)"), eval("(random)"), "a fresh browser starts in the same place");
+        assert!(eval("(random 2.5)").starts_with("error: random:"));
+        assert!(eval("(random 0)").starts_with("error: random:"));
+
+        let host = crate::loader::Host::default();
+        host.seed_randomly();
+        assert_ne!(host.random(), crate::loader::Host::default().random(), "seeded, it starts somewhere else");
+    }
 }

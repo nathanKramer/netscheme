@@ -185,6 +185,14 @@ pub fn global_env(ctx: &Rc<PageContext>) -> Result<Rc<Env>, String> {
         c.host.request_navigation(href, &c.location);
         Ok(Value::Nil)
     });
+    // A random number from 0 up to 1, or a whole one from 0 up to n, not
+    // including 1 or n.
+    let c = ctx.clone();
+    def(&env, "random", move |args| match args {
+        [] => Ok(Value::Num(c.host.random())),
+        [Value::Num(n)] if n.fract() == 0.0 && *n >= 1.0 => Ok(Value::Num((c.host.random() * n).floor())),
+        _ => Err("random: expected nothing, or a whole number of at least 1".into()),
+    });
     // Whether the browser is in dark mode, which pages can follow as they like.
     let c = ctx.clone();
     def(&env, "dark-mode", move |_| Ok(Value::Bool(c.host.dark_mode.get())));

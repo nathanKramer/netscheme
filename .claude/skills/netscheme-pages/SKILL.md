@@ -95,7 +95,7 @@ symbols, `:keywords` that evaluate to themselves, lists, `(dict :a 1)`
 dictionaries, functions and elements. Only `false` and `nil` are false; `0`
 and `""` are true. `nil` is also the empty list.
 
-Builtins: `+ - * / mod floor ceil round abs sqrt pow sin cos atan2 min max
+Builtins: `+ - * / mod floor ceil round abs sqrt pow sin cos atan2 min max random
 = < > <= >= not list first rest last nth cons append length empty? range
 repeat reverse take drop contains? index-of map filter reduce sort sort-by
 apply str repr join split upper lower trim substring starts-with? ends-with?
@@ -269,7 +269,14 @@ visuals in `:draw`.
 
 **Keys:** a `canvas` with `:on-key-down` / `:on-key-up` takes the keyboard
 when clicked. Handlers get names like `"a"`, `" "`, `"ArrowLeft"` and
-`"Enter"`.
+`"Enter"`. A `page` with them gets keys, without a click, whenever no input,
+textarea or canvas has the keyboard; while it listens, arrow keys and Space
+don't scroll.
+
+**Randomness:** `(random)` is a number from 0 up to 1, and `(random n)` a whole
+number from 0 to n - 1. The page reruns on every event, so keep a random pick in
+`define-state` (its initial value is used once) or set it in a handler.
+Screenshots always get the same sequence.
 
 ## Overlays
 

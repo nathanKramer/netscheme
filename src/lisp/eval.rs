@@ -10,25 +10,32 @@ pub struct PageState {
 
 pub struct Env {
     vars: RefCell<HashMap<Rc<str>, Value>>,
-    parent: Option<Rc<Env>>,
+    /// Only the REPL's environment changes its parent; see `reparent`.
+    parent: RefCell<Option<Rc<Env>>>,
     /// Set on a page's global environment only.
     state: Option<Rc<PageState>>,
 }
 
 impl Env {
     pub fn new(parent: Option<Rc<Env>>) -> Rc<Env> {
-        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent, state: None })
+        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent: RefCell::new(parent), state: None })
     }
 
     pub fn global(state: Rc<PageState>) -> Rc<Env> {
-        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent: None, state: Some(state) })
+        Rc::new(Env { vars: RefCell::new(HashMap::new()), parent: RefCell::default(), state: Some(state) })
     }
 
-    fn page_state(&self) -> Option<&Rc<PageState>> {
-        match &self.parent {
+    fn page_state(&self) -> Option<Rc<PageState>> {
+        match &*self.parent.borrow() {
             Some(parent) => parent.page_state(),
-            None => self.state.as_ref(),
+            None => self.state.clone(),
         }
+    }
+
+    /// Moves this environment under another, so the REPL's definitions
+    /// outlast the page's runs, each of which makes a new global environment.
+    pub fn reparent(&self, parent: Rc<Env>) {
+        *self.parent.borrow_mut() = Some(parent);
     }
 
     /// Changes an existing variable, writing through to its cell if it's state.
@@ -47,7 +54,7 @@ impl Env {
             }
             None => {
                 drop(vars);
-                return self.parent.as_ref().ok_or_else(|| format!("set!: undefined variable: {name}"))?.set(name, value);
+                return self.parent.borrow().as_ref().ok_or_else(|| format!("set!: undefined variable: {name}"))?.set(name, value);
             }
         }
         Ok(())
@@ -56,7 +63,7 @@ impl Env {
     pub fn get(&self, name: &str) -> Option<Value> {
         match self.vars.borrow().get(name) {
             Some(v) => Some(v.clone()),
-            None => self.parent.as_ref()?.get(name),
+            None => self.parent.borrow().as_ref()?.get(name),
         }
     }
 

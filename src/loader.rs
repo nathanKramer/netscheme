@@ -11,6 +11,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fs,
+    hash::{BuildHasher, RandomState},
     path::Path,
     rc::Rc,
     sync::{
@@ -107,6 +108,8 @@ pub struct Host {
     site_env: RefCell<Option<Rc<Env>>>,
     /// A request from the chrome's REPL.
     repl: RefCell<Option<ReplRequest>>,
+    /// Where the REPL's definitions live, under the site's environment.
+    repl_env: RefCell<Option<Rc<Env>>>,
     /// What has been run in the REPL, oldest first.
     pub repl_log: RefCell<Vec<ReplEntry>>,
     /// The user's bookmarks, oldest first.
@@ -115,6 +118,9 @@ pub struct Host {
     loads: RefCell<Option<Loads>>,
     /// How the site is zoomed, which decides what its frame loads.
     pub zoom: RefCell<SiteZoom>,
+    /// Where `random` is in its sequence. It starts in the same place
+    /// unless `seed_randomly` is called, so screenshots and tests repeat.
+    random: Cell<u64>,
 }
 
 /// What the site's frame loads, as it's zoomed; see `zoom`.
@@ -175,6 +181,24 @@ impl Host {
     /// A host for a session whose site has the `state_key` given; see `site_key`.
     pub fn new(site_key: &str) -> Host {
         Host { site_key: site_key.into(), ..Host::default() }
+    }
+
+    /// Starts `random` somewhere different each time the browser runs.
+    pub fn seed_randomly(&self) {
+        self.random.set(RandomState::new().hash_one(0u8));
+    }
+
+    /// The next random number, from 0 up to but not including 1. This is
+    /// SplitMix64, which is quick and passes the usual statistical tests.
+    pub fn random(&self) -> f64 {
+        let state = self.random.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+        self.random.set(state);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        // The top 53 bits, as many as a float holds exactly.
+        (z >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// From now on, downloads web pages and images on other threads rather
@@ -327,8 +351,13 @@ impl Host {
         }
     }
 
-    pub fn site_env(&self) -> Option<Rc<Env>> {
-        self.site_env.borrow().clone()
+    /// The environment the REPL runs code in: its own definitions, under
+    /// the site's environment from its latest run.
+    pub fn repl_env(&self) -> Option<Rc<Env>> {
+        let site = self.site_env.borrow().clone()?;
+        let repl = self.repl_env.borrow_mut().get_or_insert_with(|| Env::new(None)).clone();
+        repl.reparent(site);
+        Some(repl)
     }
 }
 

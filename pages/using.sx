@@ -131,7 +131,7 @@ cargo run -- http://localhost:8000/hello.sx")
   (entry "--frames N" "Run N frames of animation, each a sixtieth of a second after"
          " the last, so the same steps always draw the same picture.")
   (entry "--key-down KEY, --key-up KEY" "Send a key, by name, to the canvas that"
-         " has the keyboard. Click it first.")
+         " has the keyboard, after clicking it, or to a page with " (code ":on-key-down") ".")
   (entry "--zoom FACTOR,X,Y" "With " (code "--chrome") ", zoom by a factor around"
          " a point, in steps, as the mouse wheel would, going into frames on the way.")
   (code-block

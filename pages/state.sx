@@ -245,6 +245,19 @@
      " and when you follow a link or go back.")
   (p "Keys with Ctrl, Alt or Super, and function keys like F5, still go to the"
      " browser. " (a :href "snake.sx" "Snake") " puts keys and animation together.")
+  (p "A " (code "page") " can have the same handlers, for keys anywhere on it,"
+     " as a word game or a slideshow wants:")
+  (code-block
+"(define-state typed \"\")
+(page :on-key-down (fn (k) (if (= (length k) 1) (set! typed (str typed k))))
+  (p \"Typed: \" typed))")
+  (p "The page gets keys without being clicked, whenever no input, textarea or"
+     " canvas has the keyboard, so focusing one takes them, and pressing Escape"
+     " out of it gives them back. Its held keys get " (code ":on-key-up") " then"
+     " too. As with a canvas, keys with Ctrl, Alt or Super, Escape and function"
+     " keys go to the browser, and the rest don't: the arrow keys, Space and"
+     " " (code "/") " don't scroll or find while the page listens, though the mouse"
+     " wheel still scrolls. Only the site's page gets keys, not pages in its frames.")
 
   (section "Overlays")
   (p "An " (code "overlay") " is drawn over the page instead of taking up room in"
