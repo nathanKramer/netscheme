@@ -21,7 +21,6 @@ use std::{
         mpsc::{self, Receiver, Sender},
     },
     thread,
-    time::Duration,
 };
 
 use ureq::ResponseExt;
@@ -31,6 +30,7 @@ use crate::{
     html,
     image::Image,
     lisp::{self, Env, PageState, Value},
+    net,
     settings::Bookmark,
 };
 
@@ -461,14 +461,8 @@ fn download(url: &str) -> Result<Source, String> {
 /// Downloads up to `limit` bytes from `url`, giving up after a while.
 /// Returns them with the location they came from, after any redirects.
 fn fetch(url: &str, limit: u64) -> Result<(Vec<u8>, String), String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(5)))
-        .timeout_global(Some(Duration::from_secs(10)))
-        .user_agent("toy-browser")
-        .build()
-        .into();
     let failed = |e: ureq::Error| format!("couldn't load {url}: {e}");
-    let mut response = agent.get(url).call().map_err(failed)?;
+    let mut response = net::agent().get(url).call().map_err(failed)?;
     let location = response.get_uri().to_string();
     let bytes = response.body_mut().with_config().limit(limit).read_to_vec().map_err(failed)?;
     Ok((bytes, location))

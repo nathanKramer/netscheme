@@ -8,6 +8,7 @@ mod image;
 mod layout;
 mod lisp;
 mod loader;
+mod net;
 mod paint;
 mod settings;
 mod style;
