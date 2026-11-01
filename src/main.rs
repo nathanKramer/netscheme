@@ -1,5 +1,6 @@
 mod browser;
 mod canvas;
+mod css;
 mod damage;
 mod dom;
 mod highlight;

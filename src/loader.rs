@@ -41,6 +41,8 @@ const MAX_FRAME_DEPTH: u32 = 8;
 const MIN_FRAME_SCALE: f32 = 0.025;
 /// Pages bigger than this aren't downloaded.
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
+/// Stylesheets bigger than this aren't read.
+const MAX_STYLESHEET_BYTES: u64 = 2 * 1024 * 1024;
 /// The biggest image file the browser will read or download.
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -442,7 +444,7 @@ pub fn read_source(location: &str, host: &Host) -> Result<Source, String> {
         None => file.into(),
     };
     let text = fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))?;
-    let text = if html::is_html(file, &text) { html::to_lisp(&text) } else { text };
+    let text = if html::is_html(file, &text) { html::to_lisp_with(&text, location, &mut stylesheet) } else { text };
     Ok(Source { text, location: location.into() })
 }
 
@@ -454,8 +456,16 @@ fn download(url: &str) -> Result<Source, String> {
         Err(e) if html::is_html(&location, &String::from_utf8_lossy(e.as_bytes())) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
         Err(_) => return Err(format!("couldn't load {url}: it isn't text")),
     };
-    let text = if html::is_html(&location, &text) { html::to_lisp(&text) } else { text };
+    let text = if html::is_html(&location, &text) { html::to_lisp_with(&text, &location, &mut stylesheet) } else { text };
     Ok(Source { text, location })
+}
+
+/// The stylesheet at `href`, relative to `base`, for an HTML page to use.
+fn stylesheet(base: &str, href: &str) -> Option<String> {
+    let location = resolve(base, href);
+    may_reach(base, &location).ok()?;
+    let bytes = read_bytes(&location, MAX_STYLESHEET_BYTES).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Downloads up to `limit` bytes from `url`, giving up after a while.
