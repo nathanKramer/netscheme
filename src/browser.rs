@@ -1158,8 +1158,9 @@ impl Browser {
             .map_or(String::new(), |find| format!("&find={}&found={}&at={}", loader::encode(&find.query), find.count, find.current + 1));
         let repl = if self.repl { "&repl=1" } else { "" };
         let loading = if self.loading() { "&loading=1" } else { "" };
+        let going = self.navigating.as_ref().map_or(String::new(), |(_, site)| format!("&going={}", loader::encode(site)));
         let zoom = if self.zoom == Zoom::default() { String::new() } else { format!("&zoom={}", loader::encode(&self.zoom.label())) };
-        format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}{zoom}", loader::encode(&self.site))
+        format!("browser:chrome?location={}{back}{error}{find}{repl}{loading}{going}{zoom}", loader::encode(&self.site))
     }
 
     /// Links on the chrome, and in the site framed inside it, all navigate the site.
@@ -2760,6 +2761,8 @@ mod tests {
         ]);
         server.add("logo.png", &std::fs::read("assets/images/logo.png").unwrap());
         let loading = |browser: &Browser| browser.page.to_string().contains("Loading…");
+        // The loading page that stands in for the site while the next downloads.
+        let going = |browser: &Browser| browser.page.to_string().contains("•");
         let (mut browser, woken) = in_background(server.url("index.sx"));
         assert!(loading(&browser), "the site isn't here yet: {}", browser.page);
         settle(&mut browser, &woken);
@@ -2771,8 +2774,11 @@ mod tests {
         click_link(&mut browser, to("other.sx"));
         assert_eq!(browser.site, server.url("index.sx"), "the page stays while the next downloads");
         assert!(loading(&browser), "and the toolbar says it's loading");
+        assert!(going(&browser), "while a loading page stands in for it: {}", browser.page);
+        assert!(browser.page.to_string().contains("other.sx\""), "naming where it's going");
         settle(&mut browser, &woken);
         assert_eq!(browser.site, server.url("other.sx"));
+        assert!(!going(&browser));
         assert!(browser.page.to_string().contains(r#""forms: " "1""#), "source waits for its download too: {}", browser.page);
 
         press(&mut browser, [Key::Back]);
@@ -2783,12 +2789,14 @@ mod tests {
         click_link(&mut browser, to("other.sx"));
         press(&mut browser, [Key::Escape]);
         assert!(!loading(&browser), "Escape stops going there");
+        assert!(!going(&browser), "and the site comes back");
         settle(&mut browser, &woken);
         assert_eq!(browser.site, server.url("index.sx"), "even once it arrives");
 
         let requests = server.requests();
         press(&mut browser, [Key::Reload]);
-        assert_eq!(browser.title(), "Remote — Netscheme", "the page stays while it downloads again");
+        assert_eq!(browser.site, server.url("index.sx"), "the site stays while it downloads again");
+        assert!(going(&browser), "behind the loading page");
         settle(&mut browser, &woken);
         assert!(server.requests() > requests, "reloading downloads it again");
         assert!(!loading(&browser));

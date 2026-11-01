@@ -1,0 +1,33 @@
+; Stands in for the site while the browser goes to another, which replaces
+; it once it has downloaded. The chrome frames it in the site's place.
+;
+; Usage: browser:loading?site=https://example.com/page.sx
+
+(define site (or (param "site") ""))
+
+; The site without its scheme, as there's little room and it's only a reminder.
+(define shown
+  (let ((parts (split site "://")))
+    (if (empty? (rest parts)) site (join (rest parts) "://"))))
+
+(define (shorten text n)
+  (if (> (length text) n) (str (trim (substring text 0 (dec n))) "…") text))
+
+; Milliseconds since the page appeared, which moves the dots along.
+(define-state elapsed 0)
+
+(define quiet (light-dark "#a9a3b2" "#6c6578"))
+(define ink (light-dark "#3a2f4a" "#ded8e8"))
+
+; Three dots, one lit at a time, from left to right.
+(define lit (mod (floor (/ elapsed 300)) 3))
+
+(define (dot i)
+  (span :size 22 :bold true :padding 3 :color (if (= i lit) ink quiet) "•"))
+
+(page :padding-top 140
+      :on-frame (fn (dt) (set! elapsed (+ elapsed dt)))
+  (div :width "fit" :align "center"
+    (p :margin 4 (map dot (range 3))))
+  (div :width "fit" :align "center"
+    (p :margin 0 :size 13 :color quiet (shorten shown 60))))

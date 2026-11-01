@@ -17,6 +17,9 @@
 ; Set while something is downloading: the site the browser is going to, which
 ; replaces this one when it arrives, or frames and images in this one.
 (define loading (param "loading"))
+; Set while the browser is going to another site: where. The site makes way
+; for a loading page until it arrives.
+(define going (param "going"))
 ; Set while the site is zoomed: how far, like "250%".
 (define zoom (param "zoom"))
 
@@ -25,7 +28,8 @@
 (define-state typed location)
 (define-state repl-typed "")
 
-(define site (frame :src location :height "fill" :border false :margin 0))
+(define site (frame :src (if going (str "browser:loading?site=" (url-encode going)) location)
+                   :height "fill" :border false :margin 0))
 
 ; The frame has already loaded the site, so its title can be read straight
 ; out of the document tree.
