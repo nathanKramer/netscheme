@@ -3,6 +3,7 @@ mod canvas;
 mod damage;
 mod dom;
 mod highlight;
+mod html;
 mod image;
 mod layout;
 mod lisp;

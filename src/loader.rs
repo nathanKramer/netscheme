@@ -5,6 +5,8 @@
 //!   project's `ui/` folder;
 //! - a web address, like `http://localhost:8000/hello.sx`.
 //!
+//! HTML pages, from files or the web, are translated into Lisp as they load.
+//!
 //! Any of them can end in a query: `browser:view-source?page=pages/hello.sx`.
 
 use std::{
@@ -26,6 +28,7 @@ use ureq::ResponseExt;
 
 use crate::{
     dom::{Element, Node, build_element},
+    html,
     image::Image,
     lisp::{self, Env, PageState, Value},
     settings::Bookmark,
@@ -439,15 +442,19 @@ pub fn read_source(location: &str, host: &Host) -> Result<Source, String> {
         None => file.into(),
     };
     let text = fs::read_to_string(&path).map_err(|e| format!("couldn't read {file}: {e}"))?;
+    let text = if html::is_html(file, &text) { html::to_lisp(&text) } else { text };
     Ok(Source { text, location: location.into() })
 }
 
 fn download(url: &str) -> Result<Source, String> {
     let (bytes, location) = fetch(url, MAX_PAGE_BYTES)?;
-    let text = String::from_utf8(bytes).map_err(|_| format!("couldn't load {url}: it isn't text"))?;
-    if text.trim_start().starts_with('<') {
-        return Err(format!("{url} looks like HTML. This browser only reads pages written in its own Lisp."));
-    }
+    // HTML pages that aren't UTF-8 are read as well as they can be.
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if html::is_html(&location, &String::from_utf8_lossy(e.as_bytes())) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(_) => return Err(format!("couldn't load {url}: it isn't text")),
+    };
+    let text = if html::is_html(&location, &text) { html::to_lisp(&text) } else { text };
     Ok(Source { text, location })
 }
 

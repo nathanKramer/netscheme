@@ -2789,13 +2789,18 @@ mod tests {
 
     #[test]
     fn failed_downloads_show_why() {
-        let server = crate::test_server::TestServer::start(&[("page.html", "<html><body>hi</body></html>")]);
+        let server = crate::test_server::TestServer::start(&[]);
         let mut browser = Browser::new(server.url("missing.sx"), true);
         render(&mut browser);
         assert!(browser.page.to_string().contains("404"), "{}", browser.page);
+    }
 
+    #[test]
+    fn html_pages_are_translated_as_they_download() {
+        let server = crate::test_server::TestServer::start(&[("page.html", "<html><body><p>hi</p></body></html>")]);
         let mut browser = Browser::new(server.url("page.html"), true);
         render(&mut browser);
-        assert!(browser.page.to_string().contains("looks like HTML"));
+        let page = browser.page.to_string();
+        assert!(page.contains(r#"(p "hi")"#) && page.contains("converted to Lisp"), "{page}");
     }
 }
