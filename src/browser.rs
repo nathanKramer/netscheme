@@ -1174,6 +1174,8 @@ impl Browser {
             return self.reset_zoom();
         }
         let from = base.map_or_else(|| self.location(), String::from);
+        // What's typed into the address bar may be a web address without its scheme.
+        let href = if from.starts_with("browser:chrome") { &loader::complete_typed(href) } else { href };
         let site = loader::resolve(&from, href);
         if let Err(e) = loader::may_reach(&from, &site) {
             return self.fail(e);
@@ -2059,6 +2061,11 @@ mod tests {
         press(&mut browser, [Key::Back]);
         assert_eq!(browser.site, "pages/hello.sx");
         assert_eq!(browser.inputs[0].value, "pages/hello.sx");
+
+        // Going to the web downloads in the background, so this doesn't wait for it.
+        browser.host.load_in_background(std::sync::Arc::new(|| {}));
+        press(&mut browser, [Key::FocusAddressBar, Key::Text("example.invalid".into()), Key::Enter]);
+        assert_eq!(browser.navigating.as_ref().map(|(_, site)| site.as_str()), Some("https://example.invalid"));
     }
 
     #[test]

@@ -529,6 +529,29 @@ pub fn resolve(current: &str, href: &str) -> String {
     Path::new(file).parent().unwrap_or(Path::new("")).join(href).to_string_lossy().into_owned()
 }
 
+/// The location someone means by typing `typed` into the address bar. A
+/// web address typed without its scheme, like `example.com/page`, gets
+/// `https://`, or `http://` for `localhost` and IP addresses, which are
+/// usually servers on this machine or network without certificates. Files
+/// that exist, and names like `page.sx`, are left as they are.
+pub fn complete_typed(typed: &str) -> String {
+    let typed = typed.trim();
+    let file = typed.split(['?', '#']).next().unwrap_or(typed);
+    if typed.contains("://") || typed.starts_with(BROWSER) || Path::new(file).exists() {
+        return typed.into();
+    }
+    let host = file.split('/').next().unwrap_or(file);
+    let name = host.rsplit_once(':').filter(|(_, port)| port.parse::<u16>().is_ok()).map_or(host, |(name, _)| name);
+    let page_file = !file.contains('/') && [".sx", ".html", ".htm", ".png"].iter().any(|ext| file.ends_with(ext));
+    if name == "localhost" || name.parse::<std::net::Ipv4Addr>().is_ok() {
+        format!("http://{typed}")
+    } else if name.contains('.') && !name.starts_with('.') && !page_file && !typed.contains(char::is_whitespace) {
+        format!("https://{typed}")
+    } else {
+        typed.into()
+    }
+}
+
 /// Percent-encodes `s` so it can be a query parameter's value.
 pub fn encode(s: &str) -> String {
     let mut out = String::new();
@@ -659,6 +682,19 @@ mod tests {
         assert_eq!(resolve("pages/hello.sx", "/x.sx"), "x.sx");
         assert_eq!(resolve("pages/hello.sx", "browser:chrome"), "browser:chrome");
         assert_eq!(resolve("browser:view-source?page=a", "pages/hello.sx"), "pages/hello.sx");
+    }
+
+    #[test]
+    fn typed_web_addresses_get_a_scheme() {
+        assert_eq!(complete_typed("example.com"), "https://example.com");
+        assert_eq!(complete_typed(" en.wikipedia.org/wiki/Lisp "), "https://en.wikipedia.org/wiki/Lisp");
+        assert_eq!(complete_typed("localhost:8000/hello.sx"), "http://localhost:8000/hello.sx");
+        assert_eq!(complete_typed("127.0.0.1:8000"), "http://127.0.0.1:8000");
+        assert_eq!(complete_typed("http://example.com"), "http://example.com");
+        assert_eq!(complete_typed("pages/hello.sx"), "pages/hello.sx");
+        assert_eq!(complete_typed("missing.sx"), "missing.sx");
+        assert_eq!(complete_typed("browser:view-source"), "browser:view-source");
+        assert_eq!(complete_typed("../pages"), "../pages");
     }
 
     #[test]

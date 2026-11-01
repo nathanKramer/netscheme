@@ -80,7 +80,7 @@ fn main() -> ExitCode {
                 Ok(())
             }
             _ if !arg.starts_with('-') => {
-                location = arg;
+                location = loader::complete_typed(&arg);
                 Ok(())
             }
             _ => Err(USAGE),
