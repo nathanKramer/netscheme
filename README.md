@@ -9,16 +9,39 @@
 One language covers structure, style and behaviour:
 
 ```lisp
-(define (greeting name) (str "Hello, " name "!"))   ; behaviour
+(define accent (light-dark "#b8336a" "#f08cb8"))           ; a colour for each mode
+(define card (style :background (light-dark "#f6eef2" "#2a2228")
+                    :padding 12 :radius 8 :margin 12))      ; a style is a value
 
-(page :title "Hello"
-  (h1 :color "#b8336a" (greeting "world"))           ; structure + style
-  (p "6 × 7 = " (* 6 7)))
+(define-state todos (list (dict :text "Write a page" :done true)))
+(define-state draft "")                                     ; state survives reruns
+
+(define (add! text)
+  (set! todos (append todos (list (dict :text text :done false))))
+  (set! draft ""))
+
+(define (toggle! todo)
+  (set! todos (map (fn (t) (if (= t todo) (assoc t :done (not (get t :done))) t))
+                   todos)))
+
+(define (item todo)                                         ; a component is a function
+  (p :margin 4 :on-click (fn () (toggle! todo))
+     :color (if (get todo :done) "grey")
+     (if (get todo :done) "[x] " "[ ] ") (get todo :text)))
+
+(page :title "Todos" :max-width 480
+  (h1 :color accent "Todos")
+  (div card (map item todos))
+  (input :value draft :width :fill :placeholder "Add a todo, then press Enter"
+         :on-input (fn (text) (set! draft text))
+         :on-submit add!)
+  (p :size 14 :margin-top 8
+     (length (filter (fn (t) (not (get t :done))) todos)) " left"))
 ```
 
 A page is a program. The browser evaluates it, and the last value it
-produces, a `(page ...)` element, is the document. Clicking a button changes
-some state, and the browser runs the page again.
+produces, a `(page ...)` element, is the document. Pressing Enter or clicking
+a todo changes some state, and the browser runs the page again.
 
 Netscheme draws everything itself, from the text to the caret in the address
 bar, with no GUI toolkit: parsing, styling, layout and painting are the
