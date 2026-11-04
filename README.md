@@ -6,15 +6,19 @@
 
 <p align="center">A toy web browser whose pages are written in a small Lisp instead of HTML, CSS and JavaScript.</p>
 
-One language covers structure, style and behaviour:
+One language covers structure, style and behaviour, as in this todo list:
 
 ```lisp
-(define accent (light-dark "#b8336a" "#f08cb8"))           ; a colour for each mode
-(define card (style :background (light-dark "#f6eef2" "#2a2228")
-                    :padding 12 :radius 8 :margin 12))      ; a style is a value
+; a colour for each mode
+(define accent (light-dark "#b8336a" "#f08cb8"))
 
+; a style is a value
+(define card (style :background (light-dark "#f6eef2" "#2a2228")
+                    :padding 12 :radius 8 :margin 12))
+
+; state survives reruns
 (define-state todos (list (dict :text "Write a page" :done true)))
-(define-state draft "")                                     ; state survives reruns
+(define-state draft "")
 
 (define (add! text)
   (set! todos (append todos (list (dict :text text :done false))))
@@ -24,11 +28,13 @@ One language covers structure, style and behaviour:
   (set! todos (map (fn (t) (if (= t todo) (assoc t :done (not (get t :done))) t))
                    todos)))
 
-(define (item todo)                                         ; a component is a function
+; a component is a function
+(define (item todo)
   (p :margin 4 :on-click (fn () (toggle! todo))
      :color (if (get todo :done) "grey")
      (if (get todo :done) "[x] " "[ ] ") (get todo :text)))
 
+; the page is the last value evaluated
 (page :title "Todos" :max-width 480
   (h1 :color accent "Todos")
   (div card (map item todos))
